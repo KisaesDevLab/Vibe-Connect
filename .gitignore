@@ -1,0 +1,45 @@
+node_modules/
+dist/
+build/
+coverage/
+.yarn/cache
+.yarn/install-state.gz
+.pnp.*
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.tsbuildinfo
+.vite/
+
+# Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Docker volumes / mail / uploads
+infra/docker/data/
+infra/docker/mail/
+infra/docker/uploads/
+
+# Dev mock-provider outboxes
+.outbox/

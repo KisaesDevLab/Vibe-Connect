@@ -1,0 +1,25 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/schemas/capability.schema.json",
+  "identifier": "main-capability",
+  "description": "Deny-by-default capability surface. Only the plugins we need are enabled; filesystem access is restricted to the app data directory; HTTP is only allowed to the configured server.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:app:default",
+    "core:window:default",
+    "core:webview:default",
+    "core:event:default",
+    "core:menu:default",
+    "core:tray:default",
+    "autostart:default",
+    "global-shortcut:default",
+    "notification:default",
+    "notification:allow-request-permission",
+    "store:default",
+    "updater:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "https://*.vibeconnect.app/*" }]
+    }
+  ]
+}

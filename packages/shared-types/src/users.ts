@@ -1,0 +1,50 @@
+export type UserId = string;
+export type GroupId = string;
+export type DeviceId = string;
+export type ExternalIdentityId = string;
+
+export type UserStatus = 'active' | 'away' | 'dnd' | 'offline';
+
+export interface PublicUser {
+  id: UserId;
+  username: string;
+  displayName: string;
+  email: string | null;
+  avatarUrl: string | null;
+  isAdmin: boolean;
+  isActive: boolean;
+  status: UserStatus;
+  lastSeenAt: string | null;
+}
+
+export interface Group {
+  id: GroupId;
+  name: string;
+  sortOrder: number;
+  members: UserId[];
+}
+
+export type ClientPlatform = 'tauri-win' | 'tauri-mac' | 'tauri-linux' | 'pwa' | 'web';
+
+export interface DeviceRecord {
+  id: string;
+  userId: UserId;
+  deviceId: DeviceId;
+  publicKey: string;
+  keyVersion: number;
+  clientPlatform: ClientPlatform;
+  clientVersion: string | null;
+  lastHeartbeatAt: string | null;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export type DeviceHealthFlag = 'update_drift' | 'stale' | 'unknown_version' | 'healthy';
+
+export interface DeviceHealthRecord extends DeviceRecord {
+  displayName: string;
+  username: string;
+  flag: DeviceHealthFlag;
+  flagExplanation: string;
+  remediation: string;
+}

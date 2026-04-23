@@ -1,0 +1,31 @@
+{
+  "name": "@vibe-connect/crypto",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts",
+    "./browser": "./src/browser.ts",
+    "./bip39": "./src/bip39.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "bench": "tsx src/bench.ts"
+  },
+  "dependencies": {
+    "bip39": "^3.1.0",
+    "libsodium-wrappers-sumo": "^0.7.13"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/libsodium-wrappers-sumo": "^0.7.8",
+    "tsx": "^4.16.2",
+    "vitest": "^1.6.0"
+  }
+}

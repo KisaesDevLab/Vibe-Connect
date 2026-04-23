@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: vibe-connect-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vibe
+      POSTGRES_PASSWORD: vibe
+      POSTGRES_DB: vibe_connect
+    ports:
+      - '5435:5432'
+    volumes:
+      - vibe_pg:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vibe']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  vibe_pg:
+    name: vibe_connect_pg

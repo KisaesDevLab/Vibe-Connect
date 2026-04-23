@@ -1,0 +1,48 @@
+{
+  "name": "vibe-connect",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "yarn@1.22.22",
+  "scripts": {
+    "build": "yarn workspaces run build",
+    "typecheck": "yarn workspaces run typecheck",
+    "lint": "eslint \"{apps,packages}/**/*.{ts,tsx,js,jsx}\" --max-warnings 0",
+    "lint:fix": "eslint \"{apps,packages}/**/*.{ts,tsx,js,jsx}\" --fix",
+    "format": "prettier --write \"{apps,packages}/**/*.{ts,tsx,js,jsx,json,md,css}\"",
+    "format:check": "prettier --check \"{apps,packages}/**/*.{ts,tsx,js,jsx,json,md,css}\"",
+    "test": "yarn workspaces run test",
+    "server:dev": "yarn workspace @vibe-connect/server dev",
+    "web:dev": "yarn workspace @vibe-connect/web dev",
+    "portal:dev": "yarn workspace @vibe-connect/portal dev",
+    "db:migrate": "yarn workspace @vibe-connect/server migrate",
+    "db:rollback": "yarn workspace @vibe-connect/server rollback",
+    "db:seed": "yarn workspace @vibe-connect/server seed",
+    "db:reset": "yarn workspace @vibe-connect/server reset",
+    "compose:up": "docker compose -f infra/docker/docker-compose.yml up -d",
+    "compose:down": "docker compose -f infra/docker/docker-compose.yml down",
+    "compose:logs": "docker compose -f infra/docker/docker-compose.yml logs -f"
+  },
+  "resolutions": {
+    "@types/express": "^4.17.21",
+    "@types/express-serve-static-core": "^4.19.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@typescript-eslint/eslint-plugin": "^7.16.0",
+    "@typescript-eslint/parser": "^7.16.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.34.3",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.3"
+  }
+}

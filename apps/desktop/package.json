@@ -1,0 +1,17 @@
+{
+  "name": "@vibe-connect/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "echo \"desktop is a Tauri shell; frontend typechecked via @vibe-connect/web\" && exit 0",
+    "build": "echo \"run: cargo tauri build (requires Rust toolchain)\" && exit 0",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "test": "echo \"no JS tests here; see apps/web\" && exit 0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
