@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import * as crypto from '@vibe-connect/crypto';
 import { portalApi } from '../api.js';
 
 export function VerifyPage(): JSX.Element {
@@ -15,6 +14,7 @@ export function VerifyPage(): JSX.Element {
     setBusy(true);
     setError(null);
     try {
+      const crypto = await import('@vibe-connect/crypto');
       await crypto.ready();
       const kp = await crypto.generateKeypair();
       // Session keypair lives for the portal tab; stash in sessionStorage.

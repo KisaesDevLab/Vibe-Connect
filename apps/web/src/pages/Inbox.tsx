@@ -1,17 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { NavLink } from 'react-router-dom';
+import type { PublicUser } from '@vibe-connect/shared-types';
 import { api } from '../api.js';
+import { useAuth } from '../state/auth.js';
+import { threadLabel } from '../lib/threadLabel.js';
 
 export function InboxPage(): JSX.Element {
+  const { user: me } = useAuth();
   const convQ = useQuery({
     queryKey: ['conversations'],
-    queryFn: () => api.listConversations().then((r) => r.conversations),
+    queryFn: () => api.listConversations(),
   });
+  const usersQ = useQuery({
+    queryKey: ['users'],
+    queryFn: () => api.listUsers(),
+    staleTime: 30_000,
+  });
+  const usersById = useMemo(() => {
+    const m: Record<string, PublicUser> = {};
+    for (const u of usersQ.data?.users ?? []) m[u.id] = u;
+    return m;
+  }, [usersQ.data]);
 
   const unread = useMemo(
     () =>
-      (convQ.data ?? [])
+      (convQ.data?.conversations ?? [])
         .filter((c) => c.unreadCount > 0)
         .sort((a, b) => (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? '')),
     [convQ.data],
@@ -30,7 +44,9 @@ export function InboxPage(): JSX.Element {
             <li key={c.id}>
               <NavLink to={`/conversation/${c.id}`} className="block px-4 py-3 hover:bg-slate-50">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-slate-800">{c.displayName ?? '(direct)'}</span>
+                  <span className="font-medium text-slate-800">
+                    {threadLabel(c, usersById, me?.id ?? null)}
+                  </span>
                   <span className="text-xs font-semibold bg-brand-600 text-white rounded-full px-2 py-0.5">
                     {c.unreadCount > 99 ? '99+' : c.unreadCount}
                   </span>
@@ -56,19 +72,35 @@ export function QuickSwitcher({
   open: boolean;
   onClose: () => void;
 }): JSX.Element | null {
+  const { user: me } = useAuth();
   const [q, setQ] = useState('');
   const convQ = useQuery({
     queryKey: ['conversations'],
-    queryFn: () => api.listConversations().then((r) => r.conversations),
+    queryFn: () => api.listConversations(),
     enabled: open,
   });
+  const usersQ = useQuery({
+    queryKey: ['users'],
+    queryFn: () => api.listUsers(),
+    staleTime: 30_000,
+    enabled: open,
+  });
+  const usersById = useMemo(() => {
+    const m: Record<string, PublicUser> = {};
+    for (const u of usersQ.data?.users ?? []) m[u.id] = u;
+    return m;
+  }, [usersQ.data]);
   useEffect(() => {
     if (!open) setQ('');
   }, [open]);
   if (!open) return null;
-  const list = (convQ.data ?? []).filter(
-    (c) => !q || (c.displayName ?? '').toLowerCase().includes(q.toLowerCase()),
-  );
+  const qLower = q.toLowerCase();
+  const list = (convQ.data?.conversations ?? []).filter((c) => {
+    if (!q) return true;
+    // Match against the resolved label so ad-hoc "Alice, Bob, Carol" threads
+    // surface on typing a member name, not only on the missing displayName.
+    return threadLabel(c, usersById, me?.id ?? null).toLowerCase().includes(qLower);
+  });
   return (
     <div className="fixed inset-0 bg-slate-900/30 z-50 grid place-items-start pt-24">
       <div className="bg-white w-full max-w-lg mx-auto rounded-lg shadow-popover overflow-hidden">
@@ -91,7 +123,7 @@ export function QuickSwitcher({
                 onClick={onClose}
                 className="block px-4 py-2 text-sm hover:bg-slate-100"
               >
-                {c.displayName ?? '(direct)'}
+                {threadLabel(c, usersById, me?.id ?? null)}
                 <span className="ml-2 text-xs text-slate-400">
                   {c.lastMessageAt ? new Date(c.lastMessageAt).toLocaleString() : ''}
                 </span>

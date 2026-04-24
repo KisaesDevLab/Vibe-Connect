@@ -24,7 +24,11 @@ interface SessionRequest extends IncomingMessage {
 
 export function attachRealtime(httpServer: HttpServer): IOServer {
   const io = new IOServer(httpServer, {
-    cors: { origin: [env.siteUrl, env.portalUrl], credentials: true },
+    // Reflect the request origin. See apps/server/src/app.ts for the rationale
+    // (LAN IPs, hostnames, reverse proxies can't be enumerated). Access is
+    // gated by the shared express-session cookie — every socket.io connection
+    // is rejected unless req.session.userId is set.
+    cors: { origin: (origin, cb) => cb(null, origin ?? true), credentials: true },
   });
 
   // Staff: share express-session with the HTTP side.
@@ -133,6 +137,29 @@ export function attachRealtime(httpServer: HttpServer): IOServer {
         break;
       case 'device:revoked':
         io.to(`user:${event.userId}`).emit('device:revoked', { deviceId: event.deviceId });
+        break;
+      case 'device:enrolled':
+        // Scope to the enrolling user's own tabs + the conversation rooms
+        // they're in. Pre-fix this was a firm-wide broadcast, which leaked
+        // device-provisioning timestamps to every signed-in staff member.
+        // Rewrap for existing conversations is triggered by the per-room
+        // `conversation:wrapped-keys-updated` event published after the
+        // server-side merge, not by this announcement.
+        io.to(`user:${event.userId}`).emit('device:enrolled', {
+          userId: event.userId,
+          deviceId: event.deviceId,
+        });
+        break;
+      case 'conversation:wrapped-keys-updated':
+        // Target every member's user: room so even devices that haven't joined
+        // the conv: room (just-enrolled browsers, offline-then-reconnecting
+        // tabs) get the signal and refetch wrappedKeys.
+        for (const uid of event.memberUserIds) {
+          io.to(`user:${uid}`).emit('conversation:wrapped-keys-updated', {
+            conversationId: event.conversationId,
+            addedRecipientIds: event.addedRecipientIds,
+          });
+        }
         break;
       default:
         logger.warn('unhandled_realtime_event', { event });

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { IdentifyPage } from './pages/Identify.js';
+import { InvitePage } from './pages/Invite.js';
 import { VerifyPage } from './pages/Verify.js';
 import { StepUpPage } from './pages/StepUp.js';
 import { ConversationsPage } from './pages/Conversations.js';
@@ -13,6 +14,7 @@ export function App(): JSX.Element {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<IdentifyPage />} />
+          <Route path="/invite" element={<InvitePage />} />
           <Route path="/verify" element={<VerifyPage />} />
           <Route path="/stepup" element={<StepUpPage />} />
           <Route path="/messages" element={<ConversationsPage />} />

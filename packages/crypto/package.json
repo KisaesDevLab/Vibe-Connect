@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
     "./browser": "./src/browser.ts",
-    "./bip39": "./src/bip39.ts"
+    "./bip39": "./src/bip39.ts",
+    "./shamir": "./src/shamir.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -1,8 +1,10 @@
-// Email provider interface + mock + Postmark + Postfix stubs.
+// Email provider interface + mock + Postmark + Postfix-SMTP implementations.
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import nodemailer, { type Transporter } from 'nodemailer';
 import { env } from '../../env.js';
 import { logger } from '../../logger.js';
+import { getOrEnvFallback } from '../../services/providerSecrets.js';
 
 export interface EmailMessage {
   to: string;
@@ -34,7 +36,8 @@ class MockProvider implements EmailProvider {
 class PostmarkProvider implements EmailProvider {
   name = 'postmark';
   async send(msg: EmailMessage) {
-    if (!env.postmarkServerToken) throw new Error('POSTMARK_SERVER_TOKEN not configured');
+    const token = await getOrEnvFallback('email.postmark.server_token', env.postmarkServerToken);
+    if (!token) throw new Error('postmark_token_not_configured');
     const body = {
       From: env.emailFrom,
       To: msg.to,
@@ -50,12 +53,15 @@ class PostmarkProvider implements EmailProvider {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
-        'X-Postmark-Server-Token': env.postmarkServerToken,
+        'X-Postmark-Server-Token': token,
       },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const txt = await res.text();
+      // Postmark returns the token in error replies for some 4xx cases. Strip
+      // any bearer-like substrings from the body before surfacing — we don't
+      // want credentials to land in audit details via the bridge's error path.
+      const txt = (await res.text()).replace(/[A-Za-z0-9-]{20,}/g, '[redacted]');
       throw new Error(`postmark_${res.status}: ${txt}`);
     }
     const data = (await res.json()) as { MessageID: string };
@@ -65,15 +71,67 @@ class PostmarkProvider implements EmailProvider {
 
 class PostfixProvider implements EmailProvider {
   name = 'postfix';
+  // Transport is re-resolved per-send so rotating SMTP settings in the admin
+  // UI takes effect on the next message instead of requiring a restart.
+  // nodemailer caches the socket internally via its own pool; the per-send
+  // create is cheap.
+  private async buildTransport(): Promise<Transporter> {
+    const host = await getOrEnvFallback('email.smtp.host', env.smtpHost);
+    if (!host) throw new Error('SMTP_HOST is required when EMAIL_PROVIDER=postfix');
+    const portStr = await getOrEnvFallback('email.smtp.port', String(env.smtpPort));
+    const port = portStr ? Number(portStr) : env.smtpPort;
+    const secureFlag = await getOrEnvFallback('email.smtp.secure', env.smtpSecure ? '1' : '0');
+    const secure = secureFlag === '1' || secureFlag === 'true';
+    const user = await getOrEnvFallback('email.smtp.user', env.smtpUser);
+    const pass = await getOrEnvFallback('email.smtp.pass', env.smtpPass);
+    return nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: user && pass ? { user, pass } : undefined,
+    });
+  }
+
   async send(msg: EmailMessage) {
-    // Placeholder: integrate with a self-hosted Postfix via SMTP in ops. Dev default is mock.
-    logger.warn('email.postfix_not_implemented', { to: msg.to });
-    return { id: `postfix-stub-${Date.now()}`, status: 'queued' as const };
+    const transport = await this.buildTransport();
+    const info = await transport.sendMail({
+      from: env.emailFrom,
+      to: msg.to,
+      subject: msg.subject,
+      text: msg.text,
+      html: msg.html,
+      headers: msg.headers,
+      replyTo: msg.replyTo,
+    });
+    logger.info('email.postfix_sent', { to: msg.to, id: info.messageId });
+    return {
+      id: info.messageId,
+      status: (info.accepted?.length ? 'sent' : 'queued') as 'sent' | 'queued',
+    };
   }
 }
 
-export function getEmailProvider(): EmailProvider {
-  switch (env.emailProvider) {
+/** Admin-selected email provider from firm_settings.email_provider, with a
+ *  cleartext env-var fallback (EMAIL_PROVIDER) so installs that predate the
+ *  UI-selectable setting keep working until an admin picks one in the UI. */
+async function resolveEmailProviderKind(): Promise<'mock' | 'postmark' | 'postfix'> {
+  try {
+    const { db } = await import('../../db/knex.js');
+    const row = await db('firm_settings').where({ id: 1 }).first('email_provider');
+    const picked = row?.email_provider as string | undefined;
+    if (picked === 'postmark' || picked === 'postfix' || picked === 'mock') return picked;
+  } catch (err) {
+    // DB unreachable (boot race, maintenance window). Fall through to env so
+    // we fail safer — a misconfigured DB shouldn't break outbound mail.
+    logger.warn('email_provider_db_lookup_failed', {
+      msg: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return env.emailProvider;
+}
+
+export async function getEmailProvider(): Promise<EmailProvider> {
+  switch (await resolveEmailProviderKind()) {
     case 'postmark':
       return new PostmarkProvider();
     case 'postfix':

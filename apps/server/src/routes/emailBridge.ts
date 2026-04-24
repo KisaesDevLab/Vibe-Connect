@@ -3,8 +3,9 @@
 // sealPlaintextForBridge call below. The sealed envelope is readable by holders of the
 // recovery phrase (emergency decrypt) and will be re-wrapped under the conversation key
 // on first staff-client access.
-import crypto from 'node:crypto';
-import { Router } from 'express';
+import crypto, { randomBytes } from 'node:crypto';
+import { Router, type Request, type Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import EmailReplyParser from 'email-reply-parser';
 import { z } from 'zod';
@@ -15,10 +16,25 @@ import { auditRepo } from '../repositories/audit.js';
 import { logger } from '../logger.js';
 import { publish } from '../realtime/pgFanout.js';
 import { getEmailProvider } from '../bridges/email/index.js';
-import { sealPlaintextForBridge } from '../bridges/sealToFirm.js';
+import { sealBytesForBridge, sealPlaintextForBridge } from '../bridges/sealToFirm.js';
 import { signUnsubscribeToken, verifyUnsubscribeToken } from '../bridges/unsubscribeTokens.js';
+import { attachmentStorage } from '../services/attachmentStorage.js';
+import { attachmentsRepo } from '../repositories/messages.js';
+import { scanBuffer } from '../services/clamav.js';
 
 export const emailBridgeRouter = Router();
+
+// BRIDGE: shared-secret auth keeps random callers out, but a leaked secret or
+// a misbehaving provider could flood the appliance. Cap per source IP as
+// defense in depth. Postmark normally delivers from a small set of IPs, so a
+// 200/min cap won't trip on legitimate traffic.
+const inboundLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: env.rateLimitEmailInboundPerMin,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate_limited' },
+});
 
 // -------- Token issuance --------
 
@@ -27,7 +43,12 @@ export async function ensureConversationToken(conversationId: string): Promise<s
     .where({ conversation_id: conversationId })
     .first();
   if (existing) return existing.token;
-  const token = crypto.randomBytes(12).toString('base64url').slice(0, 16);
+  // Lowercase hex: 64 bits of entropy in 16 chars (astronomically unguessable)
+  // and — importantly — case-insensitive-friendly. Email local parts get
+  // lowercased in transit by many MTAs including Postmark; a mixed-case
+  // base64url token would fail the post-lowercase lookup in processInbound.
+  // Using hex sidesteps that class of bug entirely.
+  const token = crypto.randomBytes(8).toString('hex');
   await db('conversation_email_tokens').insert({
     conversation_id: conversationId,
     token,
@@ -41,25 +62,30 @@ export function makeInboundAddress(token: string): string {
 
 // -------- Inbound webhook (Postmark format) --------
 
-function verifyPostmarkSecret(req: {
+async function verifyPostmarkSecret(req: {
   headers: Record<string, string | string[] | undefined>;
-}): boolean {
-  // Fail-closed: if the provider is postmark and the secret is missing, reject.
-  if (env.emailProvider === 'postmark' && !env.postmarkInboundWebhookSecret) {
-    logger.error('email.postmark_webhook_secret_missing');
+}): Promise<boolean> {
+  // The mock provider writes outbound messages to .outbox/ and doesn't take
+  // inbound webhooks from the internet, so the secret is optional there.
+  // Every other provider (postmark, postfix) carries a real delivery path,
+  // so the secret is required regardless of NODE_ENV — a staging instance
+  // with accidental internet exposure must not accept unauthenticated
+  // inbound webhooks just because isProd happens to be false.
+  const mockOnly = env.emailProvider === 'mock';
+  const { getOrEnvFallback } = await import('../services/providerSecrets.js');
+  const expected = await getOrEnvFallback(
+    'email.postmark.inbound_webhook_secret',
+    env.postmarkInboundWebhookSecret,
+  );
+  if (!expected) {
+    if (mockOnly) return true;
+    logger.error('email.webhook_secret_missing', { provider: env.emailProvider });
     return false;
-  }
-  if (!env.postmarkInboundWebhookSecret) {
-    // Non-postmark deployment: still refuse unauthenticated hits in production.
-    return !env.isProd;
   }
   const got = req.headers['x-postmark-webhook-secret'] as string | undefined;
   if (!got) return false;
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(got, 'utf8'),
-      Buffer.from(env.postmarkInboundWebhookSecret, 'utf8'),
-    );
+    return crypto.timingSafeEqual(Buffer.from(got, 'utf8'), Buffer.from(expected, 'utf8'));
   } catch {
     return false;
   }
@@ -67,8 +93,9 @@ function verifyPostmarkSecret(req: {
 
 emailBridgeRouter.post(
   '/email-inbound',
+  inboundLimiter,
   asyncHandler(async (req, res) => {
-    if (!verifyPostmarkSecret(req)) {
+    if (!(await verifyPostmarkSecret(req))) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
@@ -116,8 +143,13 @@ emailBridgeRouter.post(
 
 emailBridgeRouter.post(
   '/email-inbound-raw',
+  inboundLimiter,
   asyncHandler(async (req, res) => {
-    if (!env.postmarkInboundWebhookSecret) {
+    // Dedicated secret so a leaked Postmark secret doesn't also open the raw
+    // endpoint. Falls back to the Postmark secret during rollout — see env.ts
+    // for the compatibility note.
+    const rawBridgeSecret = env.postfixRawBridgeSecret || env.postmarkInboundWebhookSecret;
+    if (!rawBridgeSecret) {
       logger.error('email.raw_endpoint_secret_missing');
       res.status(401).json({ error: 'unauthorized' });
       return;
@@ -128,7 +160,7 @@ emailBridgeRouter.post(
       try {
         ok = crypto.timingSafeEqual(
           Buffer.from(got, 'utf8'),
-          Buffer.from(env.postmarkInboundWebhookSecret, 'utf8'),
+          Buffer.from(rawBridgeSecret, 'utf8'),
         );
       } catch {
         ok = false;
@@ -182,8 +214,53 @@ interface InboundEmail {
 }
 
 async function processInbound(email: InboundEmail): Promise<void> {
-  // Parse token from the To address: "c+<token>@connect.firmdomain"
-  const match = email.to.match(/c\+([A-Za-z0-9_-]+)@/);
+  // Sanitised form of the providerMessageId — used for BOTH the dedup lookup
+  // and the eventual store. Without this the dedup lookup (raw value) would
+  // never match the store (sanitised value) for any MessageID with control
+  // chars, and a hostile sender could bypass dedup by inserting a stray
+  // newline.
+  // eslint-disable-next-line no-control-regex
+  const providerMessageId = (email.messageId ?? '').replace(/[\u0000-\u001F\u007F]+/g, '?').slice(0, 255);
+  // Anti-replay first. Providers retry webhooks on receiver timeouts, and a
+  // duplicate delivery at this layer would otherwise cost us an extra bounce
+  // (for sendBounce branches below), an extra audit row, or — worst case — a
+  // duplicate message insert if the retry races with a slow first pass. The
+  // dedup lookup is cheap (indexed jsonb expression) and MUST run before any
+  // outbound action so retries stay idempotent.
+  if (providerMessageId) {
+    const existing = await db('messages')
+      .where({ source: 'email-in' })
+      .whereRaw(`source_meta->>'providerMessageId' = ?`, [providerMessageId])
+      .first();
+    if (existing) {
+      logger.info('email.inbound_dedup', { providerMessageId });
+      return;
+    }
+  }
+  // Firm-wide kill switch. When disabled we bounce with a neutral reason and
+  // audit the drop, but do NOT store the ciphertext — the whole point of the
+  // toggle is to stop accumulating client content during an outage / incident.
+  const settings = await db('firm_settings').where({ id: 1 }).first();
+  if (!(settings?.client_messaging_enabled ?? true)) {
+    await sendBounce(
+      email.from,
+      'Client messaging is temporarily disabled by your firm. Please contact them directly.',
+    );
+    await auditRepo.write({
+      action: 'email.inbound_blocked',
+      targetType: 'email',
+      details: { reason: 'client_messaging_disabled', from: email.from },
+    });
+    return;
+  }
+  // Parse token from the To address: "c+<token>@connect.firmdomain".
+  // Anchored match on the local-part start so an address like
+  // `noreply+c+attackertoken@...` or a mixed-recipient header can't plant a
+  // phantom `c+` somewhere other than position 0 and get treated as the
+  // conversation routing key. A leading angle bracket is allowed because some
+  // providers hand us `<c+token@...>` rather than a bare address.
+  const addr = email.to.trim().replace(/^</, '').toLowerCase();
+  const match = addr.match(/^c\+([A-Za-z0-9_-]+)@/);
   if (!match) {
     logger.warn('email.no_token', { to: email.to });
     return;
@@ -219,6 +296,13 @@ async function processInbound(email: InboundEmail): Promise<void> {
   // recovery phrase (emergency_decrypt) can open this envelope until a staff client
   // rewraps it under the conversation key on first access. No plaintext at rest.
   const sealed = await sealPlaintextForBridge(cleaned);
+  // Sanitise attacker-supplied text fields before persisting into source_meta.
+  // Control chars + length caps stop a hostile sender from smuggling newlines
+  // or huge strings into structured logs + admin UI that may render them
+  // without re-escaping.
+  const sanitize = (s: string | undefined, max: number): string =>
+    // eslint-disable-next-line no-control-regex
+    (s ?? '').replace(/[\u0000-\u001F\u007F]+/g, '?').slice(0, max);
   const [msg] = await db('messages')
     .insert({
       conversation_id: link.conversation_id,
@@ -228,14 +312,141 @@ async function processInbound(email: InboundEmail): Promise<void> {
       source: 'email-in',
       ciphertext_meta: { bridgePending: true, algorithm: 'bridge-sealed-v1' },
       source_meta: {
-        providerMessageId: email.messageId,
-        subject: email.subject,
-        inReplyTo: email.inReplyTo,
-        references: email.references,
-        attachments: email.attachments.map((a) => ({ name: a.name, mime: a.contentType })),
+        providerMessageId, // already sanitised at the top of processInbound
+        subject: sanitize(email.subject, 512),
+        inReplyTo: sanitize(email.inReplyTo, 255),
+        references: sanitize(email.references, 2048),
+        attachments: email.attachments.map((a) => ({
+          name: sanitize(a.name, 255),
+          mime: sanitize(a.contentType, 128),
+        })),
       },
     })
     .returning(['id']);
+
+  // BRIDGE: persist inbound attachments. Each file is sealed-to-firm (same envelope
+  // format as the body) and stored via the regular attachment driver. The filename
+  // ciphertext also goes through sealPlaintextForBridge so staff can recover the
+  // original name after the first rewrap. `wrapped_file_key` is empty bytes at
+  // bridge-pending stage — the rewrap pass (future phase) swaps it for a real
+  // per-conversation-key wrap. scan_status defers to clamd; unscanned bytes never
+  // reach the download endpoint because it gates on scan_status === 'clean'.
+  const store = attachmentStorage();
+  for (const a of email.attachments) {
+    try {
+      const rawBytes = Buffer.from(a.contentBase64, 'base64');
+      if (rawBytes.byteLength === 0) continue;
+      if (rawBytes.byteLength > env.attachmentMaxBytes) {
+        logger.warn('email.attachment_oversize_skipped', {
+          name: a.name,
+          size: rawBytes.byteLength,
+        });
+        continue;
+      }
+      // Scan FIRST. The pre-fix order was scan → seal → store → (if infected) delete,
+      // which wrote the sealed ciphertext to disk for every message — including
+      // malicious ones — and relied on the delete path to clean up. Any
+      // transient storage failure on the delete leg produced orphan blobs with
+      // no DB row pointing at them. Checking scan up-front means we never
+      // touch the storage driver for infected bytes.
+      const scan = await scanBuffer(rawBytes);
+      // Safe-filename copy for audit: strip control chars (U+0000..U+001F
+      // plus DEL U+007F) + length-cap so a hostile sender can't inject
+      // newlines or arbitrary bytes into our structured logs and audit
+      // details (admin UI / log aggregators may not re-escape). The initial
+      // form of this regex was [ -]+ (a range from U+0020 space to U+002D
+      // hyphen) which incorrectly stripped ordinary punctuation and
+      // corrupted every filename with a dot or dash.
+      // eslint-disable-next-line no-control-regex
+      const safeName = a.name.replace(/[\u0000-\u001F\u007F]+/g, '?').slice(0, 255);
+      // Sanitise mime at the same time so a spoofed `text/html; ...` stored on
+      // the attachments row can't confuse downstream consumers.
+      // eslint-disable-next-line no-control-regex
+      const safeMime = a.contentType.replace(/[\u0000-\u001F\u007F]+/g, '').slice(0, 128);
+      if (scan.status === 'infected') {
+        const sealedFilename = await sealPlaintextForBridge(safeName);
+        await attachmentsRepo.insert({
+          message_id: msg!.id,
+          filename_ciphertext: sealedFilename.toString('base64'),
+          mime_type: safeMime,
+          size_bytes: rawBytes.byteLength,
+          storage_path: '',
+          wrapped_file_key: Buffer.alloc(0),
+          scan_status: 'infected',
+          envelope_format: 'bridge-sealed-v1',
+        });
+        await auditRepo.write({
+          action: 'email.inbound_attachment_infected',
+          targetType: 'attachment',
+          targetId: msg!.id,
+          details: { signature: scan.signature, name: safeName },
+        });
+        continue;
+      }
+      if (scan.status === 'error') {
+        // clamd unreachable. The staff and portal upload paths fail-closed with
+        // a 503 so the client retries; we can't ask the email sender to retry,
+        // so the choice is accept-as-pending or drop. We drop: the email was
+        // delivered to the bridge but the attachment didn't clear AV, so we
+        // audit-record a "stripped" row (no storage blob, no filename stored
+        // even encrypted) and move on. Staff sees the stripped audit row if
+        // they need to ask the sender to re-send. This matches the "fail-
+        // closed during clamd outage" stance used elsewhere.
+        logger.warn('email.attachment_scan_unavailable', {
+          messageId: msg!.id,
+          name: safeName,
+          scan: scan.message,
+        });
+        await auditRepo.write({
+          action: 'email.inbound_attachment_scan_unavailable',
+          targetType: 'message',
+          targetId: msg!.id,
+          details: { name: safeName, size: rawBytes.byteLength, scan: scan.message },
+        });
+        continue;
+      }
+      // Clean. Seal the body and filename, store the blob, and insert the row.
+      // Keep this order (seal → store → insert) so a DB failure between store
+      // and insert leaves an orphan blob that can be swept by a future ops
+      // job but doesn't end up with a half-authored row.
+      //
+      // Use sealBytesForBridge for the body — passing raw bytes avoids the
+      // base64 round-trip that sealPlaintextForBridge does (which inflates
+      // each attachment by ~33% before encryption).
+      const sealedBody = await sealBytesForBridge(rawBytes);
+      const sealedFilename = await sealPlaintextForBridge(safeName);
+      const storageKey = await store.put(
+        `bridge-${msg!.id}-${Date.now()}-${randomBytes(8).toString('hex')}.bin`,
+        sealedBody,
+      );
+      try {
+        await attachmentsRepo.insert({
+          message_id: msg!.id,
+          filename_ciphertext: sealedFilename.toString('base64'),
+          mime_type: safeMime,
+          size_bytes: rawBytes.byteLength,
+          storage_path: storageKey,
+          wrapped_file_key: Buffer.alloc(0),
+          scan_status: 'clean',
+          envelope_format: 'bridge-sealed-v1',
+        });
+      } catch (insertErr) {
+        // Row insert failed after blob was stored. Best-effort cleanup of the
+        // orphan blob so a future retention sweep doesn't have to.
+        try {
+          await store.delete(storageKey);
+        } catch {
+          /* already logged below via insertErr; swallow */
+        }
+        throw insertErr;
+      }
+    } catch (err) {
+      logger.warn('email.inbound_attachment_failed', {
+        name: a.name,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   await db('conversations').where({ id: link.conversation_id }).update({ updated_at: db.fn.now() });
   await auditRepo.write({
@@ -243,7 +454,7 @@ async function processInbound(email: InboundEmail): Promise<void> {
     action: 'email.inbound_stored',
     targetType: 'message',
     targetId: msg!.id,
-    details: { bridgePending: true },
+    details: { bridgePending: true, attachmentCount: email.attachments.length },
   });
   await publish({
     type: 'message:new',
@@ -257,7 +468,8 @@ async function processInbound(email: InboundEmail): Promise<void> {
 }
 
 async function sendBounce(to: string, reason: string): Promise<void> {
-  await getEmailProvider().send({
+  const provider = await getEmailProvider();
+  await provider.send({
     to,
     subject: 'Your message could not be delivered',
     text: `We could not deliver your message: ${reason}\n\nIf this is a mistake, contact your firm.`,
@@ -315,9 +527,10 @@ export async function maybeSendOutboundEmail(
     logger.warn('email.content_mode_downgrade', { reason: 'no-server-decrypt' });
   }
   const subject = args.urgent ? `Urgent: new secure message` : `New secure message from your firm`;
-  const signedUnsub = signUnsubscribeToken(identity.id);
+  const signedUnsub = await signUnsubscribeToken(identity.id);
   const unsubscribeLink = `${env.apiUrl}/bridges/unsubscribe?t=${encodeURIComponent(signedUnsub)}`;
-  const result = await getEmailProvider().send({
+  const emailProvider = await getEmailProvider();
+  const result = await emailProvider.send({
     to: identity.email,
     subject,
     text:
@@ -343,32 +556,58 @@ export async function maybeSendOutboundEmail(
 }
 
 // -------- Unsubscribe endpoint --------
+//
+// Shared handler for GET (user click from email) and POST (RFC 8058 one-click
+// from mailbox providers like Gmail / Apple Mail). Both paths take the token
+// out of `?t=`; POST additionally accepts `List-Unsubscribe=One-Click` in the
+// form body per the spec. We accept the link regardless of body for resilience
+// — the provider's intent is unambiguous once the signed token validates.
+async function handleUnsubscribe(t: string, req: Request, res: Response): Promise<void> {
+  if (!t) {
+    res.status(400).send('Missing token');
+    return;
+  }
+  const identityId = await verifyUnsubscribeToken(t);
+  if (!identityId) {
+    res.status(400).send('Invalid unsubscribe link.');
+    return;
+  }
+  const id = await db('external_identities').where({ id: identityId }).first();
+  if (id) {
+    const prefs = { ...(id.preferences ?? {}), emailUnsubscribed: true };
+    await db('external_identities').where({ id: identityId }).update({ preferences: prefs });
+    await auditRepo.write({
+      actorExternalIdentityId: identityId,
+      action: 'email.unsubscribed',
+      targetType: 'external_identity',
+      targetId: identityId,
+      details: { method: req.method },
+    });
+  }
+  res.send('You have been unsubscribed. Messages sent inside the portal remain available.');
+}
 
 emailBridgeRouter.get(
   '/unsubscribe',
   asyncHandler(async (req, res) => {
-    const t = String(req.query.t ?? '');
-    if (!t) {
-      res.status(400).send('Missing token');
-      return;
-    }
-    const identityId = verifyUnsubscribeToken(t);
-    if (!identityId) {
-      res.status(400).send('Invalid unsubscribe link.');
-      return;
-    }
-    const id = await db('external_identities').where({ id: identityId }).first();
-    if (id) {
-      const prefs = { ...(id.preferences ?? {}), emailUnsubscribed: true };
-      await db('external_identities').where({ id: identityId }).update({ preferences: prefs });
-      await auditRepo.write({
-        actorExternalIdentityId: identityId,
-        action: 'email.unsubscribed',
-        targetType: 'external_identity',
-        targetId: identityId,
-      });
-    }
-    res.send('You have been unsubscribed. Messages sent inside the portal remain available.');
+    await handleUnsubscribe(String(req.query.t ?? ''), req, res);
+  }),
+);
+
+// RFC 8058 one-click: mailbox providers POST here with the signed token in the
+// query string (same URL they found in the List-Unsubscribe header). Some
+// clients additionally send `List-Unsubscribe=One-Click` in an
+// x-www-form-urlencoded body; we ignore the body shape and rely on the signed
+// token since that's the verified credential.
+emailBridgeRouter.post(
+  '/unsubscribe',
+  asyncHandler(async (req, res) => {
+    const fromQuery = String(req.query.t ?? '');
+    const bodyT =
+      req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? String((req.body as { t?: unknown }).t ?? '')
+        : '';
+    await handleUnsubscribe(fromQuery || bodyT, req, res);
   }),
 );
 
@@ -377,7 +616,7 @@ emailBridgeRouter.get(
 emailBridgeRouter.post(
   '/email-events',
   asyncHandler(async (req, res) => {
-    if (!verifyPostmarkSecret(req)) {
+    if (!(await verifyPostmarkSecret(req))) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }

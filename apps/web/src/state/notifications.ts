@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { api } from '../api.js';
 import { useRealtime } from './realtime.js';
 
 /** Tab title / favicon / unread-count coordinator. */
@@ -93,7 +92,7 @@ export function useRealtimeNotifications(): void {
   }, [socket, notify, qc]);
 }
 
-/** Desktop heartbeat — Tauri shell calls this on launch and every 24h so admin sees freshness. */
+/** Heartbeat ping so Admin → Device health shows this device as fresh. */
 export async function postDeviceHeartbeat(
   deviceId: string,
   platform: 'tauri-win' | 'tauri-mac' | 'tauri-linux' | 'pwa' | 'web',
@@ -109,7 +108,52 @@ export async function postDeviceHeartbeat(
   } catch {
     /* offline heartbeat is fine; the next one covers it */
   }
-  void api;
+}
+
+/**
+ * PWA heartbeat hook. Fires once on mount and every 30 minutes while the tab is
+ * focused, so staff devices don't slide into "stale" (>7d) under Admin → Device
+ * health. Tauri shells should call `postDeviceHeartbeat` directly via their own
+ * schedule instead of mounting this.
+ *
+ * Throttled so rapid alt-tab cycles don't flood /admin/devices/heartbeat — the
+ * server truth doesn't change on a minute-to-minute basis for the "stale device"
+ * flag, which only turns yellow after a week of silence.
+ */
+const CLIENT_VERSION = '0.1.0';
+const MIN_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+export function useDeviceHeartbeat(
+  deviceId: string | null | undefined,
+  platform: 'pwa' | 'web' = 'pwa',
+): void {
+  useEffect(() => {
+    if (!deviceId) return;
+    let cancelled = false;
+    let lastBeatAt = 0;
+    const beat = (): void => {
+      const now = Date.now();
+      if (now - lastBeatAt < MIN_HEARTBEAT_INTERVAL_MS) return;
+      lastBeatAt = now;
+      void postDeviceHeartbeat(deviceId, platform, CLIENT_VERSION);
+    };
+    beat();
+    const interval = window.setInterval(
+      () => {
+        if (cancelled) return;
+        if (document.visibilityState === 'visible') beat();
+      },
+      30 * 60 * 1000,
+    );
+    function onVisible(): void {
+      if (document.visibilityState === 'visible') beat();
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [deviceId, platform]);
 }
 
 /** Register service worker + push subscription. */

@@ -1,12 +1,17 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import multer from 'multer';
 import { z } from 'zod';
+import { db } from '../db/knex.js';
 import { env } from '../env.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.js';
+import { logger } from '../logger.js';
 import { auditRepo } from '../repositories/audit.js';
+import { attachmentStorage } from '../services/attachmentStorage.js';
+import { clamdEnabled, scanBuffer } from '../services/clamav.js';
 import {
   conversationKeysRepo,
   conversationMembersRepo,
@@ -44,7 +49,19 @@ const messageCreateSchema = z.object({
   ciphertext: z.string().max(20 * 1024 * 1024), // base64 of a ~15MB binary is ~20MB
   contentKeyVersion: z.number().int().positive(),
   urgent: z.boolean().default(false),
-  scheduledFor: z.string().datetime().nullable().optional(),
+  // scheduledFor must be null (send now) or strictly in the future. Without
+  // this, a client can POST with scheduledFor=1970-01-01 and the row is
+  // published immediately with a stale timestamp — the UI then renders it in
+  // the wrong order and the sender's last_read advance points at a backdated
+  // id. 1s of slop absorbs normal clock drift.
+  scheduledFor: z
+    .string()
+    .datetime()
+    .refine((s) => new Date(s).getTime() > Date.now() + 1000, {
+      message: 'scheduledFor must be in the future',
+    })
+    .nullable()
+    .optional(),
   ciphertextMeta: boundedMeta,
 });
 
@@ -86,9 +103,11 @@ conversationsRouter.get(
         memberExternalIdentityIds: r.member_external_identity_ids ?? [],
         lastMessageId: r.last_message_id,
         lastMessageAt: r.last_message_at,
-        lastMessagePreviewCiphertext: r.last_ciphertext
-          ? r.last_ciphertext.toString('base64')
-          : null,
+        // Preview ciphertext is no longer shipped in the list payload (see
+        // repositories/conversations.ts listForUser comment). The field is
+        // retained for API shape stability; clients fetch the actual message
+        // from /messages when the conversation opens.
+        lastMessagePreviewCiphertext: null,
         lastMessageContentKeyVersion: r.last_content_key_version,
       })),
     });
@@ -103,6 +122,17 @@ conversationsRouter.post(
     if (!parsed.success) {
       res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
       return;
+    }
+    // External conversations include clients (external_identities). When the firm
+    // has disabled client messaging, block creation of new ones. Existing external
+    // conversations remain readable — this toggle gates *new* contact, not the
+    // audit trail.
+    if (parsed.data.type === 'external') {
+      const settings = await db('firm_settings').where({ id: 1 }).first();
+      if (!(settings?.client_messaging_enabled ?? true)) {
+        res.status(403).json({ error: 'client_messaging_disabled' });
+        return;
+      }
     }
     const id = await createConversation({
       actorUserId: req.session.userId!,
@@ -128,7 +158,15 @@ conversationsRouter.get(
       return;
     }
     const members = await conversationMembersRepo.currentForConversation(conv.id);
-    const keys = await conversationKeysRepo.latest(conv.id);
+    // Return every rotation version's wrapped_keys. A message carries a
+    // `contentKeyVersion` and must be decrypted with the wrapped_keys from
+    // THAT version — not the latest. Returning all versions also means we
+    // don't need a separate history endpoint. `wrappedKeys` (latest) is
+    // kept for backward compatibility with existing client code paths.
+    const allKeys = await conversationKeysRepo.allVersions(conv.id);
+    const latest = allKeys.length > 0 ? allKeys[allKeys.length - 1]! : null;
+    const byVersion: Record<string, Record<string, string>> = {};
+    for (const k of allKeys) byVersion[String(k.rotation_version)] = k.wrapped_keys ?? {};
     res.json({
       id: conv.id,
       type: conv.type,
@@ -139,8 +177,9 @@ conversationsRouter.get(
         externalIdentityId: m.external_identity_id,
         joinedAt: m.joined_at,
       })),
-      rotationVersion: keys?.rotation_version ?? null,
-      wrappedKeys: keys?.wrapped_keys ?? null,
+      rotationVersion: latest?.rotation_version ?? null,
+      wrappedKeys: latest?.wrapped_keys ?? null,
+      wrappedKeysByVersion: byVersion,
     });
   }),
 );
@@ -181,6 +220,7 @@ conversationsRouter.get(
             storagePath: a.storage_path,
             wrappedFileKey: a.wrapped_file_key.toString('base64'),
             scanStatus: a.scan_status,
+            envelopeFormat: a.envelope_format,
             createdAt: a.created_at,
           })),
         };
@@ -200,19 +240,76 @@ conversationsRouter.post(
       res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
       return;
     }
-    const row = await messagesRepo.insert({
-      conversationId: req.params.id!,
-      senderId: req.session.userId!,
-      ciphertext: Buffer.from(parsed.data.ciphertext, 'base64'),
-      contentKeyVersion: parsed.data.contentKeyVersion,
-      urgent: parsed.data.urgent,
-      scheduledFor: parsed.data.scheduledFor ?? null,
-      source: 'app',
-      ciphertextMeta: parsed.data.ciphertextMeta,
+    const idempotencyKey = readIdempotencyKey(req);
+    if (idempotencyKey) {
+      // Race-free claim of the idempotency slot. If another concurrent request already
+      // owns this (key, user_id), our INSERT returns zero rows and we serve the cached
+      // response. Otherwise we own the slot and proceed to create the message + fill in
+      // `response` afterwards. No two concurrent senders can both create messages.
+      const claimed = await db('idempotency_keys')
+        .insert({
+          key: idempotencyKey,
+          user_id: req.session.userId!,
+          response: db.raw(`'{}'::jsonb`),
+        })
+        .onConflict(['key', 'user_id'])
+        .ignore()
+        .returning('key');
+      if (claimed.length === 0) {
+        // Someone else is handling (or has handled) this key. Wait briefly for them
+        // to fill in `response`, then return it. This is bounded and deterministic.
+        for (let i = 0; i < 20; i++) {
+          const prior = await db('idempotency_keys')
+            .where({ key: idempotencyKey, user_id: req.session.userId! })
+            .first();
+          if (prior && prior.response && Object.keys(prior.response).length > 0) {
+            res.status(200).set('X-Idempotent-Replay', 'true').json(prior.response);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        res.status(409).json({ error: 'idempotency_in_flight' });
+        return;
+      }
+    }
+    // Atomic insert + touchUpdated + setLastRead. Pre-fix these ran outside a
+    // transaction, and a mid-sequence failure (DB hiccup between the insert
+    // and the setLastRead) left the sidebar badge inflated for the sender
+    // and/or the idempotency response empty for 5 minutes. The realtime
+    // `publish` stays outside the transaction — fanout effects should only
+    // fire after commit, never for a transaction that rolls back.
+    const isVisibleNow =
+      !parsed.data.scheduledFor || new Date(parsed.data.scheduledFor).getTime() <= Date.now();
+    const row = await db.transaction(async (trx) => {
+      const inserted = await messagesRepo.insert(
+        {
+          conversationId: req.params.id!,
+          senderId: req.session.userId!,
+          ciphertext: Buffer.from(parsed.data.ciphertext, 'base64'),
+          contentKeyVersion: parsed.data.contentKeyVersion,
+          urgent: parsed.data.urgent,
+          scheduledFor: parsed.data.scheduledFor ?? null,
+          source: 'app',
+          ciphertextMeta: parsed.data.ciphertextMeta,
+        },
+        trx,
+      );
+      await conversationsRepo.touchUpdated(req.params.id!, trx);
+      if (isVisibleNow) {
+        // Sender has obviously read what they just wrote — keep their unread
+        // badge from inflating. Scheduled sends stay "unread" until their
+        // delivery time so the sender's own card surfaces the "outbox"
+        // state in the sidebar.
+        await conversationMembersRepo.setLastRead(
+          req.params.id!,
+          req.session.userId!,
+          inserted.id,
+          trx,
+        );
+      }
+      return inserted;
     });
-    await conversationsRepo.touchUpdated(req.params.id!);
-    // Only notify if the message is visible now (not scheduled in future).
-    if (!row.scheduled_for || new Date(row.scheduled_for).getTime() <= Date.now()) {
+    if (isVisibleNow) {
       await publish({
         type: 'message:new',
         conversationId: row.conversation_id,
@@ -223,11 +320,28 @@ conversationsRouter.post(
         createdAt: row.created_at,
       });
     }
-    res
-      .status(201)
-      .json({ id: row.id, createdAt: row.created_at, scheduledFor: row.scheduled_for });
+    const response = {
+      id: row.id,
+      createdAt: row.created_at,
+      scheduledFor: row.scheduled_for,
+    };
+    if (idempotencyKey) {
+      await db('idempotency_keys')
+        .where({ key: idempotencyKey, user_id: req.session.userId! })
+        .update({ message_id: row.id, response: response as unknown as Record<string, unknown> });
+    }
+    res.status(201).json(response);
   }),
 );
+
+function readIdempotencyKey(req: Request): string | null {
+  const raw = req.header('x-idempotency-key') ?? req.header('idempotency-key');
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  // Reasonable format: 1-128 chars from a URL-safe set. Clients pick a UUID.
+  if (!/^[A-Za-z0-9._~-]{1,128}$/.test(trimmed)) return null;
+  return trimmed;
+}
 
 conversationsRouter.patch(
   '/messages/:messageId',
@@ -248,8 +362,17 @@ conversationsRouter.patch(
     }
     // Ex-members shouldn't be able to edit prior messages.
     await assertCallerIsMember(msg.conversation_id, req.session.userId!);
-    const EDIT_WINDOW_MS = 15 * 60 * 1000;
-    if (Date.now() - new Date(msg.created_at).getTime() > EDIT_WINDOW_MS) {
+    // Firm-configurable window (minutes). 0 = edits disabled. See the
+    // matching migration for the compliance rationale. Looked up per-request
+    // so an admin flipping the setting doesn't require a restart.
+    const firmSettings = await db('firm_settings').where({ id: 1 }).first();
+    const editWindowMinutes = Number(firmSettings?.message_edit_window_minutes ?? 15);
+    if (editWindowMinutes <= 0) {
+      res.status(400).json({ error: 'edits_disabled' });
+      return;
+    }
+    const editWindowMs = editWindowMinutes * 60 * 1000;
+    if (Date.now() - new Date(msg.created_at).getTime() > editWindowMs) {
       res.status(400).json({ error: 'edit_window_expired' });
       return;
     }
@@ -263,6 +386,10 @@ conversationsRouter.patch(
       Buffer.from(parsed.data.ciphertext, 'base64'),
       parsed.data.ciphertextMeta,
     );
+    // Bump conversation.updated_at so the sidebar reflects the edit's ordering.
+    // Without this, a late edit to an older message wouldn't nudge the
+    // conversation's place in the list-for-user query.
+    await conversationsRepo.touchUpdated(msg.conversation_id);
     await publish({ type: 'message:edit', conversationId: msg.conversation_id, messageId: msg.id });
     res.json({ id: updated!.id, editedAt: updated!.edited_at });
   }),
@@ -281,7 +408,15 @@ conversationsRouter.delete(
       res.status(403).json({ error: 'forbidden' });
       return;
     }
+    // Ex-members shouldn't be able to delete prior messages. The PATCH handler
+    // above already enforces this; DELETE must match or a removed member keeps
+    // a last-stroke channel to nuke their own history + fire message:delete
+    // broadcasts to the current members.
+    await assertCallerIsMember(msg.conversation_id, req.session.userId!);
     await messagesRepo.softDelete(msg.id);
+    // Same ordering rationale as edit: the sidebar should reflect that
+    // something changed in this conversation.
+    await conversationsRepo.touchUpdated(msg.conversation_id);
     await auditRepo.write({
       actorUserId: req.session.userId!,
       action: 'message.deleted',
@@ -353,10 +488,81 @@ conversationsRouter.delete(
   }),
 );
 
+// CRYPTO: Additive rewrap of the conversation key. When a member enrolls a new
+// device (or a new client portal session appears), any already-enrolled device
+// that can still unwrap the conversation key seals a copy to the new recipient
+// and PATCHes the entry in. The server accepts ONLY new keys — existing entries
+// are never overwritten, so a racing or malicious member can't lock others out.
+// Caller must already be a conversation member. No audit row per call (these
+// fire frequently during normal multi-device use); we rely on /devices + auth
+// audit to establish who rewrapped for whom.
+const wrappedKeyEntryPattern = new RegExp(
+  [
+    '^[0-9a-f-]{36}:[A-Za-z0-9_-]{1,128}$', // userId:deviceId (staff device)
+    '^client:[0-9a-f-]{36}:session:[0-9a-f-]{36}$', // external portal session
+    '^client:[0-9a-f-]{36}:invite$', // pre-activation invite key
+  ].join('|'),
+);
+const wrappedKeysPatchSchema = z.object({
+  added: z
+    .record(z.string(), z.string().min(1).max(2048))
+    .refine(
+      (m) => Object.keys(m).every((k) => wrappedKeyEntryPattern.test(k)),
+      'added_key_format_invalid',
+    )
+    .refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 64, 'added_count_out_of_range'),
+});
+
+conversationsRouter.patch(
+  '/:id/wrapped-keys',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await assertCallerIsMember(req.params.id!, req.session.userId!);
+    const parsed = wrappedKeysPatchSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+    const latest = await conversationKeysRepo.latest(req.params.id!);
+    if (!latest) {
+      res.status(404).json({ error: 'no_conversation_key' });
+      return;
+    }
+    const { added } = await conversationKeysRepo.mergeWrappedAdditive(
+      latest.id,
+      parsed.data.added,
+    );
+    if (added.length > 0) {
+      // Wake every member's tabs — especially the device that just enrolled,
+      // which may not have joined the conv: room yet.
+      const members = await conversationMembersRepo.currentForConversation(req.params.id!);
+      const memberUserIds = members
+        .map((m) => m.user_id)
+        .filter((v): v is string => typeof v === 'string');
+      if (memberUserIds.length > 0) {
+        await publish({
+          type: 'conversation:wrapped-keys-updated',
+          conversationId: req.params.id!,
+          memberUserIds,
+          addedRecipientIds: added,
+        });
+      }
+      const { logger } = await import('../logger.js');
+      logger.info('wrapped_keys_merged', {
+        conversationId: req.params.id,
+        actorUserId: req.session.userId,
+        added,
+      });
+    }
+    res.json({ ok: true, added, rotationVersion: latest.rotation_version });
+  }),
+);
+
 // ---------- Attachments ----------
 
 const ATTACHMENT_DIR = path.resolve(env.attachmentLocalDir, 'attachments');
 await fs.mkdir(ATTACHMENT_DIR, { recursive: true });
+const attStore = attachmentStorage();
 
 const STAFF_ALLOW_MIMES = new Set([
   'application/pdf',
@@ -419,25 +625,96 @@ conversationsRouter.post(
       res.status(400).json({ error: 'message_mismatch' });
       return;
     }
-    // Store ciphertext on disk. File is already encrypted client-side.
-    const storagePath = path.join(ATTACHMENT_DIR, `${msg.id}-${Date.now()}.bin`);
-    await fs.writeFile(storagePath, req.file.buffer);
+    // Store ciphertext via the configured driver. File is already encrypted client-side,
+    // so neither the driver nor the storage backend ever sees plaintext.
+    // Storage key carries msg.id for audit-log traceability, a timestamp for
+    // human-readable sorting on the filesystem, AND a random suffix so two
+    // attachments to the same message in the same millisecond can't collide
+    // (a bare `${msg.id}-${Date.now()}` would overwrite). The random tail
+    // also prevents an attacker who knows msg.id from guessing the storage
+    // path — useful defense-in-depth if the attachments volume is ever
+    // exposed by a misconfigured bucket policy or static-file route.
+    const storageKey = await attStore.put(
+      `${msg.id}-${Date.now()}-${randomBytes(8).toString('hex')}.bin`,
+      req.file.buffer,
+    );
     const row = await attachmentsRepo.insert({
       message_id: msg.id,
       filename_ciphertext: meta.data.filenameCiphertext,
       mime_type: meta.data.mimeType,
       size_bytes: req.file.buffer.length,
-      storage_path: path.relative(ATTACHMENT_DIR, storagePath),
+      storage_path: storageKey,
       wrapped_file_key: Buffer.from(meta.data.wrappedFileKey, 'base64'),
       scan_status: 'pending',
+      envelope_format: 'conversation-key-v1',
     });
-    // AV scan lands in Phase 21 via ClamAV sandbox; for Phase 4 we mark clean automatically.
+    // AV scan: if CLAMD_HOST is configured we stream the ciphertext through INSTREAM
+    // (clamd pattern-matches on entropy-free payload, so this catches known-bad bytes
+    // even without decryption). Absent clamd, scanBuffer() returns 'clean' immediately
+    // (documented in `docs/ops/CLAMAV.md` for appliance operators). Fail-closed when
+    // clamd is configured but unreachable: drop the row and return 503 so the client
+    // retries instead of us marking unscanned bytes as clean.
+    const scan = await scanBuffer(req.file.buffer);
+    if (scan.status === 'infected') {
+      await attachmentsRepo.updateScanStatus(row.id, 'infected');
+      try {
+        await attStore.delete(storageKey);
+      } catch {
+        /* best-effort */
+      }
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'attachment.infected_rejected',
+        targetType: 'attachment',
+        targetId: row.id,
+        details: { signature: scan.signature },
+      });
+      res.status(422).json({ error: 'infected', signature: scan.signature });
+      return;
+    }
+    if (scan.status === 'error') {
+      // Cleanup is cross-system (object store + DB), so partial failure is
+      // possible. Track each side separately and audit-log any orphan so ops
+      // can reconcile via scripts in docs/ops/. We always return 503 — the
+      // client retries with a fresh row regardless of the cleanup outcome.
+      let blobDeleted = false;
+      let rowDeleted = false;
+      try {
+        await attStore.delete(storageKey);
+        blobDeleted = true;
+      } catch (err) {
+        logger.warn('attachment.scan_error_orphan_blob', {
+          storageKey,
+          attachmentId: row.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        await attachmentsRepo.delete(row.id);
+        rowDeleted = true;
+      } catch (err) {
+        logger.warn('attachment.scan_error_orphan_row', {
+          attachmentId: row.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'attachment.scan_unavailable',
+        targetType: 'attachment',
+        targetId: row.id,
+        details: { message: scan.message, blobDeleted, rowDeleted, storageKey },
+      });
+      res.status(503).json({ error: 'scan_unavailable' });
+      return;
+    }
     await attachmentsRepo.updateScanStatus(row.id, 'clean');
     res.status(201).json({
       id: row.id,
       storagePath: row.storage_path,
       sizeBytes: req.file.buffer.length,
       scanStatus: 'clean',
+      clamdEnabled: clamdEnabled(),
     });
   }),
 );
@@ -461,15 +738,8 @@ conversationsRouter.get(
       res.status(403).json({ error: 'not_scanned', scanStatus: att.scan_status });
       return;
     }
-    // Path traversal defense: normalize the stored path and refuse to escape ATTACHMENT_DIR.
-    const safeStored = path.basename(att.storage_path);
-    const fullPath = path.join(ATTACHMENT_DIR, safeStored);
-    if (!fullPath.startsWith(ATTACHMENT_DIR + path.sep) && fullPath !== ATTACHMENT_DIR) {
-      res.status(404).json({ error: 'not_found' });
-      return;
-    }
     try {
-      const buf = await fs.readFile(fullPath);
+      const buf = await attStore.get(att.storage_path);
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Disposition', `attachment; filename="${att.id}.bin"`);
       res.setHeader('X-Content-Type-Options', 'nosniff');

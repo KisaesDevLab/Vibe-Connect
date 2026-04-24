@@ -6,15 +6,165 @@
   color-scheme: light;
 }
 
+html.dark {
+  color-scheme: dark;
+}
+
 html,
 body,
 #root {
   height: 100%;
 }
 
-/* Consistent focus ring across the app — brand blue, never pink. */
+/* Consistent focus ring across the app — brand blue, never pink. Use a ring
+ * shadow in addition to the outline so the focused element reads clearly on
+ * both light and dark surfaces; the translucent halo survives where a flat
+ * 2px outline would be hard to see against a dark input bg. Brand.500 is
+ * #2f6cff (see apps/web/tailwind.config.cjs); the 40 alpha-hex = ~25%. */
 :focus-visible {
   outline: 2px solid theme('colors.brand.500');
   outline-offset: 2px;
   border-radius: 4px;
+  box-shadow: 0 0 0 4px rgba(47, 108, 255, 0.25);
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none
+           dark:bg-slate-800 dark:border-slate-700 dark:text-slate-100 dark:placeholder-slate-400;
+  }
+  .btn-primary {
+    @apply rounded-md bg-brand-600 text-white text-sm font-medium px-3 py-1.5 hover:bg-brand-700 disabled:opacity-60;
+  }
+  .btn-ghost {
+    @apply rounded-md border border-slate-300 text-slate-700 text-sm font-medium px-3 py-1.5 hover:bg-slate-50 disabled:opacity-60
+           dark:border-slate-600 dark:text-slate-200 dark:hover:bg-slate-800;
+  }
+}
+
+/*
+ * Dark-mode surface retheming. Rather than sprinkling dark: variants across every
+ * class in every file, we override a handful of default light surfaces under html.dark.
+ * Components that need specialized dark treatment can still use explicit dark: classes
+ * and they'll win on specificity.
+ */
+html.dark body {
+  background-color: theme('colors.slate.900');
+  color: theme('colors.slate.100');
+}
+html.dark .bg-white {
+  background-color: theme('colors.slate.800');
+}
+html.dark .bg-slate-50 {
+  background-color: theme('colors.slate.900');
+}
+html.dark .bg-slate-100 {
+  background-color: theme('colors.slate.800');
+}
+html.dark .text-slate-900 {
+  color: theme('colors.slate.100');
+}
+html.dark .text-slate-800 {
+  color: theme('colors.slate.100');
+}
+html.dark .text-slate-700 {
+  color: theme('colors.slate.200');
+}
+html.dark .text-slate-600 {
+  color: theme('colors.slate.300');
+}
+html.dark .text-slate-500 {
+  color: theme('colors.slate.400');
+}
+html.dark .border-slate-200,
+html.dark .border-slate-100,
+html.dark .border-slate-300 {
+  border-color: theme('colors.slate.700');
+}
+html.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+html.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: theme('colors.slate.700');
+}
+html.dark .hover\:bg-slate-50:hover,
+html.dark .hover\:bg-slate-100:hover {
+  background-color: theme('colors.slate.700');
+}
+html.dark .focus\:bg-slate-100:focus {
+  background-color: theme('colors.slate.700');
+}
+html.dark .bg-amber-50 {
+  background-color: rgba(146, 64, 14, 0.25);
+}
+html.dark .border-amber-200,
+html.dark .border-amber-300 {
+  border-color: theme('colors.amber.700');
+}
+html.dark .text-amber-800,
+html.dark .text-amber-900 {
+  color: theme('colors.amber.200');
+}
+html.dark .bg-rose-50 {
+  background-color: rgba(159, 18, 57, 0.25);
+}
+html.dark .border-rose-200 {
+  border-color: theme('colors.rose.700');
+}
+html.dark .text-rose-700,
+html.dark .text-rose-800 {
+  color: theme('colors.rose.300');
+}
+html.dark .bg-emerald-100 {
+  background-color: theme('colors.emerald.900');
+}
+html.dark .text-emerald-700 {
+  color: theme('colors.emerald.300');
+}
+html.dark input[type='checkbox'],
+html.dark input[type='radio'] {
+  accent-color: theme('colors.brand.500');
+}
+
+/* Additional surface mappings. */
+html.dark .bg-slate-200 {
+  background-color: theme('colors.slate.700');
+}
+html.dark .bg-slate-300 {
+  background-color: theme('colors.slate.600');
+}
+html.dark .bg-brand-50 {
+  background-color: rgba(30, 78, 216, 0.25);
+}
+html.dark .bg-emerald-50 {
+  background-color: rgba(6, 78, 59, 0.35);
+}
+html.dark .bg-rose-100 {
+  background-color: rgba(159, 18, 57, 0.35);
+}
+html.dark .bg-amber-100 {
+  background-color: rgba(146, 64, 14, 0.35);
+}
+html.dark .text-emerald-800,
+html.dark .text-emerald-900 {
+  color: theme('colors.emerald.200');
+}
+html.dark .text-rose-600,
+html.dark .text-rose-500 {
+  color: theme('colors.rose.400');
+}
+html.dark .text-brand-700,
+html.dark .text-brand-800 {
+  color: theme('colors.brand.300');
+}
+html.dark .border-emerald-200,
+html.dark .border-emerald-300 {
+  border-color: theme('colors.emerald.700');
+}
+html.dark .ring-white {
+  --tw-ring-color: theme('colors.slate.800');
+}
+/* Avatar circle backgrounds default to slate-200; dark = slate-700 (handled above). */
+html.dark code,
+html.dark pre {
+  background-color: theme('colors.slate.900');
+  color: theme('colors.slate.100');
 }

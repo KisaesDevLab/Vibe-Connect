@@ -16,7 +16,13 @@ interface AuthCtx {
   loading: boolean;
   error: Error | null;
   login: (username: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
+  /**
+   * Sign out. When `forgetDevice` is true, also wipes the locally-stored device
+   * record (IndexedDB) — appropriate for shared or public workstations. The
+   * wrapped private key would otherwise survive sign-out; Argon2id slows offline
+   * attacks but does not eliminate them for weak passphrases.
+   */
+  logout: (opts?: { forgetDevice?: boolean }) => Promise<void>;
   refresh: () => Promise<void>;
 }
 
@@ -52,12 +58,18 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     setUser(user);
   }, []);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (opts?: { forgetDevice?: boolean }) => {
+    const userId = user?.id;
     await api.logout();
     setUser(null);
-    // Wipe readable client-side caches. Loaded async to avoid circular deps.
+    // Always wipe readable client-side caches. Loaded async to avoid circular deps.
     void import('./search.js').then((m) => m.SearchIndex.wipeAll().catch(() => null));
-  }, []);
+    if (opts?.forgetDevice && userId) {
+      void import('./crypto.js').then((m) =>
+        m.wipeDeviceSecrets(userId).catch(() => null),
+      );
+    }
+  }, [user]);
 
   const value = useMemo(
     () => ({ user, loading, error, login, logout, refresh }),

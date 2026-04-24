@@ -102,6 +102,17 @@ export const messagesRepo = {
   },
 };
 
+/**
+ * Envelope format discriminator. Two shapes share the attachments columns:
+ *   - 'conversation-key-v1': filename_ciphertext = secretbox(convKey, name);
+ *     wrapped_file_key = secretbox(convKey, fileKey). Readable by any
+ *     conversation member with the current conversation key.
+ *   - 'bridge-sealed-v1': filename_ciphertext = firm-key-sealed envelope
+ *     (bridge inbound); wrapped_file_key empty. Requires a staff-side
+ *     rewrap pass before any client can open it.
+ */
+export type AttachmentEnvelopeFormat = 'conversation-key-v1' | 'bridge-sealed-v1';
+
 export interface AttachmentRow {
   id: string;
   message_id: string;
@@ -111,6 +122,7 @@ export interface AttachmentRow {
   storage_path: string;
   wrapped_file_key: Buffer;
   scan_status: 'pending' | 'clean' | 'infected';
+  envelope_format: AttachmentEnvelopeFormat;
   created_at: string;
 }
 
@@ -127,6 +139,9 @@ export const attachmentsRepo = {
   },
   updateScanStatus(id: string, status: 'clean' | 'infected') {
     return db<AttachmentRow>('attachments').where({ id }).update({ scan_status: status });
+  },
+  delete(id: string) {
+    return db<AttachmentRow>('attachments').where({ id }).delete();
   },
 };
 

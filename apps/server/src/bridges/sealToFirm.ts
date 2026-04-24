@@ -18,11 +18,21 @@ export interface BridgeSealedEnvelope {
 }
 
 export async function sealPlaintextForBridge(plaintextUtf8: string): Promise<Buffer> {
+  return sealBytesForBridge(Buffer.from(plaintextUtf8, 'utf8'));
+}
+
+/**
+ * Binary-input form for callers that already have raw bytes. Avoids the
+ * base64 → UTF-8 round-trip used by the email-bridge attachment path, which
+ * was inflating each attachment by ~33% before encryption.
+ */
+export async function sealBytesForBridge(plaintext: Buffer | Uint8Array): Promise<Buffer> {
   const firm = await db('firm_keys').whereNull('retired_at').first();
   if (!firm?.public_key) {
     throw new Error('bridge_seal_requires_firm_key_installed');
   }
-  const { key, envelope } = await encryptWithFreshKey(Buffer.from(plaintextUtf8, 'utf8'));
+  const bytes = plaintext instanceof Buffer ? plaintext : Buffer.from(plaintext);
+  const { key, envelope } = await encryptWithFreshKey(bytes);
   const wrapped = await wrapToFirm(key, firm.public_key);
   const sealed: BridgeSealedEnvelope = { v: 'bridge-sealed-v1', k: wrapped, e: envelope };
   return Buffer.from(JSON.stringify(sealed), 'utf8');

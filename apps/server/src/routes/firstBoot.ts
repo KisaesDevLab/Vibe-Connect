@@ -4,6 +4,7 @@
  */
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
@@ -11,6 +12,16 @@ import { auditRepo } from '../repositories/audit.js';
 import { installFirmKey } from '@vibe-connect/crypto';
 
 export const firstBootRouter = Router();
+
+// Rate-limit install attempts. Once the firm is installed this endpoint 400s fast,
+// but before install there's no auth. Five per minute per IP deters a scripted
+// opportunist who stumbles on a freshly-exposed appliance mid-install.
+const installLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 firstBootRouter.get(
   '/status',
@@ -34,6 +45,7 @@ const setupSchema = z.object({
 
 firstBootRouter.post(
   '/install',
+  installLimiter,
   asyncHandler(async (req, res) => {
     const existing = await db('firm_keys').whereNull('retired_at').first();
     if (existing) {

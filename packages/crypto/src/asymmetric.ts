@@ -15,6 +15,27 @@ export async function generateKeypair(): Promise<KeyPair> {
 }
 
 /**
+ * Derive a deterministic X25519 keypair from a 32-byte seed. Used by the client-
+ * invite flow: the invite URL carries a random 32-byte token; the client browser
+ * derives the same keypair the admin's server derived at invite time, so messages
+ * wrapped at invite time can be opened on the client's first portal visit.
+ *
+ * CRYPTO: the seed is secret material. Must come from a CSPRNG (admin side) or the
+ * unmodified invite URL (client side). Anyone who learns the seed can decrypt all
+ * conversations wrapped to the derived public key.
+ */
+export async function keypairFromSeed(seed: Uint8Array): Promise<KeyPair> {
+  const s = await ready();
+  if (seed.byteLength !== s.crypto_box_SEEDBYTES) {
+    throw new Error(
+      `invalid seed length: got ${seed.byteLength}, expected ${s.crypto_box_SEEDBYTES}`,
+    );
+  }
+  const kp = s.crypto_box_seed_keypair(seed);
+  return { publicKey: toBase64(kp.publicKey), secretKey: toBase64(kp.privateKey) };
+}
+
+/**
  * Wrap a symmetric key for a single recipient (X25519 public key). Anonymous sealed box:
  * recipient needs only their private key to decrypt; sender is not authenticated (we don't
  * need authentication here — the conversation key is just being delivered).

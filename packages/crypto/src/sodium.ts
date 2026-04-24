@@ -3,9 +3,10 @@
 // We use the `-sumo` variant because we need Argon2id (crypto_pwhash) which is not in core.
 //
 // libsodium-wrappers-sumo ships a broken ESM entry point that imports a sibling `.mjs` that
-// isn't in the published tarball. To stay portable across Node (tsx, jest, vitest) and browser
-// bundlers (Vite), we load the CJS build in Node via createRequire, and let Vite resolve the
-// package normally in the browser.
+// isn't in the published tarball. To stay portable across Node (tsx, jest, vitest, compiled
+// ESM) and browser bundlers (Vite), we load the CJS build in Node via `createRequire` —
+// `require` is not a global in Node ESM and `eval('require')` fails at runtime there — and
+// let Vite resolve the package normally in the browser.
 import type sodiumType from 'libsodium-wrappers-sumo';
 
 let sodiumImpl: typeof sodiumType | undefined;
@@ -20,13 +21,16 @@ async function load(): Promise<typeof sodiumType> {
     process.versions.node !== null &&
     process.versions.node !== undefined;
   if (isNode) {
-    // `eval('require')` returns Node's CommonJS `require`, which picks the "require"
-    // subpath of libsodium-wrappers-sumo's exports — the CJS build — avoiding the broken
-    // ESM entry. Bundlers do not statically analyse `eval`, so this stays a no-op in the
-    // browser bundle.
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
-    const nodeRequire = eval('require') as (id: string) => unknown;
-    sodiumImpl = nodeRequire('libsodium-wrappers-sumo') as typeof sodiumType;
+    // Use Node's `module.createRequire` so this works in ESM (compiled output) AND in
+    // CJS-transpiled test runners like tsx/jest. Dynamic import via string avoids Vite's
+    // static analysis from pulling `node:module` into the browser bundle — the `isNode`
+    // gate already prevents execution in the browser path.
+    const moduleId = 'node:module';
+    const nodeModule = (await import(/* @vite-ignore */ moduleId)) as {
+      createRequire: (filename: string | URL) => (id: string) => unknown;
+    };
+    const req = nodeModule.createRequire(import.meta.url);
+    sodiumImpl = req('libsodium-wrappers-sumo') as typeof sodiumType;
   } else {
     const mod = (await import('libsodium-wrappers-sumo')) as unknown as {
       default: typeof sodiumType;

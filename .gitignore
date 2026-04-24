@@ -23,6 +23,7 @@ yarn-error.log*
 .idea/
 *.swp
 *.swo
+.claude/
 
 # OS
 .DS_Store
@@ -40,6 +41,16 @@ apps/desktop/src-tauri/gen/
 infra/docker/data/
 infra/docker/mail/
 infra/docker/uploads/
+
+# TLS material — never commit private keys. Certs stay out too so the pair
+# moves together; ACME issuance lives in apps/server/src/services/tlsAcme.ts.
+infra/docker/tls/*.key
+infra/docker/tls/*.crt
+infra/docker/tls/*.pem
+
+# Built frontend bundles served by nginx. These drift silently from source
+# if committed; the Docker build stage produces them into apps/*/dist/.
+infra/docker/static/
 
 # Dev mock-provider outboxes
 .outbox/

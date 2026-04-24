@@ -6,6 +6,22 @@
 
 `docs/SECURITY_REVIEW.md` must end with "Sign-off: GO" before proceeding.
 
+## Observability notes for upgrades from pre-1.0 builds
+
+- **`X-Request-Id` format changed.** Client-supplied values (from nginx /
+  Tauri / upstream proxies) now appear in logs and the `audit_log.details.reqId`
+  column with an `ext:` prefix — e.g., a client-set `abc-123` is logged as
+  `ext:abc-123`. Server-minted IDs are still bare 8-hex. If your log
+  aggregator joins server logs with an upstream nginx log by request id,
+  strip the prefix at the aggregator side, or update the query to match
+  both forms. See `apps/server/src/middleware/requestLog.ts` for the rule.
+- **Attachment `envelope_format` column added.** New column distinguishes
+  `conversation-key-v1` (staff / portal uploads) from `bridge-sealed-v1`
+  (inbound email attachments). API responses now include
+  `attachment.envelopeFormat`. Existing tooling that reads attachments
+  doesn't need to change — the default backfills every existing row to
+  `conversation-key-v1`, matching the pre-column behaviour.
+
 ## Week 0 — Install & Kurt solo
 
 - [ ] Appliance provisioned on Kisaes NucBox M6.

@@ -1,0 +1,51 @@
+node_modules
+**/node_modules
+**/dist
+**/.turbo
+**/.next
+**/.cache
+**/coverage
+**/.vite
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+.git
+.gitignore
+.gitattributes
+.github
+
+# Never ship environment files into an image.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+.outbox
+**/.outbox
+
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+.claude
+
+# TLS material: keys are gitignored but listed here as defense-in-depth so a
+# working tree that happens to have a leftover PEM can't accidentally bake
+# the key into a published image. ACME issuance (services/tlsAcme) writes
+# certs into a bind-mounted volume at runtime.
+infra/docker/tls
+infra/docker/uploads
+infra/docker/data
+infra/docker/mail
+# Frontend bundles are produced inside the nginx build stage now; never
+# ship any prior local output.
+infra/docker/static

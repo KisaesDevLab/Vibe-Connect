@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { env } from '../../env.js';
 import { logger } from '../../logger.js';
+import { getOrEnvFallback } from '../../services/providerSecrets.js';
 
 export interface SmsSendRequest {
   to: string;
@@ -31,7 +32,13 @@ export interface SmsProvider {
   name: 'mock' | 'textlink' | 'twilio';
   sendMessage(req: SmsSendRequest): Promise<{ id: string; status: 'sent' | 'queued' }>;
   parseInbound(req: { body: unknown; headers: Record<string, string> }): SmsInbound | null;
-  verifyWebhookSignature(ctx: WebhookVerifyContext): boolean;
+  /**
+   * Verify an inbound webhook signature. Async so the implementation can fetch
+   * the current webhook secret from firm_provider_credentials — rotating the
+   * secret in the Admin UI takes effect on the next inbound without a restart.
+   * A sync impl would be forced to read a stale env-only value.
+   */
+  verifyWebhookSignature(ctx: WebhookVerifyContext): Promise<boolean> | boolean;
 }
 
 class MockSms implements SmsProvider {
@@ -67,11 +74,12 @@ class MockSms implements SmsProvider {
 class TextLinkSms implements SmsProvider {
   name = 'textlink' as const;
   async sendMessage(req: SmsSendRequest) {
-    if (!env.textlinkApiKey) throw new Error('TEXTLINK_API_KEY not configured');
+    const apiKey = await getOrEnvFallback('sms.textlink.api_key', env.textlinkApiKey);
+    if (!apiKey) throw new Error('textlink_api_key_not_configured');
     const res = await fetch('https://textlinksms.com/api/send-sms', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey: env.textlinkApiKey, to: req.to, message: req.body }),
+      body: JSON.stringify({ apiKey, to: req.to, message: req.body }),
     });
     if (!res.ok) throw new Error(`textlink_${res.status}`);
     const data = (await res.json()) as { messageId?: string };
@@ -93,14 +101,18 @@ class TextLinkSms implements SmsProvider {
       receivedAt: new Date().toISOString(),
     };
   }
-  verifyWebhookSignature(ctx: WebhookVerifyContext): boolean {
-    if (!env.textlinkWebhookSecret) {
-      // Fail closed when a non-mock provider is active with no secret configured.
+  async verifyWebhookSignature(ctx: WebhookVerifyContext): Promise<boolean> {
+    // Pull the currently-configured webhook secret from the DB-backed
+    // registry, falling back to the env var for pre-migration installs.
+    // Rotating the secret via Admin → Providers now takes effect on the
+    // next inbound — previously it was env-only and needed a restart.
+    const secret = await getOrEnvFallback('sms.textlink.webhook_secret', env.textlinkWebhookSecret);
+    if (!secret) {
       logger.error('sms.textlink.webhook_secret_missing');
       return false;
     }
     const expected = crypto
-      .createHmac('sha256', env.textlinkWebhookSecret)
+      .createHmac('sha256', secret)
       .update(ctx.rawBody)
       .digest('hex');
     const got = ctx.headers['x-textlink-signature'] ?? ctx.headers['X-TextLink-Signature'] ?? '';
@@ -115,17 +127,22 @@ class TextLinkSms implements SmsProvider {
 class TwilioSms implements SmsProvider {
   name = 'twilio' as const;
   async sendMessage(req: SmsSendRequest) {
-    if (!env.twilioAccountSid || !env.twilioAuthToken) {
-      throw new Error('TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not configured');
+    const [accountSid, authToken, fromNumber, messagingServiceSid] = await Promise.all([
+      getOrEnvFallback('sms.twilio.account_sid', env.twilioAccountSid),
+      getOrEnvFallback('sms.twilio.auth_token', env.twilioAuthToken),
+      getOrEnvFallback('sms.twilio.from_number', env.twilioFromNumber),
+      getOrEnvFallback('sms.twilio.messaging_service_sid', env.twilioMessagingServiceSid),
+    ]);
+    if (!accountSid || !authToken) {
+      throw new Error('twilio_credentials_not_configured');
     }
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${env.twilioAccountSid}/Messages.json`;
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
     const form = new URLSearchParams();
     form.set('To', req.to);
     form.set('Body', req.body);
-    if (env.twilioMessagingServiceSid)
-      form.set('MessagingServiceSid', env.twilioMessagingServiceSid);
-    else if (env.twilioFromNumber) form.set('From', env.twilioFromNumber);
-    const auth = Buffer.from(`${env.twilioAccountSid}:${env.twilioAuthToken}`).toString('base64');
+    if (messagingServiceSid) form.set('MessagingServiceSid', messagingServiceSid);
+    else if (fromNumber) form.set('From', fromNumber);
+    const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -135,7 +152,10 @@ class TwilioSms implements SmsProvider {
       body: form.toString(),
     });
     if (!res.ok) {
-      const txt = await res.text();
+      // Twilio surfaces the account SID in error payloads. Strip any 20+ char
+      // alnum runs before bubbling so we never leak token-shaped material
+      // into upstream error logs / audit details.
+      const txt = (await res.text()).replace(/[A-Za-z0-9]{20,}/g, '[redacted]');
       throw new Error(`twilio_${res.status}: ${txt}`);
     }
     const data = (await res.json()) as { sid: string };
@@ -157,10 +177,11 @@ class TwilioSms implements SmsProvider {
       receivedAt: new Date().toISOString(),
     };
   }
-  verifyWebhookSignature(ctx: WebhookVerifyContext): boolean {
+  async verifyWebhookSignature(ctx: WebhookVerifyContext): Promise<boolean> {
     // Twilio signature: base64(HMAC-SHA1(authToken, url + sorted(k+v).join('')))
     // See: https://www.twilio.com/docs/usage/webhooks/webhooks-security
-    if (!env.twilioAuthToken) {
+    const authToken = await getOrEnvFallback('sms.twilio.auth_token', env.twilioAuthToken);
+    if (!authToken) {
       logger.error('sms.twilio.auth_token_missing');
       return false;
     }
@@ -170,7 +191,7 @@ class TwilioSms implements SmsProvider {
     let data = ctx.url;
     for (const k of sortedKeys) data += k + ctx.params[k];
     const expected = crypto
-      .createHmac('sha1', env.twilioAuthToken)
+      .createHmac('sha1', authToken)
       .update(Buffer.from(data, 'utf8'))
       .digest('base64');
     try {
@@ -181,8 +202,24 @@ class TwilioSms implements SmsProvider {
   }
 }
 
-export function getSmsProvider(): SmsProvider {
-  switch (env.smsProvider) {
+/** Admin-selected SMS provider from firm_settings.sms_provider, env fallback.
+ *  See bridges/email for the matching pattern + rationale. */
+async function resolveSmsProviderKind(): Promise<'mock' | 'textlink' | 'twilio'> {
+  try {
+    const { db } = await import('../../db/knex.js');
+    const row = await db('firm_settings').where({ id: 1 }).first('sms_provider');
+    const picked = row?.sms_provider as string | undefined;
+    if (picked === 'textlink' || picked === 'twilio' || picked === 'mock') return picked;
+  } catch (err) {
+    logger.warn('sms_provider_db_lookup_failed', {
+      msg: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return env.smsProvider;
+}
+
+export async function getSmsProvider(): Promise<SmsProvider> {
+  switch (await resolveSmsProviderKind()) {
     case 'textlink':
       return new TextLinkSms();
     case 'twilio':

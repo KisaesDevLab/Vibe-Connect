@@ -2,10 +2,10 @@
  * Scheduled-message ticker.
  *
  * CRYPTO-NOTE: the message row already holds ciphertext + scheduled_for; the `messagesRepo.list`
- * query filters out unscheduled rows by `scheduled_for <= NOW()`. All the ticker has to do is
- * emit a real-time event once a row "becomes visible" so connected clients re-fetch.
- * The socket.io wiring lands in Phase 5 — for Phase 4 we expose an interface so callers can
- * plug in a broadcaster.
+ * query filters out unscheduled rows by `scheduled_for <= NOW()`. The ticker only emits a
+ * real-time event once a row "becomes visible" so connected clients re-fetch.
+ * The broadcaster is injected by `apps/server/src/index.ts` via `setScheduledBroadcaster`
+ * and currently forwards to the Postgres LISTEN/NOTIFY fanout.
  */
 import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
@@ -40,17 +40,69 @@ export function stopScheduledMessageTicker(): void {
   }
 }
 
-/** One tick: surface messages whose scheduled_for just elapsed and haven't been surfaced yet. */
+/**
+ * One tick: surface messages whose scheduled_for has elapsed and which haven't
+ * been broadcast yet.
+ *
+ * Atomicity: a single UPDATE ... RETURNING claims every still-pending row by
+ * stamping `scheduled_broadcast_at` and returns the rows that the current tick
+ * should fan out. Two ticks running in the same instant (or two server
+ * instances) both call this UPDATE; the row-level lock means each row is
+ * returned to exactly one caller. The previous time-window approach
+ * re-broadcast every row up to ~four times per scheduled message because the
+ * select had no exclusion of already-announced rows.
+ *
+ * Broadcast failure handling: if `broadcaster.broadcastMessageVisible` throws
+ * (e.g., pg_notify socket drop during reconnect, broadcaster not wired yet),
+ * we UN-stamp `scheduled_broadcast_at` on the affected rows so the next tick
+ * retries. Without this, a transient failure at broadcast time would stamp
+ * the row as "already broadcast" and staff clients would silently miss the
+ * message:new event until they navigate to refresh.
+ *
+ * No backstop window is needed any more — once `scheduled_broadcast_at IS NULL`
+ * is the only filter, even a multi-hour ticker outage just produces a single
+ * delayed-but-correct broadcast on recovery instead of silently missing rows.
+ */
 export async function runOnce(): Promise<number> {
-  const rows = await db('messages')
-    .where('scheduled_for', '>', db.raw(`NOW() - INTERVAL '1 minute'`))
-    .andWhere('scheduled_for', '<=', db.fn.now())
-    .whereNull('deleted_at')
-    .select('id', 'conversation_id');
+  const result = await db.raw<{
+    rows: { id: string; conversation_id: string }[];
+  }>(
+    `UPDATE messages
+     SET scheduled_broadcast_at = NOW()
+     WHERE scheduled_for IS NOT NULL
+       AND scheduled_for <= NOW()
+       AND scheduled_broadcast_at IS NULL
+       AND deleted_at IS NULL
+     RETURNING id, conversation_id`,
+  );
+  const rows = result.rows ?? [];
+  const failed: string[] = [];
   for (const r of rows) {
-    if (broadcaster) {
+    if (!broadcaster) continue;
+    try {
       await broadcaster.broadcastMessageVisible({ id: r.id, conversationId: r.conversation_id });
+    } catch (err) {
+      failed.push(r.id);
+      logger.error('scheduled_broadcast_failed', {
+        messageId: r.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
   }
-  return rows.length;
+  if (failed.length > 0) {
+    // Roll back the stamp so the next tick retries these rows. Best-effort —
+    // if this UPDATE also fails the rows stay stamped and we rely on the
+    // log above for visibility.
+    try {
+      await db('messages')
+        .whereIn('id', failed)
+        .update({ scheduled_broadcast_at: null });
+    } catch (err) {
+      logger.error('scheduled_broadcast_rollback_failed', {
+        count: failed.length,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return rows.length - failed.length;
 }

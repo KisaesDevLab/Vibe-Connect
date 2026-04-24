@@ -29,6 +29,9 @@ export const usersRepo = {
   findByUsername(username: string) {
     return db<UserRow>('users').where({ username }).first();
   },
+  findByEmail(email: string) {
+    return db<UserRow>('users').whereRaw('LOWER(email) = ?', [email.toLowerCase()]).first();
+  },
   findById(id: string) {
     return db<UserRow>('users').where({ id }).first();
   },
@@ -89,4 +92,47 @@ export const usersRepo = {
       client_version: meta.clientVersion,
     });
   },
+  findDeviceKey(userId: string, deviceId: string) {
+    return db<DeviceKeyRow>('user_keys')
+      .where({ user_id: userId, device_id: deviceId })
+      .first();
+  },
+  listDeviceKeys(userId: string) {
+    return db<DeviceKeyRow>('user_keys').where({ user_id: userId }).orderBy('created_at', 'desc');
+  },
+  listActiveDeviceKeysForUsers(userIds: string[]) {
+    return db<DeviceKeyRow>('user_keys')
+      .whereIn('user_id', userIds)
+      .whereNull('revoked_at')
+      .orderBy('user_id')
+      .orderBy('created_at');
+  },
+  async insertDeviceKey(
+    row: Omit<DeviceKeyRow, 'id' | 'key_version' | 'last_heartbeat_at' | 'created_at' | 'revoked_at'>,
+  ): Promise<DeviceKeyRow> {
+    const [created] = await db<DeviceKeyRow>('user_keys').insert(row as never).returning('*');
+    return created!;
+  },
+  async updateDeviceKey(
+    id: string,
+    patch: Partial<Omit<DeviceKeyRow, 'id' | 'user_id' | 'device_id' | 'created_at'>>,
+  ) {
+    await db('user_keys').where({ id }).update(patch as never);
+  },
 };
+
+export interface DeviceKeyRow {
+  id: string;
+  user_id: string;
+  device_id: string;
+  public_key: string;
+  encrypted_private_key: string;
+  kdf_params: { opsLimit: number; memLimit: number; algorithm: 'argon2id13' };
+  kdf_salt: string;
+  key_version: number;
+  client_platform: ClientPlatform;
+  client_version: string | null;
+  last_heartbeat_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}

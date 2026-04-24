@@ -12,6 +12,7 @@ export interface Attachment {
   sizeBytes: number;
   storagePath: string;
   wrappedFileKey: string;
+  scanStatus: 'pending' | 'clean' | 'infected';
   createdAt: string;
 }
 
@@ -28,6 +29,7 @@ export interface EncryptedMessage {
   createdAt: string;
   editedAt: string | null;
   deletedAt: string | null;
+  ciphertextMeta: Record<string, unknown> | null;
   attachments: Attachment[];
 }
 
@@ -51,6 +53,11 @@ export interface DecryptedAttachmentMeta {
   filename: string;
   mimeType: string;
   sizeBytes: number;
+  /** Base64 secretbox wrap of the file key under the conversation key. */
+  wrappedFileKey: string;
+  /** Envelope version / content-key-version the file was encrypted with. */
+  contentKeyVersion: number;
+  scanStatus: 'pending' | 'clean' | 'infected';
 }
 
 export interface ReadReceipt {

@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { PasswordStrengthBar } from '../components/PasswordStrengthBar.js';
 import { useAuth } from '../state/auth.js';
 import { useCrypto } from '../state/crypto.js';
 
@@ -48,15 +49,19 @@ export function EnrollmentPage(): JSX.Element {
             : `This is the first time you've signed in on this device. Enter your password again so we can set up end-to-end encrypted messaging.`}
         </p>
         <label className="block">
-          <span className="text-sm text-slate-700">Password</span>
+          <span className="text-sm text-slate-700">
+            {hasDevice ? 'Device passphrase' : 'New device passphrase (min 12 chars)'}
+          </span>
           <input
             type="password"
-            autoComplete="current-password"
+            autoComplete={hasDevice ? 'current-password' : 'new-password'}
             required
+            minLength={hasDevice ? undefined : 12}
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 focus:border-brand-500 focus:outline-none"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
+          {!hasDevice && <PasswordStrengthBar password={password} />}
         </label>
         {error && <div className="text-sm text-rose-600">{error}</div>}
         <button

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vibe Connect — Invite a client modal</title>
+  <style>
+    :root {
+      --color-background-primary: #ffffff;
+      --color-background-secondary: #f7f6f2;
+      --color-background-tertiary: #f1efe8;
+      --color-text-primary: #1a1a18;
+      --color-text-secondary: #5f5e5a;
+      --color-text-tertiary: #888780;
+      --color-border-tertiary: rgba(0, 0, 0, 0.1);
+      --color-border-secondary: rgba(0, 0, 0, 0.18);
+      --border-radius-md: 8px;
+      --border-radius-lg: 12px;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 40px 20px;
+      background: #e8e8e5;
+      font-family: var(--font-sans);
+      color: var(--color-text-primary);
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+
+    .page-title {
+      max-width: 560px;
+      margin: 0 auto 20px;
+      font-size: 13px;
+      color: var(--color-text-secondary);
+      text-align: center;
+    }
+
+    .page-title strong {
+      color: var(--color-text-primary);
+      font-weight: 500;
+    }
+
+    .modal-backdrop {
+      min-height: 640px;
+      background: rgba(20, 24, 32, 0.38);
+      border-radius: var(--border-radius-lg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px 10px;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+
+    .modal {
+      width: 100%;
+      max-width: 560px;
+      background: var(--color-background-primary);
+      border: 0.5px solid var(--color-border-tertiary);
+      border-radius: var(--border-radius-lg);
+      overflow: hidden;
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      border-bottom: 0.5px solid var(--color-border-tertiary);
+    }
+
+    .modal-header-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--color-text-primary);
+    }
+
+    .modal-header-subtitle {
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      margin-top: 2px;
+    }
+
+    .close-btn {
+      background: transparent;
+      border: none;
+      padding: 4px;
+      cursor: pointer;
+      color: var(--color-text-tertiary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-body {
+      padding: 16px 18px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-text-tertiary);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+
+    .field-grid-two {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .field-label {
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .required {
+      color: #A32D2D;
+    }
+
+    .input-display {
+      padding: 8px 10px;
+      font-size: 12px;
+      border: 0.5px solid var(--color-border-secondary);
+      border-radius: var(--border-radius-md);
+      background: white;
+      color: var(--color-text-primary);
+    }
+
+    .helper-text {
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+
+    .channel-row {
+      border: 0.5px solid var(--color-border-tertiary);
+      border-radius: var(--border-radius-md);
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      background: var(--color-background-primary);
+    }
+
+    .channel-row:last-of-type {
+      margin-bottom: 14px;
+    }
+
+    .channel-row-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .channel-checkbox {
+      width: 16px;
+      height: 16px;
+      border: 1.5px solid #185FA5;
+      border-radius: 4px;
+      background: #185FA5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .channel-label-group {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex: 1;
+    }
+
+    .channel-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--color-text-primary);
+    }
+
+    .tcpa-pill {
+      font-size: 10px;
+      color: #27500A;
+      background: #EAF3DE;
+      padding: 2px 7px;
+      border-radius: var(--border-radius-md);
+      font-weight: 500;
+    }
+
+    .segment-control {
+      display: flex;
+      gap: 4px;
+      padding: 3px;
+      background: var(--color-background-secondary);
+      border-radius: var(--border-radius-md);
+      margin-bottom: 12px;
+    }
+
+    .segment {
+      flex: 1;
+      padding: 6px 10px;
+      font-size: 12px;
+      text-align: center;
+      color: var(--color-text-secondary);
+    }
+
+    .segment-active {
+      background: var(--color-background-primary);
+      border-radius: 6px;
+      font-weight: 500;
+      color: var(--color-text-primary);
+      border: 0.5px solid var(--color-border-tertiary);
+    }
+
+    .verification-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .pin-cells {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+      max-width: 130px;
+    }
+
+    .pin-cell {
+      aspect-ratio: 1;
+      border: 0.5px solid var(--color-border-secondary);
+      border-radius: var(--border-radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 500;
+      background: white;
+      color: var(--color-text-primary);
+    }
+
+    .dropdown-display {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      font-size: 12px;
+      border: 0.5px solid var(--color-border-secondary);
+      border-radius: var(--border-radius-md);
+      background: white;
+      color: var(--color-text-primary);
+    }
+
+    .preview-pane {
+      padding: 11px 13px;
+      background: var(--color-background-secondary);
+      border-radius: var(--border-radius-md);
+    }
+
+    .preview-title {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--color-text-primary);
+      margin-bottom: 6px;
+    }
+
+    .preview-body {
+      font-size: 11px;
+      color: var(--color-text-secondary);
+      line-height: 1.55;
+    }
+
+    .preview-body strong {
+      color: var(--color-text-primary);
+      font-weight: 500;
+    }
+
+    .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 18px;
+      border-top: 0.5px solid var(--color-border-tertiary);
+      background: var(--color-background-primary);
+    }
+
+    .e2ee-indicator {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--color-text-tertiary);
+    }
+
+    .footer-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--color-text-secondary);
+      border: 0.5px solid var(--color-border-secondary);
+      padding: 8px 16px;
+      border-radius: var(--border-radius-md);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background: #185FA5;
+      color: white;
+      border: none;
+      padding: 8px 18px;
+      border-radius: var(--border-radius-md);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .icon-muted {
+      color: var(--color-text-secondary);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page-title">
+    Vibe Connect — Staff-side <strong>"Invite a client"</strong> modal
+  </div>
+
+  <div class="modal-backdrop">
+    <div class="modal">
+
+      <div class="modal-header">
+        <div>
+          <div class="modal-header-title">Invite a client</div>
+          <div class="modal-header-subtitle">Start a new secure conversation</div>
+        </div>
+        <button class="close-btn" aria-label="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="modal-body">
+
+        <div class="section-label">Client details</div>
+
+        <div style="margin-bottom: 14px;">
+          <label class="field-label">Display name <span class="required">*</span></label>
+          <div class="input-display">Rob Mathes</div>
+        </div>
+
+        <div class="section-label">How to reach them</div>
+
+        <div class="helper-text">Pick one or both. The client can use either to log in to their portal.</div>
+
+        <div class="channel-row">
+          <div class="channel-row-header">
+            <div class="channel-checkbox">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <div class="channel-label-group">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="icon-muted">
+                <rect x="3" y="5" width="18" height="14" rx="2"/>
+                <polyline points="3 7 12 13 21 7"/>
+              </svg>
+              <span class="channel-label">Email</span>
+            </div>
+          </div>
+          <div class="input-display">rob@cfhcpa.com</div>
+        </div>
+
+        <div class="channel-row">
+          <div class="channel-row-header">
+            <div class="channel-checkbox">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <div class="channel-label-group">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="icon-muted">
+                <rect x="7" y="2" width="10" height="20" rx="2"/>
+                <line x1="12" y1="18" x2="12" y2="18"/>
+              </svg>
+              <span class="channel-label">Mobile phone (text message)</span>
+            </div>
+            <div class="tcpa-pill">TCPA consent on first reply</div>
+          </div>
+          <div class="input-display">(573) 756-8961</div>
+        </div>
+
+        <div class="section-label">Identity verification</div>
+
+        <div class="segment-control">
+          <div class="segment segment-active">SSN</div>
+          <div class="segment">EIN</div>
+          <div class="segment">Disabled</div>
+        </div>
+
+        <div class="verification-row">
+          <div>
+            <label class="field-label">Last 4 digits of SSN <span class="required">*</span></label>
+            <div class="pin-cells">
+              <div class="pin-cell">7</div>
+              <div class="pin-cell">2</div>
+              <div class="pin-cell">3</div>
+              <div class="pin-cell">4</div>
+            </div>
+          </div>
+          <div>
+            <label class="field-label">Re-verify every</label>
+            <div class="dropdown-display">
+              <span>24 hours</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="icon-muted">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-pane">
+          <div class="preview-title">What Rob will see</div>
+          <div class="preview-body">
+            An email <strong>and</strong> text message will arrive with a link to the Krueger CPA portal. Rob signs in with a code sent to either one, verifies the last 4 of their SSN once per 24 hours, and can then read and reply securely.
+          </div>
+        </div>
+
+      </div>
+
+      <div class="modal-footer">
+        <div class="e2ee-indicator">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <rect x="3" y="11" width="18" height="11" rx="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+          End-to-end encrypted
+        </div>
+        <div class="footer-buttons">
+          <button class="btn-secondary">Cancel</button>
+          <button class="btn-primary">Send invite</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>

@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import { db } from '../db/knex.js';
 import { env } from '../env.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -11,6 +12,11 @@ import { publicUser } from '../util/presenters.js';
 
 const loginSchema = z.object({
   username: z.string().min(1).max(64),
+  // Intentionally min(1), not min(12). Create-password and change-password
+  // enforce the 12-char policy going forward, but login must accept shorter
+  // passwords for accounts created before that policy was introduced.
+  // Validation is bcrypt-bounded anyway (invalid passwords never authenticate);
+  // this is a schema-compatibility note, not a security gap.
   password: z.string().min(1).max(512),
 });
 
@@ -27,6 +33,17 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'rate_limited' },
+});
+
+// Self-service password change: 5 per hour per user. Generous for normal use but
+// caps any brute-force on `currentPassword` (bcrypt compare is slow but not free).
+const changePasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate_limited' },
+  keyGenerator: (req) => req.session.userId ?? req.ip ?? 'anon',
 });
 
 authRouter.post(
@@ -65,7 +82,7 @@ authRouter.post(
     await new Promise<void>((resolve, reject) =>
       req.session.save((err) => (err ? reject(err) : resolve())),
     );
-    await usersRepo.update(user.id, { last_seen_at: new Date().toISOString() as never });
+    await usersRepo.update(user.id, { last_seen_at: new Date().toISOString() });
     await auditRepo.write({
       actorUserId: user.id,
       action: 'auth.login',
@@ -112,6 +129,7 @@ authRouter.get(
 authRouter.post(
   '/change-password',
   requireAuth,
+  changePasswordLimiter,
   asyncHandler(async (req, res) => {
     const parsed = changePasswordSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -130,13 +148,21 @@ authRouter.post(
     }
     const newHash = await bcrypt.hash(parsed.data.newPassword, 12);
     await usersRepo.setPassword(user.id, newHash);
+    // Invalidate every OTHER session for this user. We keep the current session alive
+    // so the password change doesn't bounce the caller to the login page mid-workflow;
+    // the authoritative session row is `req.sessionID`.
+    const deleted = await db('session')
+      .whereRaw(`sess->>'userId' = ?`, [user.id])
+      .andWhereNot('sid', req.sessionID)
+      .del();
     await auditRepo.write({
       actorUserId: user.id,
       action: 'auth.password_changed',
       targetType: 'user',
       targetId: user.id,
+      details: { otherSessionsTerminated: deleted },
       ipAddress: req.ip ?? null,
     });
-    res.json({ ok: true });
+    res.json({ ok: true, otherSessionsTerminated: deleted });
   }),
 );

@@ -13,7 +13,15 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
 - All conversations are end-to-end encrypted with a firm-recoverable key model.
 - Server stores **ciphertext only**. Plaintext touches server memory only during the
   email-in / SMS-in bridge handoff (microseconds) and in admin-initiated audit decryption.
-- Symmetric: XChaCha20-Poly1305. Asymmetric: X25519. Password KDF: Argon2id.
+- Symmetric: XChaCha20-Poly1305. Asymmetric: X25519.
+- KDFs by purpose:
+  - Device passphrase → device private key wrap: Argon2id (memory-hard;
+    passphrase entropy is bounded by what a human types).
+  - Recovery phrase → firm-key wrap: BLAKE2b-256(entropy, salt). The 24-word
+    BIP-39 phrase already carries 256 bits of real entropy, so memory hardness
+    adds no attacker cost; the phrase itself IS the security boundary.
+  - SESSION_SECRET → server-side KEKs (sealed provider creds, avatar
+    ciphertext, ACME account key, unsubscribe tokens): HKDF-SHA256.
 - Primitives live in `packages/crypto`. **Do not inline nacl/crypto calls elsewhere.**
 - Conversation key is wrapped per device (staff) or per session (clients) in
   `conversation_keys.wrapped_keys` JSONB. Membership change → rewrap (simplest) or

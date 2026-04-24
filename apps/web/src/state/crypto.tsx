@@ -15,8 +15,17 @@ import {
   type ReactNode,
 } from 'react';
 import type { DecryptedMessage, EncryptedMessage } from '@vibe-connect/shared-types';
-import * as crypto from '@vibe-connect/crypto';
+// Types only — value access is dynamically imported below so libsodium (~986 KB)
+// doesn't ship in the first-paint bundle of /login or /setup.
+import type * as CryptoModule from '@vibe-connect/crypto';
+import { api } from '../api.js';
 import { useAuth } from './auth.js';
+
+let cryptoPromise: Promise<typeof CryptoModule> | null = null;
+function loadCrypto(): Promise<typeof CryptoModule> {
+  if (!cryptoPromise) cryptoPromise = import('@vibe-connect/crypto');
+  return cryptoPromise;
+}
 
 interface DeviceRecord {
   deviceId: string;
@@ -63,6 +72,46 @@ async function idbSet<T>(key: string, value: T): Promise<void> {
   });
 }
 
+async function idbDel(key: string): Promise<void> {
+  const db = await openIdb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Irreversibly removes the caller's locally-stored device record. The wrapped
+ * private key cannot be reconstructed from the server, so after this the device
+ * must re-enroll (new device_id + keypair) to read future messages.
+ */
+export async function wipeDeviceSecrets(userId: string): Promise<void> {
+  await idbDel(`device:${userId}`);
+  try {
+    window.sessionStorage.removeItem(sessionKeyName(userId));
+  } catch {
+    /* sessionStorage may be blocked in exotic contexts */
+  }
+}
+
+/**
+ * Key name under which we cache the *unwrapped* device secret key in sessionStorage.
+ * sessionStorage is scoped to the browser tab — survives refresh, wiped on tab close
+ * and explicitly by logout/lock/revoke. This is the narrow compromise that lets the
+ * user refresh without re-typing the device passphrase while keeping the unwrapped
+ * key out of any long-lived storage (no localStorage, no IDB for the plaintext).
+ *
+ * CRYPTO: the UNWRAPPED secret is the bytes an attacker needs to read conversations.
+ * It lives in (a) the React ref during normal use and (b) sessionStorage to survive
+ * refresh. CSP restricts script-src to 'self' + 'wasm-unsafe-eval' so XSS has no
+ * surface. Admin idle-lock fires immediately clear both copies.
+ */
+function sessionKeyName(userId: string): string {
+  return `vibe:device-key:${userId}`;
+}
+
 interface CryptoCtx {
   ready: boolean;
   hasDevice: boolean;
@@ -70,11 +119,18 @@ interface CryptoCtx {
   enroll: (password: string) => Promise<void>;
   /** Unlock an existing device with the user's password. Stores the secret key in memory. */
   unlock: (password: string) => Promise<boolean>;
-  /** Decrypt an encrypted message using this device's wrapped conversation key. */
+  /**
+   * Decrypt an encrypted message using this device's wrapped conversation key.
+   * `wrappedKeysByVersion` maps rotation_version → wrappedKeys map. The fall-
+   * back `wrappedKeys` (latest) is still accepted for backward compatibility
+   * with callers that haven't been updated; new code should always pass
+   * `wrappedKeysByVersion` so messages from prior rotations still decrypt.
+   */
   decrypt: (
     message: EncryptedMessage,
     wrappedKeys: Record<string, string> | null,
     recipientId: string | null,
+    wrappedKeysByVersion?: Record<string, Record<string, string>> | null,
   ) => Promise<DecryptedMessage>;
   /** Encrypt + upload a plaintext body using the current conversation key (caller supplies). */
   encryptForConversation: (
@@ -88,7 +144,32 @@ interface CryptoCtx {
   ) => Promise<{ key: Uint8Array; wrappedKeys: Record<string, string>; rotationVersion: number }>;
   /** The current user's device record (public half). */
   device: DeviceRecord | null;
+  /**
+   * Returns the unwrapped (in-memory) device secret key, or null if locked.
+   * Callers use this to unwrap conversation keys for per-message crypto. The value
+   * lives in a React ref and is wiped by `wipeDeviceSecrets`.
+   */
+  getSecretKey: () => string | null;
+  /**
+   * Stable identifier used to key wrapped conversation keys in `conversation_keys.wrapped_keys`.
+   * Format: `${userId}:${deviceId}`. Matches the shape Sidebar uses when wrapping.
+   */
+  recipientId: () => string | null;
+  /** True when the device is enrolled but currently locked (no secret key in memory). */
+  isLocked: boolean;
+  /** Force the device into the locked state without waiting for the idle timer. */
+  lock: () => void;
+  /** True after the IDB device-record lookup has resolved (even if empty). */
+  deviceChecked: boolean;
+  /** Active idle-lock threshold in milliseconds (0 = disabled). Exposed so the
+   *  lock overlay can render the real value instead of a hardcoded message. */
+  idleLockMs: number;
 }
+
+// Default idle-lock timeout if the firm policy hasn't been fetched yet. CPA firms
+// typically require workstation auto-lock under IRS Pub 4557; this is the app-layer
+// equivalent. Admins override via Admin → Settings (0 = never auto-lock).
+const DEFAULT_IDLE_LOCK_MS = 15 * 60 * 1000;
 
 const Ctx = createContext<CryptoCtx | null>(null);
 
@@ -96,32 +177,123 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
   const { user } = useAuth();
   const [ready, setReady] = useState(false);
   const [device, setDevice] = useState<DeviceRecord | null>(null);
+  // deviceChecked becomes true after the IDB lookup completes, regardless of whether
+  // a record was found. Lets downstream components (Protected, LockOverlay) wait for
+  // the final answer instead of reacting to the transient "null during IDB read".
+  const [deviceChecked, setDeviceChecked] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+  const [idleLockMs, setIdleLockMs] = useState<number>(DEFAULT_IDLE_LOCK_MS);
   const secretKeyRef = useRef<string | null>(null);
 
-  // One-shot libsodium load.
+  // Fetch the firm-wide security policy once the user is authenticated. 0 = disabled.
   useEffect(() => {
-    void crypto.ready().then(() => setReady(true));
-  }, []);
+    if (!user) {
+      setIdleLockMs(DEFAULT_IDLE_LOCK_MS);
+      return;
+    }
+    let cancelled = false;
+    void api.getSecurityPolicy().then((p) => {
+      if (cancelled) return;
+      const mins = Math.max(0, Math.min(1440, p.idleLockMinutes));
+      setIdleLockMs(mins === 0 ? 0 : mins * 60_000);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
-  // Load persisted device record once the user is known.
+  const lock = useCallback(() => {
+    secretKeyRef.current = null;
+    if (user) {
+      try {
+        window.sessionStorage.removeItem(sessionKeyName(user.id));
+      } catch {
+        /* best effort */
+      }
+    }
+    if (device) setIsLocked(true);
+  }, [device, user]);
+
+  // Idle-timer-based auto-lock. Reset on any user activity; fire on expiry.
+  // idleLockMs === 0 disables the timer per firm policy.
+  useEffect(() => {
+    if (!device || !secretKeyRef.current || isLocked) return;
+    if (idleLockMs <= 0) return;
+    let timer = window.setTimeout(lock, idleLockMs);
+    function onActivity(): void {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(lock, idleLockMs);
+    }
+    const events: (keyof WindowEventMap)[] = [
+      'mousedown',
+      'keydown',
+      'scroll',
+      'touchstart',
+      'focus',
+    ];
+    for (const e of events) window.addEventListener(e, onActivity, { passive: true });
+    return () => {
+      window.clearTimeout(timer);
+      for (const e of events) window.removeEventListener(e, onActivity);
+    };
+  }, [device, isLocked, lock, idleLockMs]);
+
+  // Lazy-load the crypto module + libsodium only once we actually need it.
+  // Login and install pages never reach a path that calls `loadCrypto()`, so
+  // libsodium (~986 KB) never ships in their first paint.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    void (async () => {
+      const c = await loadCrypto();
+      await c.ready();
+      if (!cancelled) setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // Load persisted device record + cached unwrapped secret key once the user is known.
   useEffect(() => {
     if (!user) {
       setDevice(null);
+      setIsLocked(false);
+      setDeviceChecked(false);
       secretKeyRef.current = null;
       return;
     }
+    setDeviceChecked(false);
     void (async () => {
       const rec = await idbGet<DeviceRecord>(`device:${user.id}`);
-      if (rec) setDevice(rec);
+      if (rec) {
+        setDevice(rec);
+        // Restore the unwrapped key from sessionStorage if present. sessionStorage
+        // is tab-scoped and wiped on tab close, so this survives refresh within the
+        // same tab without putting plaintext in any long-lived storage.
+        try {
+          const cached = window.sessionStorage.getItem(sessionKeyName(user.id));
+          if (cached) {
+            secretKeyRef.current = cached;
+            setIsLocked(false);
+          } else if (!secretKeyRef.current) {
+            setIsLocked(true);
+          }
+        } catch {
+          if (!secretKeyRef.current) setIsLocked(true);
+        }
+      }
+      setDeviceChecked(true);
     })();
   }, [user]);
 
   const enroll = useCallback(
     async (password: string) => {
       if (!user) throw new Error('not logged in');
-      const enrolled = await crypto.enrollDevice({
+      const c = await loadCrypto();
+      const enrolled = await c.enrollDevice({
         password,
-        deviceId: crypto.newDeviceId(),
+        deviceId: c.newDeviceId(),
         clientPlatform: 'pwa',
         clientVersion: '0.1.0',
       });
@@ -135,11 +307,22 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
       };
       await idbSet(`device:${user.id}`, record);
       setDevice(record);
-      const secret = await crypto.unlockDevicePrivateKey(enrolled, password);
+      const secret = await c.unlockDevicePrivateKey(enrolled, password);
       secretKeyRef.current = secret;
-      // TODO(phase3-backend-glue): POST to /users/me/devices with enrolled.publicKey +
-      // encryptedPrivateKey + kdf params. Currently no server route. Phase 11 + 13 will
-      // add it.
+      try {
+        window.sessionStorage.setItem(sessionKeyName(user.id), secret);
+      } catch {
+        /* sessionStorage may be unavailable in private browsing quota-exceeded */
+      }
+      await api.enrollDevice({
+        deviceId: enrolled.deviceId,
+        publicKey: enrolled.publicKey,
+        encryptedPrivateKey: enrolled.encryptedPrivateKey,
+        kdfSalt: enrolled.kdfSalt,
+        kdfParams: enrolled.kdfParams,
+        clientPlatform: enrolled.clientPlatform,
+        clientVersion: enrolled.clientVersion,
+      });
     },
     [user],
   );
@@ -148,7 +331,8 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
     async (password: string) => {
       if (!device) return false;
       try {
-        const secret = await crypto.unlockDevicePrivateKey(
+        const c = await loadCrypto();
+        const secret = await c.unlockDevicePrivateKey(
           {
             encryptedPrivateKey: device.encryptedPrivateKey,
             kdfSalt: device.kdfSalt,
@@ -157,45 +341,112 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
           password,
         );
         secretKeyRef.current = secret;
+        if (user) {
+          try {
+            window.sessionStorage.setItem(sessionKeyName(user.id), secret);
+          } catch {
+            /* best effort */
+          }
+        }
+        setIsLocked(false);
         return true;
       } catch {
         return false;
       }
     },
-    [device],
+    [device, user],
   );
 
   const decrypt = useCallback<CryptoCtx['decrypt']>(
-    async (message, wrappedKeys, recipientId) => {
-      if (!device || !secretKeyRef.current || !wrappedKeys || !recipientId) {
+    async (message, wrappedKeys, recipientId, wrappedKeysByVersion) => {
+      if (!device || !secretKeyRef.current || !recipientId) {
         throw new Error('device not unlocked');
       }
-      const conversationKey = await crypto.unwrapConversationKey(
-        wrappedKeys,
+      // Pick the wrapped_keys map matching this message's rotation version.
+      // Fall back to the legacy single `wrappedKeys` parameter so old call
+      // sites keep working until they're updated.
+      const versionKey = String(message.contentKeyVersion);
+      const forThisVersion =
+        wrappedKeysByVersion && wrappedKeysByVersion[versionKey]
+          ? wrappedKeysByVersion[versionKey]
+          : wrappedKeys;
+      if (!forThisVersion) {
+        throw new Error('no wrapped_keys available for this message version');
+      }
+      // Bridge-sealed messages (email-in / sms-in) are wrapped to the firm public key,
+      // not the conversation key. They stay unreadable on staff devices until an admin
+      // "rewraps" them under the conversation key (future phase). Surface them with a
+      // placeholder body + a distinct `bridge-pending` marker the UI can style.
+      const meta = message.ciphertextMeta as
+        | { bridgePending?: boolean; algorithm?: string }
+        | null
+        | undefined;
+      if (
+        message.contentKeyVersion === 0 &&
+        meta?.bridgePending &&
+        (message.source === 'email-in' || message.source === 'sms-in')
+      ) {
+        return {
+          id: message.id,
+          conversationId: message.conversationId,
+          senderId: message.senderId,
+          senderExternalIdentityId: message.senderExternalIdentityId,
+          body:
+            message.source === 'email-in'
+              ? '[bridged email — awaiting rewrap by an admin]'
+              : '[bridged SMS — awaiting rewrap by an admin]',
+          urgent: message.urgent,
+          scheduledFor: message.scheduledFor,
+          source: message.source,
+          createdAt: message.createdAt,
+          editedAt: message.editedAt,
+          deletedAt: message.deletedAt,
+          attachments: [],
+        };
+      }
+      const c = await loadCrypto();
+      const conversationKey = await c.unwrapConversationKey(
+        forThisVersion,
         recipientId,
         device.publicKey,
         secretKeyRef.current,
       );
-      const envelope = JSON.parse(atob(message.ciphertext)) as crypto.SymmetricEnvelope;
-      const plain = await crypto.decryptMessage(envelope, conversationKey);
+      const envelope = JSON.parse(atob(message.ciphertext)) as CryptoModule.SymmetricEnvelope;
+      const plain = await c.decryptMessage(envelope, conversationKey);
+      const attachments = await Promise.all(
+        message.attachments.map(async (a) => {
+          let filename = '';
+          try {
+            filename = c.utf8Decode(
+              await c.secretboxDecrypt(a.filenameCiphertext, conversationKey),
+            );
+          } catch {
+            filename = '(encrypted)';
+          }
+          return {
+            id: a.id,
+            filename,
+            mimeType: a.mimeType,
+            sizeBytes: a.sizeBytes,
+            wrappedFileKey: a.wrappedFileKey,
+            contentKeyVersion: message.contentKeyVersion,
+            scanStatus: (a.scanStatus ?? 'clean') as 'pending' | 'clean' | 'infected',
+          };
+        }),
+      );
       return {
         id: message.id,
         conversationId: message.conversationId,
         senderId: message.senderId,
         senderExternalIdentityId: message.senderExternalIdentityId,
-        body: crypto.utf8Decode(plain),
+        body: c.utf8Decode(plain),
         urgent: message.urgent,
         scheduledFor: message.scheduledFor,
         source: message.source,
         createdAt: message.createdAt,
         editedAt: message.editedAt,
         deletedAt: message.deletedAt,
-        attachments: message.attachments.map((a) => ({
-          id: a.id,
-          filename: '',
-          mimeType: a.mimeType,
-          sizeBytes: a.sizeBytes,
-        })),
+        attachments,
       };
     },
     [device],
@@ -203,8 +454,9 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
 
   const encryptForConversation = useCallback<CryptoCtx['encryptForConversation']>(
     async (plaintext, conversationKey, contentKeyVersion) => {
-      const env = await crypto.encryptMessage(
-        crypto.utf8Encode(plaintext),
+      const c = await loadCrypto();
+      const env = await c.encryptMessage(
+        c.utf8Encode(plaintext),
         conversationKey,
         contentKeyVersion,
       );
@@ -215,10 +467,17 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
 
   const buildConversationKey = useCallback<CryptoCtx['buildConversationKey']>(
     async (recipients) => {
-      const { bundle, wrappedKeys } = await crypto.createConversationKey(recipients);
+      const c = await loadCrypto();
+      const { bundle, wrappedKeys } = await c.createConversationKey(recipients);
       return { key: bundle.key, wrappedKeys, rotationVersion: bundle.rotationVersion };
     },
     [],
+  );
+
+  const getSecretKey = useCallback(() => secretKeyRef.current, []);
+  const recipientId = useCallback(
+    () => (user && device ? `${user.id}:${device.deviceId}` : null),
+    [user, device],
   );
 
   const value = useMemo<CryptoCtx>(
@@ -231,8 +490,28 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
       encryptForConversation,
       buildConversationKey,
       device,
+      getSecretKey,
+      recipientId,
+      isLocked,
+      lock,
+      deviceChecked,
+      idleLockMs,
     }),
-    [ready, device, enroll, unlock, decrypt, encryptForConversation, buildConversationKey],
+    [
+      ready,
+      device,
+      enroll,
+      unlock,
+      decrypt,
+      encryptForConversation,
+      buildConversationKey,
+      getSecretKey,
+      recipientId,
+      isLocked,
+      lock,
+      deviceChecked,
+      idleLockMs,
+    ],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

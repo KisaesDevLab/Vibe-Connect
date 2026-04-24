@@ -64,9 +64,14 @@ export const conversationsRepo = {
           AND cm.removed_at IS NULL
       ),
       last_msgs AS (
+        -- Sidebar metadata only: id + version + timestamp. The pre-fix CTE
+        -- selected the FULL ciphertext bytes (up to ~20 MB per message) so a
+        -- firm with 200 conversations was transferring 10+ MB per sidebar
+        -- refresh. Nothing in the client decrypts this preview -- the
+        -- conversation view fetches its own /messages list -- so we stop
+        -- shipping the bytes entirely.
         SELECT DISTINCT ON (m.conversation_id) m.conversation_id,
                m.id AS last_message_id,
-               m.ciphertext AS last_ciphertext,
                m.content_key_version AS last_content_key_version,
                m.created_at AS last_message_at
         FROM messages m
@@ -75,24 +80,33 @@ export const conversationsRepo = {
           AND (m.scheduled_for IS NULL OR m.scheduled_for <= NOW())
         ORDER BY m.conversation_id, m.created_at DESC
       ),
-      unread AS (
-        SELECT cm.conversation_id,
-               COUNT(m.id) FILTER (
-                 WHERE cm.last_read_message_id IS NULL
-                    OR m.created_at > COALESCE(
-                      (SELECT created_at FROM messages WHERE id = cm.last_read_message_id),
-                      '1970-01-01'
-                    )
-               ) AS unread_count
+      -- Unread count per conversation for the current user. The previous
+      -- implementation ran a correlated sub-select per joined message row
+      -- (a SELECT of messages.created_at keyed by last_read_message_id),
+      -- which was O(messages_in_conversation) for every conversation -- a
+      -- conversation with 500 messages paid 500 seeks per list refresh.
+      -- The rewrite joins the last_read message ONCE as a dedicated alias
+      -- and compares timestamps directly.
+      last_read AS (
+        SELECT cm.conversation_id, lr.created_at AS last_read_at
         FROM conversation_members cm
-        LEFT JOIN messages m ON m.conversation_id = cm.conversation_id
+        LEFT JOIN messages lr ON lr.id = cm.last_read_message_id
+        WHERE cm.user_id = ? AND cm.removed_at IS NULL
+      ),
+      unread AS (
+        SELECT lr.conversation_id,
+               COUNT(m.id) FILTER (
+                 WHERE lr.last_read_at IS NULL
+                    OR m.created_at > lr.last_read_at
+               ) AS unread_count
+        FROM last_read lr
+        LEFT JOIN messages m ON m.conversation_id = lr.conversation_id
           AND m.deleted_at IS NULL
           AND (m.scheduled_for IS NULL OR m.scheduled_for <= NOW())
-        WHERE cm.user_id = ? AND cm.removed_at IS NULL
-        GROUP BY cm.conversation_id
+        GROUP BY lr.conversation_id
       )
       SELECT c.id, c.type, c.parent_conversation_id, c.display_name, c.updated_at,
-             lm.last_message_id, lm.last_ciphertext, lm.last_content_key_version, lm.last_message_at,
+             lm.last_message_id, lm.last_content_key_version, lm.last_message_at,
              COALESCE(u.unread_count, 0) AS unread_count,
              (
                SELECT ARRAY_AGG(cm2.user_id) FILTER (WHERE cm2.user_id IS NOT NULL)
@@ -119,7 +133,6 @@ export const conversationsRepo = {
       display_name: string | null;
       updated_at: string;
       last_message_id: string | null;
-      last_ciphertext: Buffer | null;
       last_content_key_version: number | null;
       last_message_at: string | null;
       unread_count: string;
@@ -160,8 +173,13 @@ export const conversationMembersRepo = {
       .whereNull('removed_at')
       .update({ removed_at: db.fn.now() });
   },
-  async setLastRead(conversationId: string, userId: string, messageId: string) {
-    await db('conversation_members')
+  async setLastRead(
+    conversationId: string,
+    userId: string,
+    messageId: string,
+    trx?: Knex.Transaction,
+  ) {
+    await (trx ?? db)('conversation_members')
       .where({ conversation_id: conversationId, user_id: userId })
       .whereNull('removed_at')
       .update({ last_read_message_id: messageId });
@@ -174,6 +192,14 @@ export const conversationKeysRepo = {
       .where({ conversation_id: conversationId })
       .orderBy('rotation_version', 'desc')
       .first();
+  },
+  // All versions for a conversation. Needed by the decrypt path so messages
+  // encrypted under a prior rotation (contentKeyVersion < latest) can still
+  // open — the old wrapped_keys JSONB stays valid for its own version.
+  async allVersions(conversationId: string, trx?: Knex.Transaction) {
+    return (trx ?? db)<ConversationKeyRow>('conversation_keys')
+      .where({ conversation_id: conversationId })
+      .orderBy('rotation_version', 'asc');
   },
   async insert(
     conversationId: string,
@@ -192,5 +218,37 @@ export const conversationKeysRepo = {
   },
   async updateWrapped(id: string, wrappedKeys: Record<string, string>, trx?: Knex.Transaction) {
     await (trx ?? db)('conversation_keys').where({ id }).update({ wrapped_keys: wrappedKeys });
+  },
+  // CRYPTO: additive-only merge. Postgres jsonb `||` right-biases, so we pass the
+  // existing entries on the right to block accidental overwrites — the only-add
+  // invariant stays enforced even if two members race. Returns the number of
+  // wrap entries that actually landed (new keys only).
+  async mergeWrappedAdditive(
+    id: string,
+    added: Record<string, string>,
+    trx?: Knex.Transaction,
+  ): Promise<{ added: string[] }> {
+    const q = trx ?? db;
+    const row = await q<ConversationKeyRow>('conversation_keys')
+      .where({ id })
+      .first();
+    if (!row) return { added: [] };
+    const existing = row.wrapped_keys ?? {};
+    const toAdd: Record<string, string> = {};
+    for (const [k, v] of Object.entries(added)) {
+      if (!(k in existing)) toAdd[k] = v;
+    }
+    if (Object.keys(toAdd).length === 0) return { added: [] };
+    // Right-side `existing` wins ⇒ additive-only. Race-safe: the RHS is read
+    // server-side from the same row being updated.
+    await q('conversation_keys')
+      .where({ id })
+      .update({
+        wrapped_keys: db.raw(
+          `COALESCE(wrapped_keys, '{}'::jsonb) || ?::jsonb || COALESCE(wrapped_keys, '{}'::jsonb)`,
+          [JSON.stringify(toAdd)],
+        ),
+      });
+    return { added: Object.keys(toAdd) };
   },
 };

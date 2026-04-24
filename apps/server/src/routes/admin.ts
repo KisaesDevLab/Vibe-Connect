@@ -1,11 +1,88 @@
+import { createHash, randomBytes } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
+import type { Knex } from 'knex';
 import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import { requireAdmin } from '../middleware/auth.js';
+import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { auditRepo } from '../repositories/audit.js';
+import { generateInviteMaterial, sendClientInvite } from '../services/clientInvite.js';
+import { normalizePhone } from '../services/accessCodes.js';
+import { tlsRouter } from './tls.js';
+import {
+  clear as clearProviderSecret,
+  isKnownKey as isKnownProviderSecretKey,
+  metaList as listProviderSecrets,
+  PROVIDER_SECRET_KEYS,
+  set as setProviderSecret,
+  type ProviderSecretKey,
+} from '../services/providerSecrets.js';
+import { runRetentionSweep } from '../services/retention.js';
+import { terminateSessionsForUser } from '../services/sessions.js';
 
 export const adminRouter = Router();
+
+// TLS / Let's Encrypt endpoints live in their own file (routes/tls.ts)
+// so this router stays scannable. Mounted as a subrouter, not under a
+// /tls prefix — each route inside already namespaces itself with /tls/*.
+adminRouter.use('/', tlsRouter);
+
+/** Parse an ISO-8601 date query param; return null if missing or invalid. */
+function parseIsoDate(v: unknown): Date | null {
+  if (typeof v !== 'string' || v.length === 0) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** SHA-256 of a PII value, base64'd. Used so the audit row records that *some*
+ *  email was forgotten without preserving the original — sufficient for later
+ *  correlation if the same address is ever presented again, not reversible. */
+function hashForAudit(value: string): string {
+  return createHash('sha256').update(value).digest('base64');
+}
+
+/**
+ * Allowlist of details-keys that may leave the audit boundary via CSV export.
+ * An operator exporting the audit log might share the file for compliance,
+ * so we keep the keys that describe *what happened* (action metadata,
+ * counts, device IDs for revocation reconciliation) and drop anything that
+ * leaks *content* (usernames, message bodies, last-seen IPs of specific
+ * users, etc.). Unknown keys are redacted to [omitted]; action-specific
+ * entries below override the default where the detail is genuinely useful.
+ */
+const AUDIT_DETAIL_EXPORT_ALLOWLIST: Record<string, ReadonlySet<string>> = {
+  'attachment.infected_rejected': new Set(['signature']),
+  'attachment.scan_unavailable': new Set(['blobDeleted', 'rowDeleted']),
+  'portal.attachment_infected_rejected': new Set(['signature', 'mimeType']),
+  'portal.attachment_scan_unavailable': new Set(['blobDeleted', 'rowDeleted', 'mimeType']),
+  'portal.attachment_uploaded': new Set(['mimeType', 'size']),
+  'admin.device_revoked': new Set(['sessionsTerminated', 'wrappedKeysStripped']),
+  'admin.user_password_reset': new Set(['sessionsTerminated']),
+  'admin.user_password_reset_rejected': new Set(['reason']),
+  'admin.provider_secret_updated': new Set(['last4', 'fingerprint', 'masked']),
+  'admin.provider_secret_cleared': new Set([]),
+  'portal.stepup_identity_locked': new Set(['lockoutsInDay']),
+  'portal.verify_identity_locked': new Set(['attemptsInHour']),
+  'portal.session_ua_drift_revoked': new Set(['fromFamily', 'toFamily']),
+  'admin.audit_export': new Set(['rowCount', 'format']),
+};
+
+function redactAuditDetailsForExport(action: unknown, details: unknown): unknown {
+  if (!details || typeof details !== 'object') return details;
+  const allow =
+    typeof action === 'string' ? AUDIT_DETAIL_EXPORT_ALLOWLIST[action] : undefined;
+  // Unknown action → redact entirely so a future code path that writes
+  // sensitive detail doesn't leak by default. An explicit opt-in entry in
+  // the allowlist above is the only way to surface a given key.
+  if (!allow) return { redacted: true };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(details as Record<string, unknown>)) {
+    out[k] = allow.has(k) ? v : '[omitted]';
+  }
+  return out;
+}
 
 // ---------- Firm settings ----------
 
@@ -20,7 +97,18 @@ adminRouter.get(
 
 const settingsSchema = z.object({
   firmName: z.string().min(1).max(255).optional(),
-  logoUrl: z.string().max(1024).nullable().optional(),
+  // Must be a real http/https URL so an admin can't inject `javascript:` /
+  // `data:` / relative paths that downstream <img src={logoUrl}> renders would
+  // treat as same-origin scripts. Empty string is coerced to null upstream.
+  logoUrl: z
+    .string()
+    .max(1024)
+    .url()
+    .refine((u) => /^https?:\/\//i.test(u), {
+      message: 'logoUrl must be http(s)',
+    })
+    .nullable()
+    .optional(),
   retentionDays: z.number().int().min(1).max(3650).nullable().optional(),
   stepupTimeoutHours: z
     .union([z.literal(4), z.literal(8), z.literal(24), z.literal(168), z.literal(-1)])
@@ -29,9 +117,64 @@ const settingsSchema = z.object({
   emailOutboundContentPreviewChars: z.number().int().min(0).max(2000).optional(),
   smsProvider: z.enum(['textlink', 'twilio', 'mock']).optional(),
   smsMonthlyCap: z.number().int().min(0).max(100_000).optional(),
+  emailProvider: z.enum(['mock', 'postmark', 'postfix']).optional(),
   exportExternalRequiresRecoveryPhrase: z.boolean().optional(),
   sidebarGroupsOrder: z.array(z.string().uuid()).optional(),
+  // 0 = never lock; upper bound matches the DB constraint (24 h).
+  idleLockMinutes: z.number().int().min(0).max(1440).optional(),
+  // Kill switch for portal + bridges. Internal staff messaging stays on either way.
+  clientMessagingEnabled: z.boolean().optional(),
+
+  // Message edit window in minutes. 0 disables edits entirely. Upper bound
+  // caps accidental misconfig — no legitimate workflow needs > 24h edits.
+  messageEditWindowMinutes: z.number().int().min(0).max(1440).optional(),
+
+  // SMS quiet-hours window. Hours are 0-23 in the recipient's local time.
+  // For cross-midnight windows set start > end (e.g. quietStart=22, quietEnd=6
+  // means quiet 22:00-06:00). TCPA default is 08..21; admins may tighten.
+  smsQuietStartHour: z.number().int().min(0).max(23).optional(),
+  smsQuietEndHour: z.number().int().min(0).max(23).optional(),
+
+  // TLS / Let's Encrypt — domains, ACME contact, environment. Phase 1 only
+  // accepts 'http-01' for the challenge type; Phase 2 widens this.
+  // Domain regex: RFC 1123 hostname shape, up to 253 chars, at least one dot.
+  tlsStaffDomain: z
+    .string()
+    .max(253)
+    .regex(/^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$/)
+    .nullable()
+    .optional(),
+  tlsPortalDomain: z
+    .string()
+    .max(253)
+    .regex(/^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))+$/)
+    .nullable()
+    .optional(),
+  tlsAcmeEmail: z.string().email().max(254).nullable().optional(),
+  tlsAcmeEnvironment: z.enum(['staging', 'production']).optional(),
+  tlsChallengeType: z.enum(['http-01']).optional(),
 });
+
+// Minimum set of provider-secret keys that must be configured before switching
+// an outbound channel to a given provider. If any are missing, the PATCH is
+// refused with a clear error so the admin doesn't flip the switch and then
+// discover every outbound notification failing at send time.
+const REQUIRED_SECRETS_BY_PROVIDER: Record<string, ProviderSecretKey[]> = {
+  postmark: ['email.postmark.server_token'],
+  postfix: ['email.smtp.host', 'email.smtp.port'],
+  textlink: ['sms.textlink.api_key'],
+  twilio: ['sms.twilio.account_sid', 'sms.twilio.auth_token'],
+  // 'mock' providers write to the local .outbox/ and never need secrets.
+  mock: [],
+};
+
+async function missingSecretsFor(provider: string): Promise<ProviderSecretKey[]> {
+  const required = REQUIRED_SECRETS_BY_PROVIDER[provider] ?? [];
+  if (required.length === 0) return [];
+  const metas = await listProviderSecrets();
+  const configured = new Set(metas.filter((m) => m.configured).map((m) => m.key));
+  return required.filter((k) => !configured.has(k));
+}
 
 adminRouter.patch(
   '/settings',
@@ -40,6 +183,26 @@ adminRouter.patch(
     const parsed = settingsSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+    // Pre-flight: switching emailProvider / smsProvider is only safe if the
+    // target's secrets are already stored. Check once up front and 400 with a
+    // list of missing keys so the admin can fix it in one pass.
+    const missing: Array<{ field: string; provider: string; keys: ProviderSecretKey[] }> = [];
+    if (parsed.data.emailProvider !== undefined) {
+      const gap = await missingSecretsFor(parsed.data.emailProvider);
+      if (gap.length > 0) {
+        missing.push({ field: 'emailProvider', provider: parsed.data.emailProvider, keys: gap });
+      }
+    }
+    if (parsed.data.smsProvider !== undefined) {
+      const gap = await missingSecretsFor(parsed.data.smsProvider);
+      if (gap.length > 0) {
+        missing.push({ field: 'smsProvider', provider: parsed.data.smsProvider, keys: gap });
+      }
+    }
+    if (missing.length > 0) {
+      res.status(400).json({ error: 'provider_secrets_missing', missing });
       return;
     }
     const patch: Record<string, unknown> = {};
@@ -54,11 +217,31 @@ adminRouter.patch(
       patch.email_outbound_content_preview_chars = parsed.data.emailOutboundContentPreviewChars;
     if (parsed.data.smsProvider !== undefined) patch.sms_provider = parsed.data.smsProvider;
     if (parsed.data.smsMonthlyCap !== undefined) patch.sms_monthly_cap = parsed.data.smsMonthlyCap;
+    if (parsed.data.emailProvider !== undefined) patch.email_provider = parsed.data.emailProvider;
     if (parsed.data.exportExternalRequiresRecoveryPhrase !== undefined)
       patch.export_external_requires_recovery_phrase =
         parsed.data.exportExternalRequiresRecoveryPhrase;
     if (parsed.data.sidebarGroupsOrder !== undefined)
       patch.sidebar_groups_order = JSON.stringify(parsed.data.sidebarGroupsOrder);
+    if (parsed.data.idleLockMinutes !== undefined)
+      patch.idle_lock_minutes = parsed.data.idleLockMinutes;
+    if (parsed.data.clientMessagingEnabled !== undefined)
+      patch.client_messaging_enabled = parsed.data.clientMessagingEnabled;
+    if (parsed.data.messageEditWindowMinutes !== undefined)
+      patch.message_edit_window_minutes = parsed.data.messageEditWindowMinutes;
+    if (parsed.data.smsQuietStartHour !== undefined)
+      patch.sms_quiet_start_hour = parsed.data.smsQuietStartHour;
+    if (parsed.data.smsQuietEndHour !== undefined)
+      patch.sms_quiet_end_hour = parsed.data.smsQuietEndHour;
+    if (parsed.data.tlsStaffDomain !== undefined)
+      patch.tls_staff_domain = parsed.data.tlsStaffDomain;
+    if (parsed.data.tlsPortalDomain !== undefined)
+      patch.tls_portal_domain = parsed.data.tlsPortalDomain;
+    if (parsed.data.tlsAcmeEmail !== undefined) patch.tls_acme_email = parsed.data.tlsAcmeEmail;
+    if (parsed.data.tlsAcmeEnvironment !== undefined)
+      patch.tls_acme_environment = parsed.data.tlsAcmeEnvironment;
+    if (parsed.data.tlsChallengeType !== undefined)
+      patch.tls_challenge_type = parsed.data.tlsChallengeType;
     if (Object.keys(patch).length > 0) {
       await db('firm_settings')
         .where({ id: 1 })
@@ -80,10 +263,91 @@ adminRouter.get(
   '/audit',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const format = req.query.format === 'csv' ? 'csv' : 'json';
+    const limit =
+      format === 'csv'
+        ? Math.min(Number(req.query.limit ?? 10_000), 100_000)
+        : Math.min(Number(req.query.limit ?? 50), 500);
     const offset = Math.max(Number(req.query.offset ?? 0), 0);
-    const rows = await db('audit_log').orderBy('created_at', 'desc').limit(limit).offset(offset);
+    const action = typeof req.query.action === 'string' ? req.query.action.trim() : '';
+    const actorUserId =
+      typeof req.query.actorUserId === 'string' && /^[0-9a-f-]{36}$/i.test(req.query.actorUserId)
+        ? req.query.actorUserId
+        : null;
+
+    const since = parseIsoDate(req.query.since);
+    const until = parseIsoDate(req.query.until);
+    const reqId =
+      typeof req.query.reqId === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(req.query.reqId)
+        ? req.query.reqId
+        : null;
+
+    const applyFilters = <Q extends Knex.QueryBuilder>(q: Q): Q => {
+      if (action) {
+        if (action.endsWith('*')) {
+          q.whereILike('action', action.slice(0, -1).replace(/([%_])/g, '\\$1') + '%');
+        } else {
+          q.where('action', action);
+        }
+      }
+      if (actorUserId) q.where('actor_user_id', actorUserId);
+      if (since) q.where('created_at', '>=', since);
+      if (until) q.where('created_at', '<', until);
+      if (reqId) q.whereRaw(`details->>'reqId' = ?`, [reqId]);
+      return q;
+    };
+
+    if (format === 'csv') {
+      const rows = await applyFilters(
+        db('audit_log').orderBy('created_at', 'desc').limit(limit).offset(offset),
+      );
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="audit-${new Date().toISOString().slice(0, 10)}.csv"`,
+      );
+      res.write(
+        'created_at,action,actor_user_id,actor_external_identity_id,target_type,target_id,ip_address,details\r\n',
+      );
+      const encode = (v: unknown): string => {
+        if (v === null || v === undefined) return '';
+        const s = typeof v === 'string' ? v : JSON.stringify(v);
+        return `"${s.replace(/"/g, '""')}"`;
+      };
+      for (const r of rows) {
+        res.write(
+          [
+            encode(new Date(r.created_at as string).toISOString()),
+            encode(r.action),
+            encode(r.actor_user_id),
+            encode(r.actor_external_identity_id),
+            encode(r.target_type),
+            encode(r.target_id),
+            encode(r.ip_address),
+            encode(redactAuditDetailsForExport(r.action, r.details)),
+          ].join(',') + '\r\n',
+        );
+      }
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.audit_export',
+        targetType: 'audit_log',
+        details: { action, actorUserId, rowCount: rows.length, format },
+      });
+      res.end();
+      return;
+    }
+
+    // Fetch one extra to know if there's a next page without a separate COUNT query.
+    const fetched = await applyFilters(
+      db('audit_log').orderBy('created_at', 'desc').limit(limit + 1).offset(offset),
+    );
+    const hasMore = fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit) : fetched;
     res.json({
+      hasMore,
+      limit,
+      offset,
       rows: rows.map((r) => ({
         id: r.id,
         actorUserId: r.actor_user_id,
@@ -165,14 +429,42 @@ adminRouter.post(
   '/devices/:id/revoke',
   requireAdmin,
   asyncHandler(async (req, res) => {
+    const row = await db('user_keys').where({ id: req.params.id! }).first();
+    // 404 up front so we don't mutate anything, skip the session-terminate
+    // call with a null user_id (which matches no rows and silently no-ops),
+    // and don't audit-log a fake revoke event for a device that never existed.
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
     await db('user_keys').where({ id: req.params.id! }).update({ revoked_at: db.fn.now() });
+    // Terminate all sessions for the owning user. They may have other active devices
+    // and can re-enroll this one with a fresh keypair after signing back in.
+    const sessionsTerminated = await terminateSessionsForUser(row.user_id);
+    // CRYPTO: purge the revoked device's wrapped_keys entries from every
+    // conversation. Without this, the revoked device retains a valid sealed
+    // copy of every conversation key it was ever included in — if the device
+    // or its key material is later re-imported, all history is readable. We
+    // can't force a rotation server-side (we don't have the conversation
+    // keys), but deleting the stale entries closes the re-import path.
+    const recipientKey = `${row.user_id}:${row.device_id}`;
+    const result = await db('conversation_keys').update({
+      wrapped_keys: db.raw(`wrapped_keys - ?::text`, [recipientKey]),
+    });
+    const wrappedKeysStripped = typeof result === 'number' ? result : 0;
     await auditRepo.write({
       actorUserId: req.session.userId!,
       action: 'admin.device_revoked',
       targetType: 'user_key',
       targetId: req.params.id!,
+      details: {
+        userId: row.user_id,
+        deviceId: row.device_id,
+        sessionsTerminated,
+        wrappedKeysStripped,
+      },
     });
-    res.json({ ok: true });
+    res.json({ ok: true, sessionsTerminated, wrappedKeysStripped });
   }),
 );
 
@@ -206,6 +498,413 @@ adminRouter.post(
   }),
 );
 
+// ---------- Client (external_identity) management ----------
+
+adminRouter.get(
+  '/clients',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+    const includeDeactivated = req.query.includeDeactivated === 'true';
+    let q = db('external_identities as e')
+      .leftJoin(
+        db('client_sessions')
+          .whereNull('revoked_at')
+          .andWhere('absolute_expires_at', '>', db.fn.now())
+          .select('external_identity_id', db.raw('COUNT(*)::int as "activeSessions"'))
+          .groupBy('external_identity_id')
+          .as('ls'),
+        'ls.external_identity_id',
+        'e.id',
+      )
+      .select(
+        'e.id',
+        'e.email',
+        'e.phone',
+        'e.display_name as displayName',
+        'e.firm_client_ref as firmClientRef',
+        'e.verification_type as verificationType',
+        'e.verification_required as verificationRequired',
+        'e.first_invited_at as firstInvitedAt',
+        'e.last_active_at as lastActiveAt',
+        'e.deactivated_at as deactivatedAt',
+        'e.invited_at as invitedAt',
+        'e.invited_via as invitedVia',
+        'e.invite_public_key as invitePublicKey',
+        db.raw('COALESCE(ls."activeSessions", 0) as "activeSessions"'),
+      )
+      .orderBy('e.display_name');
+    if (!includeDeactivated) q = q.whereNull('e.deactivated_at');
+    if (search) {
+      q = q.andWhere((b) => {
+        b.whereILike('e.display_name', `%${search}%`)
+          .orWhereILike('e.email', `%${search}%`)
+          .orWhereILike('e.phone', `%${search}%`)
+          .orWhereILike('e.firm_client_ref', `%${search}%`);
+      });
+    }
+    const rows = await q.limit(200);
+    res.json({ clients: rows });
+  }),
+);
+
+// ---------- Create + (re)invite client ----------
+
+const createClientSchema = z
+  .object({
+    displayName: z.string().min(1).max(128),
+    email: z.string().email().max(255).optional().nullable(),
+    phone: z.string().min(6).max(32).optional().nullable(),
+    firmClientRef: z.string().max(128).optional().nullable(),
+    inviteVia: z.enum(['email', 'sms']),
+  })
+  .refine((v) => !!(v.inviteVia === 'email' ? v.email : v.phone), {
+    message: 'inviteVia=email requires email; inviteVia=sms requires phone',
+  });
+
+adminRouter.post(
+  '/clients',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const parsed = createClientSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+    const email = (parsed.data.email ?? '').trim().toLowerCase() || null;
+    // Canonicalise phone at store time so inbound SMS lookups (which match on
+    // phone exact-equal in smsBridge.ts) hit the same string. Without this an
+    // admin entering "555-123-4567" would store a different value than the
+    // identify flow's normalised "+15551234567" produces.
+    const rawPhone = (parsed.data.phone ?? '').trim();
+    const phone = rawPhone ? (normalizePhone(rawPhone) ?? null) : null;
+    if (rawPhone && !phone) {
+      res.status(400).json({ error: 'invalid_phone', detail: 'phone too short or malformed' });
+      return;
+    }
+    // Reject duplicates up front (the unique index on email would do the same but
+    // a friendly error is kinder).
+    if (email) {
+      const existing = await db('external_identities').where({ email }).first();
+      if (existing) {
+        res.status(409).json({ error: 'email_taken', existingId: existing.id });
+        return;
+      }
+    }
+    const invite = await generateInviteMaterial();
+    const [row] = await db('external_identities')
+      .insert({
+        email: email ?? `no-email-${randomBytes(4).toString('hex')}@placeholder.invalid`,
+        phone,
+        display_name: parsed.data.displayName,
+        firm_client_ref: parsed.data.firmClientRef ?? null,
+        verification_type: 'none',
+        verification_required: false,
+        invite_token_hash: invite.tokenHash,
+        invite_public_key: invite.publicKey,
+        invited_at: db.fn.now(),
+        invited_via: parsed.data.inviteVia,
+      })
+      .returning(['id']);
+    const identityId = (row as { id: string }).id;
+    const [firmSettingsRow, actorRow] = await Promise.all([
+      db('firm_settings').where({ id: 1 }).first(),
+      db('users').where({ id: req.session.userId! }).first(),
+    ]);
+    try {
+      await sendClientInvite({
+        identityId,
+        displayName: parsed.data.displayName,
+        via: parsed.data.inviteVia,
+        email,
+        phone,
+        token: invite.token,
+        firmName: (firmSettingsRow?.firm_name as string | undefined) ?? null,
+        fromDisplayName: (actorRow?.display_name as string | undefined) ?? null,
+      });
+    } catch (err) {
+      // We already persisted the identity + invite material. Return a partial success
+      // with the error so the admin can hit "Send invite" again once the provider is fixed.
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.client_invite_send_failed',
+        targetType: 'external_identity',
+        targetId: identityId,
+        details: { via: parsed.data.inviteVia, error: err instanceof Error ? err.message : String(err) },
+      });
+      res.status(201).json({
+        id: identityId,
+        invitePublicKey: invite.publicKey,
+        inviteSent: false,
+        sendError: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.client_created',
+      targetType: 'external_identity',
+      targetId: identityId,
+      details: { via: parsed.data.inviteVia, hasEmail: !!email, hasPhone: !!phone },
+    });
+    res.status(201).json({ id: identityId, invitePublicKey: invite.publicKey, inviteSent: true });
+  }),
+);
+
+adminRouter.post(
+  '/clients/:id/reinvite',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db('external_identities').where({ id: req.params.id! }).first();
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const body = z
+      .object({ via: z.enum(['email', 'sms']).optional() })
+      .safeParse(req.body ?? {});
+    const via = body.success && body.data.via ? body.data.via : (row.invited_via as 'email' | 'sms' | null) ?? 'email';
+    const invite = await generateInviteMaterial();
+    await db('external_identities')
+      .where({ id: req.params.id! })
+      .update({
+        invite_token_hash: invite.tokenHash,
+        invite_public_key: invite.publicKey,
+        invited_at: db.fn.now(),
+        invited_via: via,
+        deactivated_at: null,
+      });
+    const [firmSettingsRow, actorRow] = await Promise.all([
+      db('firm_settings').where({ id: 1 }).first(),
+      db('users').where({ id: req.session.userId! }).first(),
+    ]);
+    try {
+      await sendClientInvite({
+        identityId: req.params.id!,
+        displayName: row.display_name as string,
+        via,
+        email: (row.email as string) || null,
+        phone: (row.phone as string) || null,
+        token: invite.token,
+        firmName: (firmSettingsRow?.firm_name as string | undefined) ?? null,
+        fromDisplayName: (actorRow?.display_name as string | undefined) ?? null,
+      });
+    } catch (err) {
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.client_invite_send_failed',
+        targetType: 'external_identity',
+        targetId: req.params.id!,
+        details: { via, error: err instanceof Error ? err.message : String(err) },
+      });
+      res.status(200).json({
+        ok: true,
+        invitePublicKey: invite.publicKey,
+        inviteSent: false,
+        sendError: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.client_reinvited',
+      targetType: 'external_identity',
+      targetId: req.params.id!,
+      details: { via },
+    });
+    res.json({ ok: true, invitePublicKey: invite.publicKey, inviteSent: true });
+  }),
+);
+
+adminRouter.post(
+  '/clients/:id/deactivate',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db('external_identities').where({ id: req.params.id! }).first();
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    // Atomic so the deactivation flag and session revocation can never disagree.
+    const revoked = await db.transaction(async (trx) => {
+      await trx('external_identities')
+        .where({ id: req.params.id! })
+        .update({ deactivated_at: trx.fn.now() });
+      return trx('client_sessions')
+        .where({ external_identity_id: req.params.id })
+        .whereNull('revoked_at')
+        .update({ revoked_at: trx.fn.now() });
+    });
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.client_deactivated',
+      targetType: 'external_identity',
+      targetId: req.params.id!,
+      details: { sessionsRevoked: revoked },
+    });
+    res.json({ ok: true, sessionsRevoked: revoked });
+  }),
+);
+
+adminRouter.post(
+  '/clients/:id/reactivate',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db('external_identities').where({ id: req.params.id! }).first();
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    await db('external_identities').where({ id: req.params.id! }).update({ deactivated_at: null });
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.client_reactivated',
+      targetType: 'external_identity',
+      targetId: req.params.id!,
+    });
+    res.json({ ok: true });
+  }),
+);
+
+// GDPR "right to erasure": anonymize PII while preserving FK integrity so audit
+// trail + historical conversation membership stay intact. This is irreversible —
+// the original name/email/phone are not recoverable. Messages the client sent
+// remain (as ciphertext), but attribute to the anonymized row.
+adminRouter.post(
+  '/clients/:id/forget',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db('external_identities').where({ id: req.params.id! }).first();
+    if (!row) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    // Use the full UUID in the anonymized email to keep the unique constraint collision-free
+    // even at tens of thousands of clients (first-8-hex collides at ~16k rows).
+    const fullId = req.params.id as string;
+    const anonEmail = `deleted-${fullId}@deleted.invalid`;
+    const anonName = `Forgotten client ${fullId.slice(0, 8)}`;
+    await db.transaction(async (trx) => {
+      // Revoke all sessions first so the client can't read the anonymized row.
+      await trx('client_sessions')
+        .where({ external_identity_id: req.params.id })
+        .whereNull('revoked_at')
+        .update({ revoked_at: trx.fn.now() });
+      await trx('external_identities')
+        .where({ id: req.params.id! })
+        .update({
+          email: anonEmail,
+          phone: null,
+          display_name: anonName,
+          firm_client_ref: null,
+          verification_last4_hash: null,
+          verification_type: 'none',
+          verification_required: false,
+          preferences: {},
+          deactivated_at: trx.fn.now(),
+        });
+      // Delete any open access-code rows since they referenced the original email/phone.
+      await trx('access_codes').where({ external_identity_id: req.params.id }).del();
+    });
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.client_forgotten',
+      targetType: 'external_identity',
+      targetId: req.params.id!,
+      details: { originalEmailHash: hashForAudit(row.email as string) },
+    });
+    res.json({ ok: true, anonymizedEmail: anonEmail });
+  }),
+);
+
+// ---------- Client portal session visibility ----------
+// Lists currently-active (non-revoked, non-expired) client portal sessions so an
+// admin can see who's connected right now and revoke them if needed. Clients log
+// in via access code → sessions live until revoked or expired.
+
+adminRouter.get(
+  '/client-sessions',
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const rows = await db('client_sessions as s')
+      .leftJoin('external_identities as e', 'e.id', 's.external_identity_id')
+      .whereNull('s.revoked_at')
+      .andWhere('s.absolute_expires_at', '>', db.fn.now())
+      .select(
+        's.id',
+        's.external_identity_id as externalIdentityId',
+        's.created_at as createdAt',
+        's.absolute_expires_at as expiresAt',
+        's.last_seen_at as lastSeenAt',
+        's.verified_until as verifiedUntil',
+        's.user_agent as userAgent',
+        's.ip_address as ipAddress',
+        'e.display_name as displayName',
+        'e.email',
+        'e.phone',
+      )
+      .orderBy('s.last_seen_at', 'desc');
+    res.json({ sessions: rows });
+  }),
+);
+
+adminRouter.post(
+  '/client-sessions/:id/revoke',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const sess = await db('client_sessions').where({ id: req.params.id! }).first();
+    if (!sess) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    await db('client_sessions').where({ id: req.params.id! }).update({ revoked_at: db.fn.now() });
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.client_session_revoked',
+      targetType: 'client_session',
+      targetId: req.params.id!,
+      details: { externalIdentityId: sess.external_identity_id },
+    });
+    res.json({ ok: true });
+  }),
+);
+
+// ---------- Conversation listing for admins ----------
+// Needed by the Admin → Export UI: an admin may need to decrypt/export a conversation
+// they are NOT a member of (emergency decrypt, compliance hold, etc.). This listing
+// deliberately does NOT include message ciphertext — just metadata.
+adminRouter.get(
+  '/conversations',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const limit = Math.min(Number(req.query.limit ?? 100), 500);
+    const offset = Math.max(Number(req.query.offset ?? 0), 0);
+    const type = typeof req.query.type === 'string' ? req.query.type : '';
+    let q = db('conversations as c')
+      .select(
+        'c.id',
+        'c.type',
+        'c.display_name as displayName',
+        'c.created_at as createdAt',
+        'c.updated_at as updatedAt',
+        db.raw(
+          `(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id)::int AS "messageCount"`,
+        ),
+        db.raw(
+          `(SELECT COUNT(*) FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.removed_at IS NULL)::int AS "memberCount"`,
+        ),
+      )
+      .orderBy('c.updated_at', 'desc')
+      .limit(limit + 1)
+      .offset(offset);
+    if (type === 'internal' || type === 'external') q = q.where('c.type', type);
+    const fetched = await q;
+    const hasMore = fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit) : fetched;
+    res.json({ hasMore, limit, offset, conversations: rows });
+  }),
+);
+
 // ---------- Per-conversation export ----------
 
 const exportSchema = z.object({
@@ -214,9 +913,21 @@ const exportSchema = z.object({
   includeTeamNotes: z.boolean().default(false),
 });
 
+// Exports read every message + every conversation-key row. Cap at 10/hour per
+// admin so a runaway script can't exfiltrate the whole firm archive in minutes.
+const exportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate_limited' },
+  keyGenerator: (req) => req.session.userId ?? req.ip ?? 'anon',
+});
+
 adminRouter.post(
   '/export',
   requireAdmin,
+  exportLimiter,
   asyncHandler(async (req, res) => {
     const parsed = exportSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -286,16 +997,21 @@ adminRouter.post(
 // ---------- Bulk user CSV import ----------
 
 const importSchema = z.object({
-  users: z.array(
-    z.object({
-      username: z.string().min(2).max(64),
-      email: z.string().email().optional(),
-      displayName: z.string().min(1).max(128),
-      initialPassword: z.string().min(12).max(512),
-      isAdmin: z.boolean().optional(),
-      groupIds: z.array(z.string().uuid()).optional(),
-    }),
-  ),
+  // Cap at 500 per request — the admin page parses a CSV client-side so the UX can
+  // chunk larger imports. Keeps the per-request transaction bounded.
+  users: z
+    .array(
+      z.object({
+        username: z.string().min(2).max(64),
+        email: z.string().email().optional(),
+        displayName: z.string().min(1).max(128),
+        initialPassword: z.string().min(12).max(512),
+        isAdmin: z.boolean().optional(),
+        groupIds: z.array(z.string().uuid()).optional(),
+      }),
+    )
+    .min(1)
+    .max(500),
 });
 
 adminRouter.post(
@@ -307,7 +1023,6 @@ adminRouter.post(
       res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
       return;
     }
-    const bcrypt = (await import('bcryptjs')).default;
     const created: string[] = [];
     const skipped: Array<{ username: string; reason: string }> = [];
     for (const u of parsed.data.users) {
@@ -403,6 +1118,105 @@ adminRouter.get(
   }),
 );
 
+// ---------- Provider credentials (Twilio / TextLink / Postmark / SMTP) ----------
+//
+// Admin-writable, sealed-at-rest credentials for outbound SMS + email. The
+// API is metadata-only on reads (never the plaintext) — the bridges fetch
+// plaintext in-process via providerSecrets.get(). Both writes and clears
+// audit-log but the audit row carries only a SHA-256 fingerprint + last-4
+// so operators can tell that a rotation happened (and distinguish two
+// rotations of the same value) without exposing the secret.
+
+// Single endpoint per verb, keyed by the registry name. Rate-limited to
+// ward off an admin-session-compromise brute-rotation; value shape is an
+// opaque string so each provider's own validation runs at send time.
+const providerSecretWriteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate_limited' },
+  keyGenerator: (req) => req.session.userId ?? req.ip ?? 'anon',
+});
+
+adminRouter.get(
+  '/providers',
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const items = await listProviderSecrets();
+    res.json({ items, knownKeys: PROVIDER_SECRET_KEYS });
+  }),
+);
+
+adminRouter.put(
+  '/providers/:key',
+  requireAdmin,
+  providerSecretWriteLimiter,
+  asyncHandler(async (req, res) => {
+    const key = req.params.key ?? '';
+    if (!isKnownProviderSecretKey(key)) {
+      res.status(400).json({ error: 'unknown_key' });
+      return;
+    }
+    const body = z
+      .object({ value: z.string().min(1).max(4096) })
+      .safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ error: 'bad_request' });
+      return;
+    }
+    try {
+      const meta = await setProviderSecret(
+        key as ProviderSecretKey,
+        body.data.value,
+        req.session.userId ?? null,
+      );
+      res.json({ meta });
+    } catch (err) {
+      // Never echo the offending value. Only surface the category of failure.
+      const msg = err instanceof Error ? err.message : 'error';
+      if (msg === 'provider_secret_empty') {
+        res.status(400).json({ error: 'empty_value' });
+        return;
+      }
+      throw err;
+    }
+  }),
+);
+
+adminRouter.delete(
+  '/providers/:key',
+  requireAdmin,
+  providerSecretWriteLimiter,
+  asyncHandler(async (req, res) => {
+    const key = req.params.key ?? '';
+    if (!isKnownProviderSecretKey(key)) {
+      res.status(400).json({ error: 'unknown_key' });
+      return;
+    }
+    await clearProviderSecret(key as ProviderSecretKey, req.session.userId ?? null);
+    const items = await listProviderSecrets();
+    res.json({ meta: items.find((m) => m.key === key) });
+  }),
+);
+
+// ---------- Retention sweep (on-demand) ----------
+
+adminRouter.post(
+  '/retention/run',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const result = await runRetentionSweep();
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.retention_run',
+      targetType: 'firm',
+      details: { ...result },
+    });
+    res.json(result);
+  }),
+);
+
 // ---------- Firm public key (read-only) ----------
 
 export const firmRouter = Router();
@@ -415,5 +1229,669 @@ firmRouter.get(
       return;
     }
     res.json({ publicKey: row.public_key, rotationVersion: row.rotation_version });
+  }),
+);
+
+firmRouter.get(
+  '/key-meta',
+  asyncHandler(async (_req, res) => {
+    const row = await db('firm_keys').whereNull('retired_at').first();
+    if (!row) {
+      res.status(404).json({ error: 'not_installed' });
+      return;
+    }
+    res.json({
+      publicKey: row.public_key,
+      rotationVersion: row.rotation_version,
+      createdAt: row.created_at,
+    });
+  }),
+);
+
+// Security policy readable by any authenticated staff user so their client can
+// enforce the admin-chosen idle-lock timeout. Contains only non-sensitive values.
+// Also surfaces a few firm-display fields (name, step-up default, SMS reachability)
+// so pre-staff surfaces like the Invite-a-client modal render without extra round-trips.
+firmRouter.get(
+  '/security-policy',
+  asyncHandler(async (req, res) => {
+    if (!req.session.userId) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const row = await db('firm_settings').where({ id: 1 }).first();
+    const provider = (row?.sms_provider as string | undefined) ?? 'mock';
+    res.json({
+      idleLockMinutes: Number(row?.idle_lock_minutes ?? 15),
+      clientMessagingEnabled: Boolean(row?.client_messaging_enabled ?? true),
+      firmName: (row?.firm_name as string | undefined) ?? 'Your Firm',
+      stepupTimeoutHours: Number(row?.stepup_timeout_hours ?? 24),
+      // Treat 'mock' as unavailable in production so staff aren't misled; dev/test
+      // environments see it as available so mock-provider smoke tests still work.
+      smsAvailable: provider === 'textlink' || provider === 'twilio' || provider === 'mock',
+    });
+  }),
+);
+
+// Admin-only. Returns the encrypted recovery-private-key record so an admin
+// can derive the firm private key client-side (from the 24-word phrase) and
+// rewrap conversations onto a new device when every other device has been
+// revoked/lost. The server never sees the phrase or the derived key.
+adminRouter.get(
+  '/firm/recovery-record',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await db('firm_keys').whereNull('retired_at').first();
+    if (!row) {
+      res.status(404).json({ error: 'not_installed' });
+      return;
+    }
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.recovery_record_viewed',
+      targetType: 'firm_key',
+      targetId: row.id,
+      details: {},
+      ipAddress: req.ip ?? null,
+    });
+    res.json({
+      publicKey: row.public_key,
+      encryptedRecoveryPrivateKey: row.encrypted_recovery_private_key,
+      kdfSalt: row.kdf_salt,
+      kdfParams: row.kdf_params,
+      rotationVersion: row.rotation_version,
+    });
+  }),
+);
+
+// ---------- Staff-facing client directory ----------
+//
+// Any authenticated staff member needs to see the firm's client book so they can
+// start or find a conversation. Distinct from /admin/clients (admin-only, full
+// lifecycle controls) — this endpoint is read-only and returns only what's needed
+// to wrap a conversation key to the client: invite_public_key for pre-activation
+// clients, plus whether they have an active portal session.
+export const clientsRouter = Router();
+clientsRouter.get(
+  '/',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    const rows = await db('external_identities as e')
+      .leftJoin(
+        db('client_sessions')
+          .select('external_identity_id')
+          .count<{ external_identity_id: string; activeSessions: string }>('* as activeSessions')
+          .whereNull('revoked_at')
+          .andWhere('absolute_expires_at', '>', db.fn.now())
+          .groupBy('external_identity_id')
+          .as('ls'),
+        'ls.external_identity_id',
+        'e.id',
+      )
+      .whereNull('e.deactivated_at')
+      .andWhere((b) => {
+        // Reachable = either has an active portal session OR has a live invite
+        // key we can still wrap to.
+        b.whereNotNull('e.invite_public_key').orWhereRaw('COALESCE(ls."activeSessions", 0) > 0');
+      })
+      .select(
+        'e.id',
+        'e.display_name as displayName',
+        'e.email',
+        'e.phone',
+        'e.firm_client_ref as firmClientRef',
+        'e.last_active_at as lastActiveAt',
+        'e.invite_public_key as invitePublicKey',
+        'e.invited_at as invitedAt',
+        'e.invited_via as invitedVia',
+        'e.verification_type as verificationType',
+        'e.preferences as preferences',
+        db.raw('COALESCE(ls."activeSessions", 0)::int as "activeSessions"'),
+      )
+      .orderBy('e.display_name')
+      .limit(500);
+    // Surface the subset of `preferences` the resend-invite modal needs so the
+    // sidebar can pre-fill the re-verify choice + channel toggles without a
+    // second round-trip. Keeping the raw JSON behind the resolver means we
+    // never leak non-public preference keys to staff who don't need them.
+    // Placeholder emails (e.g. `no-email-XXXX@placeholder.invalid`) exist only
+    // to satisfy the NOT NULL + UNIQUE index on SMS-only identities — treat
+    // them as "no email" when surfacing to the UI so the resend modal doesn't
+    // pre-fill a bogus address into the textbox.
+    const shaped = rows.map((r) => {
+      const prefs = (r.preferences as Record<string, unknown> | null) ?? {};
+      const reverify = prefs.reverify_every_hours;
+      const reverifyEveryHours =
+        reverify === 4 || reverify === 8 || reverify === 24 || reverify === 168
+          ? (reverify as 4 | 8 | 24 | 168)
+          : reverify === null
+            ? null
+            : undefined;
+      const emailNotifications =
+        typeof prefs.email_notifications === 'boolean' ? prefs.email_notifications : undefined;
+      const smsNotifications =
+        typeof prefs.sms_notifications === 'boolean' ? prefs.sms_notifications : undefined;
+      const { preferences: _omit, ...rest } = r as Record<string, unknown>;
+      const email = typeof rest.email === 'string' ? rest.email : null;
+      const isPlaceholderEmail = email !== null && /@placeholder\.invalid$/i.test(email);
+      return {
+        ...rest,
+        email: isPlaceholderEmail ? null : email,
+        reverifyEveryHours,
+        emailNotifications,
+        smsNotifications,
+      };
+    });
+    res.json({ clients: shaped });
+  }),
+);
+
+// Per-client session public keys. Staff need these so startConversation can wrap
+// the shared conversation key to every live portal session. Returns empty array
+// when the client is still pre-activation (caller should wrap to invitePublicKey
+// instead — the /clients row above exposes that).
+clientsRouter.get(
+  '/:id([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/session-keys',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const id = req.params.id!;
+    const identity = await db('external_identities').where({ id }).first();
+    if (!identity || identity.deactivated_at) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const sessions = await db('client_sessions')
+      .where({ external_identity_id: id })
+      .andWhere('absolute_expires_at', '>', db.fn.now())
+      .whereNull('revoked_at')
+      .select('id', 'session_public_key');
+    res.json({
+      invitePublicKey: identity.invite_public_key ?? null,
+      sessions: sessions.map((s) => ({ id: s.id, publicKey: s.session_public_key })),
+    });
+  }),
+);
+
+// ---------- Staff "Invite a client" ----------
+//
+// Any active staff member can invite a client into a new secure conversation.
+// Distinct from POST /admin/clients (admin-only CRUD) — this endpoint accepts
+// the richer per-channel + verification payload from the Invite-a-client modal
+// and is gated only by `client_messaging_enabled`. Returns the new identity's
+// id and invitePublicKey so the client can immediately wrap a fresh
+// conversation key to it (via the existing startExternalConversation path).
+
+const inviteClientSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(80),
+    channels: z.object({
+      email: z
+        .object({
+          enabled: z.boolean(),
+          value: z.string().email().max(255).optional().nullable(),
+        })
+        .default({ enabled: false, value: null }),
+      sms: z
+        .object({
+          enabled: z.boolean(),
+          // E.164: '+' then 7-15 digits. Client-side normalizes before submit.
+          value: z
+            .string()
+            .regex(/^\+[1-9]\d{6,14}$/)
+            .optional()
+            .nullable(),
+        })
+        .default({ enabled: false, value: null }),
+    }),
+    verification: z.object({
+      type: z.enum(['ssn', 'ein', 'none']),
+      last4: z.string().regex(/^\d{4}$/).optional(),
+      // null = never; undefined = fall back to firm default.
+      reverifyEveryHours: z
+        .union([z.literal(4), z.literal(8), z.literal(24), z.literal(168)])
+        .nullable()
+        .optional(),
+    }),
+    firmClientRef: z.string().trim().max(128).optional().nullable(),
+  })
+  .superRefine((v, ctx) => {
+    const emailOk = v.channels.email.enabled && !!v.channels.email.value;
+    const smsOk = v.channels.sms.enabled && !!v.channels.sms.value;
+    if (!emailOk && !smsOk) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['channels'],
+        message: 'at_least_one_channel_required',
+      });
+    }
+    if ((v.verification.type === 'ssn' || v.verification.type === 'ein') && !v.verification.last4) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['verification', 'last4'],
+        message: 'last4_required',
+      });
+    }
+  });
+
+clientsRouter.post(
+  '/invite',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = inviteClientSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+
+    const settings = await db('firm_settings').where({ id: 1 }).first();
+    if (!(settings?.client_messaging_enabled ?? true)) {
+      res.status(403).json({ error: 'client_messaging_disabled' });
+      return;
+    }
+
+    const displayName = parsed.data.displayName;
+    const emailEnabled = parsed.data.channels.email.enabled;
+    const smsEnabled = parsed.data.channels.sms.enabled;
+    const email = emailEnabled ? parsed.data.channels.email.value!.trim().toLowerCase() : null;
+    // Same canonicalisation as the create-client path so duplicate detection
+    // and inbound-SMS lookup find the row regardless of how the admin typed it.
+    const rawPhone = smsEnabled ? parsed.data.channels.sms.value! : null;
+    const phone = rawPhone ? (normalizePhone(rawPhone) ?? null) : null;
+    if (rawPhone && !phone) {
+      res.status(400).json({ error: 'invalid_phone', detail: 'phone too short or malformed' });
+      return;
+    }
+
+    // Duplicate detection — spec wants 409 with the existing id so the UI can
+    // offer an "open existing conversation" path.
+    if (email) {
+      const existing = await db('external_identities').where({ email }).first();
+      if (existing) {
+        res.status(409).json({
+          error: 'email_taken',
+          existingId: existing.id,
+          existingDisplayName: existing.display_name,
+        });
+        return;
+      }
+    }
+    if (phone) {
+      const existing = await db('external_identities').where({ phone }).first();
+      if (existing) {
+        res.status(409).json({
+          error: 'phone_taken',
+          existingId: existing.id,
+          existingDisplayName: existing.display_name,
+        });
+        return;
+      }
+    }
+
+    // STEPUP: bcrypt the last-4 at cost 10 (deliberately weaker than password
+    // hashing because the input space is 10,000 and step-up checks need to be
+    // fast). See vibe-connect-spec-invite-client.md § Human notes.
+    let verificationLast4Hash: string | null = null;
+    if (parsed.data.verification.type !== 'none') {
+      verificationLast4Hash = await bcrypt.hash(parsed.data.verification.last4!, 10);
+    }
+
+    const invite = await generateInviteMaterial();
+    // Primary channel — drives `invited_via` (surfaces in the sidebar's "Invited
+    // 2h ago via email" label). Email wins when both are enabled because the
+    // link is the same either way and email is generally more reliable.
+    const primaryVia: 'email' | 'sms' = emailEnabled && email ? 'email' : 'sms';
+
+    const preferences: Record<string, unknown> = {
+      email_notifications: emailEnabled,
+      sms_notifications: smsEnabled,
+    };
+    if (parsed.data.verification.reverifyEveryHours !== undefined) {
+      preferences.reverify_every_hours = parsed.data.verification.reverifyEveryHours;
+    }
+
+    const firmClientRef = (parsed.data.firmClientRef ?? '').trim() || null;
+    const [row] = await db('external_identities')
+      .insert({
+        // Same placeholder convention as /admin/clients so the unique index on
+        // email stays happy when a client is SMS-only.
+        email: email ?? `no-email-${randomBytes(4).toString('hex')}@placeholder.invalid`,
+        phone,
+        display_name: displayName,
+        firm_client_ref: firmClientRef,
+        verification_type: parsed.data.verification.type,
+        verification_last4_hash: verificationLast4Hash,
+        verification_required: parsed.data.verification.type !== 'none',
+        preferences: JSON.stringify(preferences),
+        invite_token_hash: invite.tokenHash,
+        invite_public_key: invite.publicKey,
+        invited_at: db.fn.now(),
+        invited_via: primaryVia,
+      })
+      .returning(['id']);
+    const identityId = (row as { id: string }).id;
+
+    const actor = await db('users').where({ id: req.session.userId! }).first();
+    const firmName = (settings?.firm_name as string | undefined) ?? null;
+    const fromDisplayName = (actor?.display_name as string | undefined) ?? null;
+
+    // Send to each enabled channel independently so a flaky SMS provider can't
+    // stop the email going out (or vice versa). Invite material is already
+    // persisted — staff can hit "Resend" from the admin UI if a channel fails.
+    const deliveryStatus: { email: string | null; sms: string | null } = {
+      email: null,
+      sms: null,
+    };
+    const deliveryErrors: { email?: string; sms?: string } = {};
+
+    if (emailEnabled && email) {
+      try {
+        await sendClientInvite({
+          identityId,
+          displayName,
+          via: 'email',
+          email,
+          phone,
+          token: invite.token,
+          firmName,
+          fromDisplayName,
+        });
+        deliveryStatus.email = 'sent';
+      } catch (err) {
+        deliveryStatus.email = 'failed';
+        deliveryErrors.email = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (smsEnabled && phone) {
+      try {
+        await sendClientInvite({
+          identityId,
+          displayName,
+          via: 'sms',
+          email,
+          phone,
+          token: invite.token,
+          firmName,
+          fromDisplayName,
+        });
+        deliveryStatus.sms = 'sent';
+      } catch (err) {
+        deliveryStatus.sms = 'failed';
+        deliveryErrors.sms = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'client.invited',
+      targetType: 'external_identity',
+      targetId: identityId,
+      details: {
+        channels: { email: emailEnabled, sms: smsEnabled },
+        verificationType: parsed.data.verification.type,
+        deliveryStatus,
+        ...(Object.keys(deliveryErrors).length > 0 ? { deliveryErrors } : {}),
+      },
+    });
+
+    res.status(201).json({
+      externalIdentityId: identityId,
+      invitePublicKey: invite.publicKey,
+      deliveryStatus,
+      ...(Object.keys(deliveryErrors).length > 0 ? { deliveryErrors } : {}),
+    });
+  }),
+);
+
+// ---------- Staff "Resend invite" ----------
+//
+// Sidebar pending-client flow. A staff member clicks an invited-but-not-activated
+// client, corrects any typos in name / email / phone / verification, and resends
+// the invite. This rotates the invite token + public key (same behaviour as the
+// admin /admin/clients/:id/reinvite path) so a re-sent invite link always works.
+//
+// Only allowed while the client is still pending (last_active_at IS NULL and not
+// deactivated) — once the client has signed in, their session public keys are in
+// play and rotating invite_public_key would just strand any already-wrapped
+// pre-activation drafts without helping. Admins can still re-issue via the
+// /admin/clients/:id/reinvite path for activated clients if needed.
+//
+// `verification.last4` is optional on resend. If the caller omits it AND the
+// verification type is unchanged, the existing hash is preserved. If the type
+// changes to ssn/ein, last4 becomes required.
+const resendInviteSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(80),
+    channels: z.object({
+      email: z
+        .object({
+          enabled: z.boolean(),
+          value: z.string().email().max(255).optional().nullable(),
+        })
+        .default({ enabled: false, value: null }),
+      sms: z
+        .object({
+          enabled: z.boolean(),
+          value: z
+            .string()
+            .regex(/^\+[1-9]\d{6,14}$/)
+            .optional()
+            .nullable(),
+        })
+        .default({ enabled: false, value: null }),
+    }),
+    verification: z.object({
+      type: z.enum(['ssn', 'ein', 'none']),
+      last4: z.string().regex(/^\d{4}$/).optional(),
+      reverifyEveryHours: z
+        .union([z.literal(4), z.literal(8), z.literal(24), z.literal(168)])
+        .nullable()
+        .optional(),
+    }),
+    firmClientRef: z.string().trim().max(128).optional().nullable(),
+  })
+  .superRefine((v, ctx) => {
+    const emailOk = v.channels.email.enabled && !!v.channels.email.value;
+    const smsOk = v.channels.sms.enabled && !!v.channels.sms.value;
+    if (!emailOk && !smsOk) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['channels'],
+        message: 'at_least_one_channel_required',
+      });
+    }
+  });
+
+clientsRouter.post(
+  '/:id([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/reinvite',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const identityId = req.params.id!;
+    const current = await db('external_identities').where({ id: identityId }).first();
+    if (!current || current.deactivated_at) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (current.last_active_at) {
+      // Once a client has signed in, rotating the invite key would strand any
+      // conversation wraps made to it without any benefit — the client uses
+      // their active session keys now, not the invite key.
+      res.status(409).json({ error: 'already_activated' });
+      return;
+    }
+
+    const parsed = resendInviteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+
+    const settings = await db('firm_settings').where({ id: 1 }).first();
+    if (!(settings?.client_messaging_enabled ?? true)) {
+      res.status(403).json({ error: 'client_messaging_disabled' });
+      return;
+    }
+
+    const displayName = parsed.data.displayName;
+    const emailEnabled = parsed.data.channels.email.enabled;
+    const smsEnabled = parsed.data.channels.sms.enabled;
+    const email = emailEnabled ? parsed.data.channels.email.value!.trim().toLowerCase() : null;
+    const rawPhone = smsEnabled ? parsed.data.channels.sms.value! : null;
+    const phone = rawPhone ? (normalizePhone(rawPhone) ?? null) : null;
+    if (rawPhone && !phone) {
+      res.status(400).json({ error: 'invalid_phone', detail: 'phone too short or malformed' });
+      return;
+    }
+
+    // Duplicate detection — mirror /clients/invite semantics but exclude this
+    // identity so resending unchanged contact info is allowed.
+    if (email) {
+      const existing = await db('external_identities')
+        .where({ email })
+        .andWhere('id', '!=', identityId)
+        .first();
+      if (existing) {
+        res.status(409).json({
+          error: 'email_taken',
+          existingId: existing.id,
+          existingDisplayName: existing.display_name,
+        });
+        return;
+      }
+    }
+    if (phone) {
+      const existing = await db('external_identities')
+        .where({ phone })
+        .andWhere('id', '!=', identityId)
+        .first();
+      if (existing) {
+        res.status(409).json({
+          error: 'phone_taken',
+          existingId: existing.id,
+          existingDisplayName: existing.display_name,
+        });
+        return;
+      }
+    }
+
+    // Verification update rules:
+    //   - Same type (ssn/ein), no new last4 → keep existing hash.
+    //   - Same type (ssn/ein), new last4 → rehash.
+    //   - Type changed to ssn/ein, new last4 → rehash.
+    //   - Type changed to ssn/ein, no new last4 → 400.
+    //   - Type changed to none → clear hash.
+    const newType = parsed.data.verification.type;
+    const currentType = current.verification_type as 'ssn' | 'ein' | 'none';
+    let verificationLast4Hash: string | null = (current.verification_last4_hash as string | null) ?? null;
+    if (newType === 'none') {
+      verificationLast4Hash = null;
+    } else if (parsed.data.verification.last4) {
+      verificationLast4Hash = await bcrypt.hash(parsed.data.verification.last4, 10);
+    } else if (newType !== currentType) {
+      res.status(400).json({ error: 'last4_required' });
+      return;
+    }
+
+    const invite = await generateInviteMaterial();
+    const primaryVia: 'email' | 'sms' = emailEnabled && email ? 'email' : 'sms';
+
+    const existingPrefs =
+      (current.preferences as Record<string, unknown> | null | undefined) ?? {};
+    const preferences: Record<string, unknown> = {
+      ...existingPrefs,
+      email_notifications: emailEnabled,
+      sms_notifications: smsEnabled,
+    };
+    if (parsed.data.verification.reverifyEveryHours !== undefined) {
+      preferences.reverify_every_hours = parsed.data.verification.reverifyEveryHours;
+    }
+
+    const firmClientRef =
+      parsed.data.firmClientRef === undefined
+        ? (current.firm_client_ref as string | null) ?? null
+        : (parsed.data.firmClientRef ?? '').trim() || null;
+
+    await db('external_identities')
+      .where({ id: identityId })
+      .update({
+        email: email ?? `no-email-${randomBytes(4).toString('hex')}@placeholder.invalid`,
+        phone,
+        display_name: displayName,
+        firm_client_ref: firmClientRef,
+        verification_type: newType,
+        verification_last4_hash: verificationLast4Hash,
+        verification_required: newType !== 'none',
+        preferences: JSON.stringify(preferences),
+        invite_token_hash: invite.tokenHash,
+        invite_public_key: invite.publicKey,
+        invited_at: db.fn.now(),
+        invited_via: primaryVia,
+      });
+
+    const actor = await db('users').where({ id: req.session.userId! }).first();
+    const firmName = (settings?.firm_name as string | undefined) ?? null;
+    const fromDisplayName = (actor?.display_name as string | undefined) ?? null;
+
+    const deliveryStatus: { email: string | null; sms: string | null } = {
+      email: null,
+      sms: null,
+    };
+    const deliveryErrors: { email?: string; sms?: string } = {};
+
+    if (emailEnabled && email) {
+      try {
+        await sendClientInvite({
+          identityId,
+          displayName,
+          via: 'email',
+          email,
+          phone,
+          token: invite.token,
+          firmName,
+          fromDisplayName,
+        });
+        deliveryStatus.email = 'sent';
+      } catch (err) {
+        deliveryStatus.email = 'failed';
+        deliveryErrors.email = err instanceof Error ? err.message : String(err);
+      }
+    }
+    if (smsEnabled && phone) {
+      try {
+        await sendClientInvite({
+          identityId,
+          displayName,
+          via: 'sms',
+          email,
+          phone,
+          token: invite.token,
+          firmName,
+          fromDisplayName,
+        });
+        deliveryStatus.sms = 'sent';
+      } catch (err) {
+        deliveryStatus.sms = 'failed';
+        deliveryErrors.sms = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'client.reinvited',
+      targetType: 'external_identity',
+      targetId: identityId,
+      details: {
+        channels: { email: emailEnabled, sms: smsEnabled },
+        verificationType: newType,
+        deliveryStatus,
+        ...(Object.keys(deliveryErrors).length > 0 ? { deliveryErrors } : {}),
+      },
+    });
+
+    res.status(200).json({
+      externalIdentityId: identityId,
+      invitePublicKey: invite.publicKey,
+      deliveryStatus,
+      ...(Object.keys(deliveryErrors).length > 0 ? { deliveryErrors } : {}),
+    });
   }),
 );

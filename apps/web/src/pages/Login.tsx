@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { api } from '../api.js';
 import { useAuth } from '../state/auth.js';
 
 export function LoginPage(): JSX.Element {
@@ -9,6 +10,20 @@ export function LoginPage(): JSX.Element {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [oidcLoginUrl, setOidcLoginUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .oidcConfig()
+      .then((c) => {
+        if (!cancelled && c.enabled && c.loginUrl) setOidcLoginUrl(c.loginUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function onSubmit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -72,6 +87,22 @@ export function LoginPage(): JSX.Element {
         >
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
+
+        {oidcLoginUrl && (
+          <>
+            <div className="relative flex items-center my-2 text-xs text-slate-400">
+              <span className="flex-grow h-px bg-slate-200" />
+              <span className="px-2 uppercase tracking-wide">or</span>
+              <span className="flex-grow h-px bg-slate-200" />
+            </div>
+            <a
+              href={oidcLoginUrl}
+              className="block text-center w-full rounded-md border border-slate-300 text-slate-700 font-medium py-2 hover:bg-slate-50"
+            >
+              Sign in with SSO
+            </a>
+          </>
+        )}
       </form>
     </div>
   );

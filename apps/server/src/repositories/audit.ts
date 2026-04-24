@@ -1,4 +1,5 @@
 import { db } from '../db/knex.js';
+import { currentReqId } from '../middleware/reqContext.js';
 
 export interface AuditWrite {
   actorUserId?: string | null;
@@ -13,13 +14,18 @@ export interface AuditWrite {
 export const auditRepo = {
   async write(entry: AuditWrite): Promise<void> {
     // AUDIT: every privileged action funnels through here.
+    // Tag with the originating request ID so admins can correlate a suspicious
+    // audit row back to the full request log line that produced it.
+    const reqId = currentReqId();
+    const details: Record<string, unknown> = entry.details ?? {};
+    if (reqId && details.reqId === undefined) details.reqId = reqId;
     await db('audit_log').insert({
       actor_user_id: entry.actorUserId ?? null,
       actor_external_identity_id: entry.actorExternalIdentityId ?? null,
       action: entry.action,
       target_type: entry.targetType,
       target_id: entry.targetId ?? null,
-      details: entry.details ?? {},
+      details,
       ip_address: entry.ipAddress ?? null,
     });
   },
