@@ -73,6 +73,47 @@ export type RealtimeEvent =
       conversationId: string;
       memberUserIds: string[];
       addedRecipientIds: string[];
+    }
+  | {
+      // Phase 24: a request_list or request_item changed in a way that needs
+      // every conversation member to refetch the panel. Carries enough IDs
+      // for the client to invalidate the right query without hitting the
+      // server with a full poll. itemId is omitted for list-level events
+      // (creation, status change, cancel).
+      type: 'request:changed';
+      conversationId: string;
+      listId: string;
+      itemId?: string;
+    }
+  | {
+      // Phase 26: a vault file landed (clean scan). Subscribers: staff with
+      // any conversation membership against the vault's external_identity,
+      // plus the active client session for shared-zone events.
+      type: 'vault:file-uploaded';
+      vaultId: string;
+      externalIdentityId: string;
+      fileId: string;
+      zone: 'shared' | 'staff_only';
+      actorUserId: string | null;
+      actorExternalIdentityId: string | null;
+    }
+  | {
+      // Phase 26: vault file soft-deleted.
+      type: 'vault:file-deleted';
+      vaultId: string;
+      externalIdentityId: string;
+      fileId: string;
+      zone: 'shared' | 'staff_only';
+      actorUserId: string | null;
+      actorExternalIdentityId: string | null;
+    }
+  | {
+      // Phase 26: vault zone key rotated (staff add/remove). Clients refetch
+      // their wrapped key for the new rotation_version.
+      type: 'vault:rekey';
+      vaultId: string;
+      zone: 'shared' | 'staff_only';
+      rotationVersion: number;
     };
 
 type Listener = (event: RealtimeEvent) => void;

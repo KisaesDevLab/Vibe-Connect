@@ -34,8 +34,11 @@ RUN yarn workspace @vibe-connect/portal build
 
 # --- nginx runtime --------------------------------------------------------
 FROM nginx:1.27-alpine
-RUN apk add --no-cache inotify-tools
+# inotify-tools: cert-reload watcher (internal TLS mode only)
+# gettext: envsubst, used by the entrypoint to render nginx.conf.template
+RUN apk add --no-cache inotify-tools gettext
 COPY infra/docker/nginx/entrypoint.sh /entrypoint.sh
+COPY infra/docker/nginx/nginx.conf.template /etc/nginx/nginx.conf.template
 RUN chmod +x /entrypoint.sh
 # Bake in the frontend bundles. docker-compose no longer bind-mounts
 # ./static because that path is now a build artefact, not a tracked dir.

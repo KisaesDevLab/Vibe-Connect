@@ -77,6 +77,8 @@ const prefsSchema = z.object({
   urgentOverridesDnd: z.boolean().optional(),
   emailFallbackEnabled: z.boolean().optional(),
   emailFallbackUrgentOnly: z.boolean().optional(),
+  smsFallbackEnabled: z.boolean().optional(),
+  smsFallbackUrgentOnly: z.boolean().optional(),
 });
 
 notificationsRouter.get(
@@ -112,6 +114,10 @@ notificationsRouter.patch(
       patch.email_fallback_enabled = parsed.data.emailFallbackEnabled;
     if (parsed.data.emailFallbackUrgentOnly !== undefined)
       patch.email_fallback_urgent_only = parsed.data.emailFallbackUrgentOnly ? 1 : 0;
+    if (parsed.data.smsFallbackEnabled !== undefined)
+      patch.sms_fallback_enabled = parsed.data.smsFallbackEnabled;
+    if (parsed.data.smsFallbackUrgentOnly !== undefined)
+      patch.sms_fallback_urgent_only = parsed.data.smsFallbackUrgentOnly ? 1 : 0;
     if (Object.keys(patch).length > 0) {
       await db('notification_prefs')
         .where({ user_id: req.session.userId! })

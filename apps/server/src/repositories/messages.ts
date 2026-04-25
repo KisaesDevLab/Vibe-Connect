@@ -15,8 +15,20 @@ export interface MessageRow {
   created_at: string;
   edited_at: string | null;
   deleted_at: string | null;
+  destruct_after_view_seconds: number | null;
+  destruct_at: string | null;
   ciphertext_meta: Record<string, unknown>;
   source_meta: Record<string, unknown>;
+}
+
+export interface MessageEditRow {
+  id: string;
+  message_id: string;
+  ciphertext: Buffer;
+  ciphertext_meta: Record<string, unknown>;
+  content_key_version: number;
+  replaced_at: string;
+  replaced_by_user_id: string | null;
 }
 
 export interface InsertMessageInput {
@@ -30,6 +42,8 @@ export interface InsertMessageInput {
   source?: MessageSource;
   ciphertextMeta?: Record<string, unknown>;
   sourceMeta?: Record<string, unknown>;
+  /** Phase 27: optional self-destruct after the first non-sender read. */
+  destructAfterViewSeconds?: number | null;
 }
 
 export const messagesRepo = {
@@ -49,18 +63,25 @@ export const messagesRepo = {
         source: input.source ?? 'app',
         ciphertext_meta: input.ciphertextMeta ?? {},
         source_meta: input.sourceMeta ?? {},
+        destruct_after_view_seconds: input.destructAfterViewSeconds ?? null,
       })
       .returning('*');
     return row!;
   },
 
+  /**
+   * Lists messages in a conversation. Deleted rows ARE included so the UI can
+   * render a "Message deleted" placeholder — the route handler is responsible
+   * for stripping the ciphertext + attachments for those rows. Pre-Phase-27
+   * this filtered out deleted rows entirely; the new client expects to see the
+   * tombstone so it can replace its own optimistic copy with the placeholder.
+   */
   async list(
     conversationId: string,
     opts: { beforeId?: string; limit?: number } = {},
   ): Promise<MessageRow[]> {
     let q = db<MessageRow>('messages')
       .where({ conversation_id: conversationId })
-      .whereNull('deleted_at')
       .where((b) => b.whereNull('scheduled_for').orWhere('scheduled_for', '<=', db.fn.now()))
       .orderBy('created_at', 'desc')
       .limit(opts.limit ?? 50);
@@ -75,16 +96,39 @@ export const messagesRepo = {
     return (trx ?? db)<MessageRow>('messages').where({ id }).first();
   },
 
-  async edit(id: string, ciphertext: Buffer, ciphertextMeta: Record<string, unknown>) {
-    const [row] = await db<MessageRow>('messages')
-      .where({ id })
-      .update({
-        ciphertext,
-        ciphertext_meta: ciphertextMeta,
-        edited_at: db.fn.now(),
-      })
-      .returning('*');
-    return row;
+  /**
+   * Phase 27: edit is now a transaction that snapshots the prior ciphertext
+   * into `message_edits` BEFORE overwriting the live row. The snapshot
+   * carries `content_key_version` so a key rotation between edits doesn't
+   * leave history rows undecryptable. `replacedByUserId` is the staffer who
+   * saved the new version (admin history view shows it).
+   */
+  async edit(
+    id: string,
+    ciphertext: Buffer,
+    ciphertextMeta: Record<string, unknown>,
+    replacedByUserId: string,
+  ) {
+    return db.transaction(async (trx) => {
+      const prior = await trx<MessageRow>('messages').where({ id }).first();
+      if (!prior) return undefined;
+      await trx<MessageEditRow>('message_edits').insert({
+        message_id: id,
+        ciphertext: prior.ciphertext,
+        ciphertext_meta: prior.ciphertext_meta,
+        content_key_version: prior.content_key_version,
+        replaced_by_user_id: replacedByUserId,
+      });
+      const [row] = await trx<MessageRow>('messages')
+        .where({ id })
+        .update({
+          ciphertext,
+          ciphertext_meta: ciphertextMeta,
+          edited_at: trx.fn.now(),
+        })
+        .returning('*');
+      return row;
+    });
   },
 
   async softDelete(id: string) {
@@ -99,6 +143,39 @@ export const messagesRepo = {
     await db<MessageRow>('messages')
       .where({ id })
       .update({ ciphertext: Buffer.alloc(0), ciphertext_meta: {} });
+  },
+
+  /**
+   * Phase 27: stamp `destruct_at` when a non-sender recipient marks the
+   * message read. Sender self-reads are skipped so a staffer hovering their
+   * own message doesn't start the timer. Idempotent — `WHERE destruct_at IS
+   * NULL` guarantees a second concurrent read is a no-op. Returns the row
+   * count actually updated (0 or 1) so callers can decide whether to write
+   * the `message.destruct_armed` audit row.
+   *
+   * `readerUserId` may be null when the reader is an external identity
+   * (portal); in that case the row's `sender_id` is necessarily a staff user
+   * (clients can only post via `sender_external_identity_id`), so the
+   * non-sender check is automatically satisfied.
+   */
+  async stampDestructAt(
+    messageId: string,
+    fireAt: Date,
+    readerUserId: string | null,
+  ): Promise<number> {
+    let q = db<MessageRow>('messages')
+      .where({ id: messageId })
+      .whereNotNull('destruct_after_view_seconds')
+      .whereNull('destruct_at')
+      .whereNull('deleted_at');
+    if (readerUserId !== null) {
+      // sender_id IS NULL OR sender_id <> readerUserId — i.e. anyone except
+      // the message's own sender starts the timer.
+      q = q.andWhere((b) =>
+        b.whereNull('sender_id').orWhere('sender_id', '<>', readerUserId),
+      );
+    }
+    return q.update({ destruct_at: fireAt.toISOString() });
   },
 };
 
@@ -142,6 +219,20 @@ export const attachmentsRepo = {
   },
   delete(id: string) {
     return db<AttachmentRow>('attachments').where({ id }).delete();
+  },
+};
+
+/**
+ * Phase 27: history of pre-edit message ciphertexts. Populated transactionally
+ * by `messagesRepo.edit()`. Used by the admin history-viewer route to walk
+ * the timeline of edits for a single message; recipient-facing routes never
+ * touch this table.
+ */
+export const messageEditsRepo = {
+  listForMessage(messageId: string): Promise<MessageEditRow[]> {
+    return db<MessageEditRow>('message_edits')
+      .where({ message_id: messageId })
+      .orderBy('replaced_at', 'asc');
   },
 };
 

@@ -1,4 +1,7 @@
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '../api.js';
+import { useAuth } from '../state/auth.js';
 import { enablePush, useDesktopNotifications } from '../state/notifications.js';
 
 interface Prefs {
@@ -10,6 +13,8 @@ interface Prefs {
   urgent_overrides_dnd: boolean;
   email_fallback_enabled: boolean;
   email_fallback_urgent_only: number;
+  sms_fallback_enabled: boolean;
+  sms_fallback_urgent_only: number;
 }
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -24,10 +29,16 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function NotificationPrefsPage(): JSX.Element {
   const qc = useQueryClient();
+  const { user, refresh } = useAuth();
   const { permission, requestPermission } = useDesktopNotifications();
   const q = useQuery({
     queryKey: ['notification-prefs'],
     queryFn: () => json<{ prefs: Prefs }>('/notifications/prefs').then((r) => r.prefs),
+  });
+  const policyQ = useQuery({
+    queryKey: ['security-policy'],
+    queryFn: () => api.getSecurityPolicy(),
+    staleTime: 60_000,
   });
   const mut = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -37,6 +48,13 @@ export function NotificationPrefsPage(): JSX.Element {
 
   if (!q.data) return <div className="p-6 text-sm text-slate-500">Loading…</div>;
   const p = q.data;
+  const smsAvailableAtFirm = policyQ.data?.smsAvailable !== false; // default to true while loading
+  const hasPhone = Boolean(user?.phone);
+  // Toggling SMS on requires both a phone on file AND a firm-level provider —
+  // otherwise the preference is meaningless. We let the user clear an enabled
+  // pref even when those preconditions are gone (so disconnecting a provider
+  // doesn't strand the toggle), but block enabling.
+  const canEnableSms = smsAvailableAtFirm && hasPhone;
   return (
     <div className="max-w-lg p-6 space-y-4">
       <h2 className="font-semibold text-slate-900 text-lg">Notifications</h2>
@@ -135,8 +153,156 @@ export function NotificationPrefsPage(): JSX.Element {
         <p className="text-xs text-slate-500">
           Emails intentionally never include message content — just a &quot;you have a new
           message&quot; link.
+          {!user?.email && (
+            <span className="block mt-1 text-amber-700">
+              No email on file — your admin sets this on your user account.
+            </span>
+          )}
         </p>
       </div>
+
+      <PhoneCard phone={user?.phone ?? null} onSaved={() => refresh()} />
+
+      <div className="bg-white rounded shadow-card p-4 space-y-2">
+        <h3 className="font-medium text-slate-800">SMS fallback</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={p.sms_fallback_enabled}
+            disabled={!canEnableSms && !p.sms_fallback_enabled}
+            onChange={(e) => mut.mutate({ smsFallbackEnabled: e.target.checked })}
+          />
+          Text me when I&apos;m offline
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            defaultChecked={Boolean(p.sms_fallback_urgent_only)}
+            disabled={!p.sms_fallback_enabled}
+            onChange={(e) => mut.mutate({ smsFallbackUrgentOnly: e.target.checked })}
+          />
+          Only for urgent messages
+        </label>
+        <p className="text-xs text-slate-500">
+          Texts are metadata-only — same rule as email.
+        </p>
+        {!hasPhone && (
+          <p className="text-xs text-amber-700">
+            Add a mobile number above before enabling SMS notifications.
+          </p>
+        )}
+        {hasPhone && !smsAvailableAtFirm && (
+          <p className="text-xs text-amber-700">
+            Your firm&apos;s SMS provider isn&apos;t configured. Ask an admin to set one up
+            in <strong>Admin → Text messages</strong>.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// E.164 normaliser. Mirrors apps/server/src/services/accessCodes.ts
+// normalizePhone() so the input the user types here matches what the server
+// will accept on PATCH /auth/me. Returns null when the input can't be coerced
+// into a plausible international number, letting the UI block save instead of
+// shipping garbage to the server.
+function normalizePhoneInput(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('+')) {
+    const digits = trimmed.slice(1).replace(/\D/g, '');
+    if (digits.length < 7 || digits.length > 15) return null;
+    return `+${digits}`;
+  }
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  if (digits.length >= 7 && digits.length <= 15) return `+${digits}`;
+  return null;
+}
+
+function PhoneCard({
+  phone,
+  onSaved,
+}: {
+  phone: string | null;
+  onSaved: () => void | Promise<void>;
+}): JSX.Element {
+  const [draft, setDraft] = useState<string>(phone ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const dirty = draft.trim() !== (phone ?? '');
+  const save = useMutation({
+    mutationFn: (value: string | null) => api.updateMe({ phone: value }),
+    onSuccess: () => {
+      setError(null);
+      setSavedAt(Date.now());
+      void onSaved();
+    },
+    onError: (e: Error) => {
+      setError(e.message.includes('400') ? 'That phone number isn’t valid.' : e.message);
+    },
+  });
+  function onSave(): void {
+    setError(null);
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      save.mutate(null);
+      return;
+    }
+    const normalized = normalizePhoneInput(trimmed);
+    if (!normalized) {
+      setError('Enter a valid phone number — country code recommended.');
+      return;
+    }
+    save.mutate(normalized);
+  }
+  return (
+    <div className="bg-white rounded shadow-card p-4 space-y-2">
+      <h3 className="font-medium text-slate-800">My mobile number</h3>
+      <p className="text-xs text-slate-500">
+        Used only for the SMS fallback below — never for delivering message content. Stored in
+        E.164 form (e.g. <code className="text-[11px]">+15551234567</code>).
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          placeholder="+1 555 123 4567"
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            if (error) setError(null);
+          }}
+          className="flex-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-brand-500 focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!dirty || save.isPending}
+          className="rounded-md bg-brand-600 text-white text-sm px-3 py-1.5 hover:bg-brand-700 disabled:bg-slate-300"
+        >
+          {save.isPending ? 'Saving…' : 'Save'}
+        </button>
+        {phone && !dirty && (
+          <button
+            type="button"
+            onClick={() => {
+              setDraft('');
+              save.mutate(null);
+            }}
+            className="text-xs text-slate-500 hover:text-rose-700"
+          >
+            Remove
+          </button>
+        )}
+      </div>
+      {error && <p className="text-xs text-rose-600">{error}</p>}
+      {savedAt && !error && !dirty && (
+        <p className="text-xs text-emerald-700">Saved.</p>
+      )}
     </div>
   );
 }

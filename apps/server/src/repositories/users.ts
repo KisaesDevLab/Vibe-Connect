@@ -5,6 +5,7 @@ export interface UserRow {
   id: string;
   username: string;
   email: string | null;
+  phone: string | null;
   password_hash: string;
   display_name: string;
   avatar_url: string | null;

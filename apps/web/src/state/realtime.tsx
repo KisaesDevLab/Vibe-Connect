@@ -14,6 +14,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { io, type Socket } from 'socket.io-client';
 import { api } from '../api.js';
+import { getBoot, url } from '../lib/boot.js';
 import { useAuth } from './auth.js';
 import { useCrypto, wipeDeviceSecrets } from './crypto.js';
 import { SearchIndex } from './search.js';
@@ -89,7 +90,13 @@ export function RealtimeProvider({ children }: { children: ReactNode }): JSX.Ele
       return;
     }
     setConnectionStatus('connecting');
+    // Distribution mode: socket.io defaults its path to '/socket.io'. Under
+    // multi-app (BASE_PATH=/connect) the upstream Caddy proxies the prefixed
+    // path through, so we need '/connect/socket.io' on the wire. The empty
+    // single-app prefix collapses to the default.
+    const ioPath = `${getBoot().basePath}/socket.io`;
     const sock = io({
+      path: ioPath,
       transports: ['websocket'],
       withCredentials: true,
       reconnection: true,
@@ -146,6 +153,14 @@ export function RealtimeProvider({ children }: { children: ReactNode }): JSX.Ele
       qc.invalidateQueries({ queryKey: ['conversation', evt.conversationId] });
       qc.invalidateQueries({ queryKey: ['messages', evt.conversationId] });
     });
+    sock.on('request:changed', (evt: { conversationId: string; listId: string }) => {
+      // Phase 24: a request_list or request_item changed for someone in this
+      // conversation. Invalidate both the per-conversation lists query and
+      // the specific list detail; whichever one the panel currently has
+      // mounted will refetch.
+      qc.invalidateQueries({ queryKey: ['request-lists', 'conv', evt.conversationId] });
+      qc.invalidateQueries({ queryKey: ['request-list', evt.listId] });
+    });
     sock.on('presence:update', () => {
       qc.invalidateQueries({ queryKey: ['users'] });
     });
@@ -176,7 +191,11 @@ export function RealtimeProvider({ children }: { children: ReactNode }): JSX.Ele
         try {
           await api.logout();
         } finally {
-          window.location.assign('/login');
+          // Hard navigation (not React Router) so the device-revoke wipe
+          // also flushes any in-memory crypto state. Distribution-mode:
+          // url() prepends BASE_PATH so multi-app mode lands at
+          // /connect/login, not /login (which would 404 behind Caddy).
+          window.location.assign(url('/login'));
         }
       })();
     });

@@ -8,6 +8,7 @@ import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.js';
 import { auditRepo } from '../repositories/audit.js';
 import { usersRepo } from '../repositories/users.js';
+import { normalizePhone } from '../services/accessCodes.js';
 import { publicUser } from '../util/presenters.js';
 
 const loginSchema = z.object({
@@ -99,7 +100,7 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const userId = req.session.userId;
     await new Promise<void>((resolve) => req.session.destroy(() => resolve()));
-    res.clearCookie(env.sessionCookieName);
+    res.clearCookie(env.sessionCookieName, { path: env.sessionCookiePath });
     if (userId) {
       await auditRepo.write({
         actorUserId: userId,
@@ -123,6 +124,83 @@ authRouter.get(
       return;
     }
     res.json({ user: publicUser(user) });
+  }),
+);
+
+// Self-service profile edits. Currently limited to contact channels used by
+// the offline-notify fallback pipeline (email, phone). Password lives on
+// /auth/change-password because it has additional invariants (session
+// invalidation, rate-limit); display name + username stay admin-only to keep
+// a stable directory.
+//
+// Both fields use `null` to clear the value. `undefined` (omit the key) means
+// "leave it alone" — standard PATCH semantics so the staff UI can patch just
+// one channel without wiping the other.
+const updateMeSchema = z.object({
+  email: z.union([z.string().email().max(255), z.null()]).optional(),
+  phone: z.union([z.string().min(1).max(32), z.null()]).optional(),
+});
+
+authRouter.patch(
+  '/me',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = updateMeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
+      return;
+    }
+    const patch: Record<string, unknown> = {};
+    const changes: Record<string, unknown> = {};
+    // `'field' in parsed.data` doesn't narrow the optional/nullable union, so
+    // we keep an explicit undefined-vs-null check: undefined → "leave alone",
+    // null → "clear", otherwise trim/normalize and update.
+    if (parsed.data.email !== undefined) {
+      const value = parsed.data.email;
+      const normalized = value === null ? null : value.trim().toLowerCase();
+      patch.email = normalized;
+      changes.email = normalized;
+    }
+    if (parsed.data.phone !== undefined) {
+      const value = parsed.data.phone;
+      if (value === null) {
+        patch.phone = null;
+        changes.phone = null;
+      } else {
+        const normalized = normalizePhone(value);
+        if (!normalized) {
+          res
+            .status(400)
+            .json({ error: 'invalid_phone', detail: 'phone too short or malformed' });
+          return;
+        }
+        patch.phone = normalized;
+        changes.phone = normalized;
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      // Nothing to do — return the current user so the client's cache can refresh.
+      const current = await usersRepo.findById(req.session.userId!);
+      if (!current) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+      res.json({ user: publicUser(current) });
+      return;
+    }
+    const updated = await usersRepo.update(req.session.userId!, patch);
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'user.self_updated',
+      targetType: 'user',
+      targetId: req.session.userId!,
+      // Never log raw values — just the field names that changed. Phone + email
+      // are PII; the audit row is enough to reconstruct "who changed what, when"
+      // without leaking the values themselves into the audit trail.
+      details: { fields: Object.keys(changes) },
+      ipAddress: req.ip ?? null,
+    });
+    res.json({ user: publicUser(updated!) });
   }),
 );
 

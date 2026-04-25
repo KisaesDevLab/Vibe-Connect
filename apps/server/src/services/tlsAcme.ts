@@ -370,6 +370,14 @@ const BOOT_DELAY_MS = 5 * 60 * 1000;
 
 export function startTlsRenewalTicker(): void {
   if (tickerHandle) return;
+  // Distribution mode: when an upstream Caddy / Cloudflare Tunnel terminates
+  // TLS (TLS_MODE=external), the appliance must NOT run an ACME ticker —
+  // both managers would race for the :80 HTTP-01 challenge port and either
+  // burn LE rate limits or hand back a cert the proxy doesn't trust.
+  if (env.tlsMode !== 'internal') {
+    logger.info('tls.ticker_skipped_external_mode', { tlsMode: env.tlsMode });
+    return;
+  }
   const tick = async (): Promise<void> => {
     try {
       const result = await renewIfExpiring({ actorUserId: null });

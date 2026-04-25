@@ -29,9 +29,28 @@ RUN yarn workspace @vibe-connect/portal build
 
 FROM node:20-alpine AS runtime
 WORKDIR /app
-RUN addgroup -S vibe && adduser -S vibe -G vibe
+# Pin the in-container user to a fixed uid/gid (10001:10001) so host
+# bind-mounts under /var/lib/vibe/connect/{uploads,tls,...} have a stable
+# ownership target. The installer's `vibe install connect` chowns those
+# host paths to 10001:10001 — without a fixed uid here, an Alpine base
+# image bump could shift the default `addgroup -S` allocation and silently
+# break the volume permissions on next deploy.
+RUN addgroup -S -g 10001 vibe && adduser -S -u 10001 -G vibe vibe
+# Distribution-mode: BUILD_VERSION is baked into the image so /__vibe-boot.js
+# can surface "vibe-connect 1.4.2" without a separate fetch. The release
+# pipeline (.github/workflows/release.yml) passes the git tag as the build
+# arg; local builds default to 'dev'.
+ARG BUILD_VERSION=dev
 ENV NODE_ENV=production
 ENV PORT=4000
+ENV BUILD_VERSION=${BUILD_VERSION}
+# Distribution-mode: pin the writable paths the app needs at runtime so an
+# operator who forgets to set ATTACHMENT_LOCAL_DIR / TLS_OUTPUT_DIR in their
+# /etc/vibe/connect/.env still ends up writing into the host bind-mount,
+# not the container's ephemeral writable layer. Compose can override these,
+# but the defaults match the prod-compose volume layout.
+ENV ATTACHMENT_LOCAL_DIR=/var/lib/vibe/connect/uploads
+ENV TLS_OUTPUT_DIR=/var/lib/vibe/connect/tls
 # Copy only what we need at runtime.
 COPY --from=build /app/package.json /app/yarn.lock ./
 COPY --from=build /app/apps/server/package.json apps/server/package.json
@@ -66,7 +85,8 @@ fs.writeFileSync(path,JSON.stringify(p,null,2));" \
 p.main='./dist/index.js';p.types='./dist/index.d.ts';\
 p.exports={'.':{'types':'./dist/index.d.ts','default':'./dist/index.js'}};\
 fs.writeFileSync(path,JSON.stringify(p,null,2));"
-RUN mkdir -p /app/uploads && chown -R vibe:vibe /app/uploads
+RUN mkdir -p /var/lib/vibe/connect/uploads /var/lib/vibe/connect/tls \
+ && chown -R vibe:vibe /var/lib/vibe/connect
 USER vibe
 EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

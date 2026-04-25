@@ -6,6 +6,11 @@ import { defineConfig } from 'vite';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // Distribution mode: relative asset paths so a single build runs under both
+  // single-app ('/') and multi-app ('/connect/') prefixes without rebuild.
+  // index.html resolves './assets/*' against the <base href> tag the server
+  // injects on the way out (see infra/docker/nginx/nginx.conf.template).
+  base: './',
   plugins: [react()],
   resolve: {
     alias: {

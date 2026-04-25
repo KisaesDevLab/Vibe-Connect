@@ -8,6 +8,7 @@ export function publicUser(row: UserRow): PublicUser {
     username: row.username,
     displayName: row.display_name,
     email: row.email,
+    phone: row.phone,
     avatarUrl: row.avatar_url,
     isAdmin: row.is_admin,
     isActive: row.is_active,

@@ -10,6 +10,13 @@ export interface PublicUser {
   username: string;
   displayName: string;
   email: string | null;
+  /**
+   * E.164 phone number for out-of-band notifications (SMS fallback when the
+   * user is offline). Staff self-edit via PATCH /auth/me. Never used for
+   * delivering message content — metadata-only notifications per the firm
+   * crypto invariants.
+   */
+  phone: string | null;
   avatarUrl: string | null;
   isAdmin: boolean;
   isActive: boolean;

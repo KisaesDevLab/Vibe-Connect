@@ -6,6 +6,10 @@ import { defineConfig } from 'vite';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // Distribution mode: relative asset paths so a single build runs under both
+  // single-app ('/') and multi-app ('/connect/') prefixes without rebuild.
+  // See apps/web/vite.config.ts for the full rationale.
+  base: './',
   plugins: [react()],
   resolve: {
     alias: {

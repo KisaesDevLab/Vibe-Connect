@@ -97,6 +97,9 @@ adminRouter.get(
 
 const settingsSchema = z.object({
   firmName: z.string().min(1).max(255).optional(),
+  // Display name for the staff app chrome (header label + browser tab title).
+  // Empty string clears it back to the default "Vibe Connect" branding.
+  appName: z.string().max(80).nullable().optional(),
   // Must be a real http/https URL so an admin can't inject `javascript:` /
   // `data:` / relative paths that downstream <img src={logoUrl}> renders would
   // treat as same-origin scripts. Empty string is coerced to null upstream.
@@ -125,15 +128,40 @@ const settingsSchema = z.object({
   // Kill switch for portal + bridges. Internal staff messaging stays on either way.
   clientMessagingEnabled: z.boolean().optional(),
 
+  // Phase 24 follow-up: kill switch for the Client Requests & Document
+  // Collection feature. Existing lists stay readable for audit; new
+  // creates / submissions / nudges refuse with 403 when disabled.
+  requestsEnabled: z.boolean().optional(),
+
   // Message edit window in minutes. 0 disables edits entirely. Upper bound
   // caps accidental misconfig — no legitimate workflow needs > 24h edits.
   messageEditWindowMinutes: z.number().int().min(0).max(1440).optional(),
+
+  // Phase 27 — message timed self-destruct.
+  // `enabled` is a hard kill switch (compose dropdown hidden + send route
+  // refuses the field). `maxSeconds` caps the dropdown so a staffer can't
+  // pick "destruct in 100 years" by accident. Floor of 60s blocks degenerate
+  // values; ceiling of 30 days keeps the feature meaningfully ephemeral.
+  messageDestructEnabled: z.boolean().optional(),
+  messageDestructMaxSeconds: z.number().int().min(60).max(2_592_000).optional(),
 
   // SMS quiet-hours window. Hours are 0-23 in the recipient's local time.
   // For cross-midnight windows set start > end (e.g. quietStart=22, quietEnd=6
   // means quiet 22:00-06:00). TCPA default is 08..21; admins may tighten.
   smsQuietStartHour: z.number().int().min(0).max(23).optional(),
   smsQuietEndHour: z.number().int().min(0).max(23).optional(),
+
+  // Phase 24.7 — request auto-nudge config. Off by default (firm migration
+  // 20260425000002 default-false). Offsets are positive integers ≤ 8760
+  // hours (one year before due) so a typo can't queue years of nudges.
+  // Min 1 offset so a saved-empty-array doesn't silently disable the
+  // sweeper while leaving auto_nudge_enabled = true.
+  autoNudgeEnabled: z.boolean().optional(),
+  autoNudgeOffsetsHours: z
+    .array(z.number().int().min(0).max(8760))
+    .min(1)
+    .max(10)
+    .optional(),
 
   // TLS / Let's Encrypt — domains, ACME contact, environment. Phase 1 only
   // accepts 'http-01' for the challenge type; Phase 2 widens this.
@@ -153,6 +181,30 @@ const settingsSchema = z.object({
   tlsAcmeEmail: z.string().email().max(254).nullable().optional(),
   tlsAcmeEnvironment: z.enum(['staging', 'production']).optional(),
   tlsChallengeType: z.enum(['http-01']).optional(),
+
+  // Phase 26 — Client Vault firm settings.
+  vaultEnabled: z.boolean().optional(),
+  vaultClientDelete: z.boolean().optional(),
+  vaultMaxFileBytes: z
+    .number()
+    .int()
+    .min(1024 * 1024)
+    .max(5_368_709_120) // 5 GiB ceiling — bigger than any realistic vault upload
+    .optional(),
+  vaultRetentionSharedDays: z.number().int().min(0).max(36500).optional(),
+  vaultRetentionStaffDays: z.number().int().min(0).max(36500).optional(),
+  vaultFolderTemplates: z
+    .array(
+      z.object({
+        nameTemplate: z.string().min(1).max(255),
+        zone: z.enum(['shared', 'staff_only']),
+        retentionDays: z.number().int().min(1).max(36500).nullable().optional(),
+      }),
+    )
+    .max(64)
+    .optional(),
+  vaultNewYearCronEnabled: z.boolean().optional(),
+  vaultInformationBarrier: z.boolean().optional(),
 });
 
 // Minimum set of provider-secret keys that must be configured before switching
@@ -207,6 +259,13 @@ adminRouter.patch(
     }
     const patch: Record<string, unknown> = {};
     if (parsed.data.firmName !== undefined) patch.firm_name = parsed.data.firmName;
+    if (parsed.data.appName !== undefined) {
+      // Empty string + null both mean "fall back to default" — store as null
+      // so the security-policy resolver doesn't have to special-case empties.
+      const trimmed =
+        parsed.data.appName === null ? null : parsed.data.appName.trim() || null;
+      patch.app_name = trimmed;
+    }
     if (parsed.data.logoUrl !== undefined) patch.logo_url = parsed.data.logoUrl;
     if (parsed.data.retentionDays !== undefined) patch.retention_days = parsed.data.retentionDays;
     if (parsed.data.stepupTimeoutHours !== undefined)
@@ -227,10 +286,21 @@ adminRouter.patch(
       patch.idle_lock_minutes = parsed.data.idleLockMinutes;
     if (parsed.data.clientMessagingEnabled !== undefined)
       patch.client_messaging_enabled = parsed.data.clientMessagingEnabled;
+    if (parsed.data.requestsEnabled !== undefined)
+      patch.requests_enabled = parsed.data.requestsEnabled;
     if (parsed.data.messageEditWindowMinutes !== undefined)
       patch.message_edit_window_minutes = parsed.data.messageEditWindowMinutes;
+    if (parsed.data.messageDestructEnabled !== undefined)
+      patch.message_destruct_enabled = parsed.data.messageDestructEnabled;
+    if (parsed.data.messageDestructMaxSeconds !== undefined)
+      patch.message_destruct_max_seconds = parsed.data.messageDestructMaxSeconds;
     if (parsed.data.smsQuietStartHour !== undefined)
       patch.sms_quiet_start_hour = parsed.data.smsQuietStartHour;
+    if (parsed.data.autoNudgeEnabled !== undefined)
+      patch.auto_nudge_enabled = parsed.data.autoNudgeEnabled;
+    if (parsed.data.autoNudgeOffsetsHours !== undefined) {
+      patch.auto_nudge_offsets_hours = parsed.data.autoNudgeOffsetsHours;
+    }
     if (parsed.data.smsQuietEndHour !== undefined)
       patch.sms_quiet_end_hour = parsed.data.smsQuietEndHour;
     if (parsed.data.tlsStaffDomain !== undefined)
@@ -242,6 +312,22 @@ adminRouter.patch(
       patch.tls_acme_environment = parsed.data.tlsAcmeEnvironment;
     if (parsed.data.tlsChallengeType !== undefined)
       patch.tls_challenge_type = parsed.data.tlsChallengeType;
+    // Phase 26 — Client Vault settings.
+    if (parsed.data.vaultEnabled !== undefined) patch.vault_enabled = parsed.data.vaultEnabled;
+    if (parsed.data.vaultClientDelete !== undefined)
+      patch.vault_client_delete = parsed.data.vaultClientDelete;
+    if (parsed.data.vaultMaxFileBytes !== undefined)
+      patch.vault_max_file_bytes = parsed.data.vaultMaxFileBytes;
+    if (parsed.data.vaultRetentionSharedDays !== undefined)
+      patch.vault_retention_shared_days = parsed.data.vaultRetentionSharedDays;
+    if (parsed.data.vaultRetentionStaffDays !== undefined)
+      patch.vault_retention_staff_days = parsed.data.vaultRetentionStaffDays;
+    if (parsed.data.vaultFolderTemplates !== undefined)
+      patch.vault_folder_templates = JSON.stringify(parsed.data.vaultFolderTemplates);
+    if (parsed.data.vaultNewYearCronEnabled !== undefined)
+      patch.vault_new_year_cron_enabled = parsed.data.vaultNewYearCronEnabled;
+    if (parsed.data.vaultInformationBarrier !== undefined)
+      patch.vault_information_barrier = parsed.data.vaultInformationBarrier;
     if (Object.keys(patch).length > 0) {
       await db('firm_settings')
         .where({ id: 1 })
@@ -994,6 +1080,94 @@ adminRouter.post(
   }),
 );
 
+// ---------- Phase 27: per-message history (admin) ----------
+//
+// Returns the live message row + every snapshot from `message_edits` + the
+// conversation's wrapped-key bundle. Admin client decrypts in-browser. Same
+// shape as /admin/export so the frontend can re-use the existing decrypt
+// helpers; this endpoint is just narrower scope (one message vs. an entire
+// conversation).
+//
+// Rate-limited at 30/hour/admin so a script can't pull every edit history
+// in the firm in a single sitting. Each call audits — that gives the firm
+// owner a paper trail of which messages were inspected.
+const historyLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate_limited' },
+  keyGenerator: (req) => req.session.userId ?? req.ip ?? 'anon',
+});
+
+adminRouter.get(
+  '/messages/:id/history',
+  requireAdmin,
+  historyLimiter,
+  asyncHandler(async (req, res) => {
+    const msg = await db('messages').where({ id: req.params.id! }).first();
+    if (!msg) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const edits = await db('message_edits')
+      .where({ message_id: msg.id })
+      .orderBy('replaced_at', 'asc');
+    const conv = await db('conversations').where({ id: msg.conversation_id }).first();
+    const keys = await db('conversation_keys')
+      .where({ conversation_id: msg.conversation_id })
+      .orderBy('rotation_version', 'asc');
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'admin.message_history_viewed',
+      targetType: 'message',
+      targetId: msg.id,
+      details: {
+        conversationId: msg.conversation_id,
+        editCount: edits.length,
+        deleted: msg.deleted_at !== null,
+      },
+    });
+    res.json({
+      conversation: conv
+        ? {
+            id: conv.id,
+            type: conv.type,
+            displayName: conv.display_name,
+          }
+        : null,
+      message: {
+        id: msg.id,
+        senderId: msg.sender_id,
+        senderExternalIdentityId: msg.sender_external_identity_id,
+        // Always emit ciphertext for admins — even on deleted rows. That's the
+        // entire point of this endpoint vs. the recipient-facing list.
+        ciphertext: (msg.ciphertext as Buffer).toString('base64'),
+        ciphertextMeta: msg.ciphertext_meta,
+        contentKeyVersion: msg.content_key_version,
+        source: msg.source,
+        createdAt: msg.created_at,
+        editedAt: msg.edited_at,
+        deletedAt: msg.deleted_at,
+        destructAfterViewSeconds: msg.destruct_after_view_seconds,
+        destructAt: msg.destruct_at,
+      },
+      edits: edits.map((e) => ({
+        id: e.id,
+        ciphertext: (e.ciphertext as Buffer).toString('base64'),
+        ciphertextMeta: e.ciphertext_meta,
+        contentKeyVersion: e.content_key_version,
+        replacedAt: e.replaced_at,
+        replacedByUserId: e.replaced_by_user_id,
+      })),
+      conversationKeys: keys.map((k) => ({
+        rotationVersion: k.rotation_version,
+        wrappedKeys: k.wrapped_keys,
+      })),
+    });
+  }),
+);
+
 // ---------- Bulk user CSV import ----------
 
 const importSchema = z.object({
@@ -1261,15 +1435,49 @@ firmRouter.get(
     }
     const row = await db('firm_settings').where({ id: 1 }).first();
     const provider = (row?.sms_provider as string | undefined) ?? 'mock';
+    const appName = (row?.app_name as string | null | undefined) ?? null;
     res.json({
       idleLockMinutes: Number(row?.idle_lock_minutes ?? 15),
       clientMessagingEnabled: Boolean(row?.client_messaging_enabled ?? true),
+      requestsEnabled: Boolean(row?.requests_enabled ?? true),
+      vaultEnabled: Boolean(row?.vault_enabled ?? true),
       firmName: (row?.firm_name as string | undefined) ?? 'Your Firm',
+      // Null when the admin hasn't set a brand override; the staff app falls
+      // back to the default "Vibe Connect" string client-side.
+      appName: appName && appName.trim() ? appName.trim() : null,
       stepupTimeoutHours: Number(row?.stepup_timeout_hours ?? 24),
       // Treat 'mock' as unavailable in production so staff aren't misled; dev/test
       // environments see it as available so mock-provider smoke tests still work.
       smsAvailable: provider === 'textlink' || provider === 'twilio' || provider === 'mock',
+      // Phase 27: edit window and self-destruct knobs. The staff client uses
+      // these to gate the bubble-menu Edit button (hidden after the window)
+      // and the compose dropdown (hidden when destruct is firm-disabled).
+      messageEditWindowMinutes: Number(row?.message_edit_window_minutes ?? 15),
+      messageDestructEnabled: Boolean(row?.message_destruct_enabled ?? true),
+      messageDestructMaxSeconds: Number(row?.message_destruct_max_seconds ?? 604800),
     });
+  }),
+);
+
+// Phase 26: vault folder templates readable by any authenticated staff.
+// `vault_folder_templates` is firm-internal cleartext config (the server has
+// no encrypted-on-server template); staff see it indirectly any time they
+// apply a template, so exposing it on the staff-readable endpoint is fine.
+firmRouter.get(
+  '/vault-templates',
+  asyncHandler(async (req, res) => {
+    if (!req.session.userId) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const row = await db('firm_settings').where({ id: 1 }).first('vault_folder_templates');
+    const raw = row?.vault_folder_templates;
+    const templates = Array.isArray(raw)
+      ? raw
+      : typeof raw === 'string'
+        ? (JSON.parse(raw) as unknown)
+        : [];
+    res.json({ templates });
   }),
 );
 

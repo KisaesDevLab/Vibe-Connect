@@ -1,0 +1,250 @@
+user nginx;
+worker_processes auto;
+events { worker_connections 2048; }
+
+http {
+  include /etc/nginx/mime.types;
+  default_type application/octet-stream;
+  sendfile on;
+  keepalive_timeout 65;
+  client_max_body_size 100M;
+
+  # TLS hardening — applies to every ssl server below. Cipher allowlist drops
+  # legacy block modes; prefer_server_ciphers pins order to our policy, not the
+  # client's; session_cache lets resumptions skip the full handshake.
+  ssl_prefer_server_ciphers on;
+  ssl_ciphers             'ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256';
+  ssl_session_cache       shared:SSL:50m;
+  ssl_session_timeout     1d;
+  ssl_session_tickets     off;
+
+  proxy_connect_timeout 10s;
+  proxy_send_timeout    30s;
+  proxy_read_timeout    60s;
+
+  # Docker's embedded DNS. Re-resolve `app` every 10s so we don't hold a stale
+  # IP after a `docker compose up -d --force-recreate app`.
+  resolver 127.0.0.11 valid=10s ipv6=off;
+
+  # Distribution-mode mode flag, evaluated lazily at request time so the HTTP
+  # server block (below) can choose between redirecting to HTTPS (internal /
+  # in-app ACME) and proxying plain HTTP (external / Caddy fronts). Declared
+  # here at the top of `http` for clarity — nginx is single-pass at startup
+  # and would honor a later declaration too, but the rendered config is
+  # easier to audit when the flag definition precedes its use.
+  map $host $tls_mode_internal {
+    default ${TLS_MODE_INTERNAL};
+  }
+
+  # Distinguish browser navigations (Accept: text/html) from XHR / fetch
+  # (Accept: application/json, */*). Several paths are simultaneously SPA
+  # client-routes AND backend API routes (e.g. `/admin/audit`,
+  # `/notifications`). Browser reload on one → SPA shell; SPA XHR → backend.
+  map $http_accept $vibe_wants_spa {
+    default            0;
+    "~*text/html"      1;
+  }
+
+  # Distribution mode: __BASE_HREF__ is injected into every HTML response so
+  # the SPA's <base href> picks up the right prefix at runtime. Single-app
+  # mode renders the empty string (browser uses '/'); multi-app renders
+  # '/connect'. The same compiled bundle works in both modes.
+  #
+  # `sub_filter_once off` is critical because Vite emits multiple <link
+  # rel=modulepreload>, <script type=module>, etc. in index.html; we want all
+  # of them rewritten, not just the first. `sub_filter_types text/html`
+  # restricts substitution to HTML — never mangle a JS or JSON response.
+
+  # ---- Staff site ----
+  server {
+    listen ${HTTPS_PORT} ssl;
+    http2 on;
+    server_name _;
+    ssl_certificate     /etc/nginx/tls/connect.crt;
+    ssl_certificate_key /etc/nginx/tls/connect.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "DENY" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy        "camera=(), microphone=(), geolocation=(), payment=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" always;
+
+    location /__vibe-boot.js {
+      # Distribution-mode bootstrap: the SPA loads this BEFORE its own bundle
+      # so it picks up BASE_PATH at runtime. Always proxied to the app —
+      # never served as a static file.
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /socket.io/ {
+      # NOTE: when proxy_pass contains a variable AND a URI suffix
+      # (`$app_ws/socket.io/`), nginx stops auto-forwarding the request URI +
+      # query string — so `?EIO=4&transport=polling` was being dropped, which
+      # Engine.IO rejected as "Transport unknown" and the client reconnect-
+      # looped forever. Forward the full URI explicitly instead.
+      set $app_ws http://app:4000;
+      proxy_pass $app_ws$request_uri;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_read_timeout 1h;
+    }
+
+    location ~ ^/(auth|users|groups|conversations|attachments|admin|clients|firm|notifications|install|bridges|health|request-lists|request-items|request-templates|requests|portal)(/|$) {
+      # Browser reload on an SPA route (e.g. /admin/groups) → serve index.html
+      # so React Router renders the tab. API callers ask for JSON and go to
+      # the backend.
+      if ($vibe_wants_spa = 1) {
+        rewrite ^ /index.html last;
+      }
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+      root /usr/share/nginx/html/web;
+      try_files $uri $uri/ /index.html;
+      # Default sub_filter_types is text/html — exactly what we want, so we
+      # don't override it (declaring text/html again warns about duplicates).
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+  }
+
+  # ---- Client portal ----
+  server {
+    listen ${PORTAL_HTTPS_PORT} ssl;
+    http2 on;
+    server_name _;
+    ssl_certificate     /etc/nginx/tls/portal.crt;
+    ssl_certificate_key /etc/nginx/tls/portal.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "DENY" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy        "camera=(), microphone=(), geolocation=(), payment=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests" always;
+
+    location /__vibe-boot.js {
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location ~ ^/(portal|auth|attachments|notifications|health)(/|$) {
+      if ($vibe_wants_spa = 1) {
+        rewrite ^ /index.html last;
+      }
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+      root /usr/share/nginx/html/portal;
+      try_files $uri $uri/ /index.html;
+      # Default sub_filter_types is text/html — exactly what we want, so we
+      # don't override it (declaring text/html again warns about duplicates).
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+  }
+
+  # ---- HTTP listener ----
+  # Distribution-mode dual purpose: in TLS_MODE=internal this is the LE HTTP-01
+  # challenge port + the HTTPS redirect; in TLS_MODE=external this is the
+  # only listener (Caddy / Cloudflare Tunnel terminates TLS upstream and
+  # proxies HTTP traffic in here). The challenge handler is harmless in
+  # external mode — no order is in flight, app responds 404 on unknown tokens.
+  server {
+    listen ${HTTP_PORT} default_server;
+    server_name _;
+
+    location /.well-known/acme-challenge/ {
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend$request_uri;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # In external TLS mode, serve the staff SPA + API directly over plain
+    # HTTP (the upstream proxy already terminated TLS). In internal mode,
+    # everything else 301s to HTTPS so the in-app ACME ticker's certificate
+    # actually gets used and HSTS / cookies / CSP can rely on the TLS edge.
+    location /__vibe-boot.js {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /socket.io/ {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      set $app_ws http://app:4000;
+      proxy_pass $app_ws$request_uri;
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_read_timeout 1h;
+    }
+
+    location ~ ^/(auth|users|groups|conversations|attachments|admin|clients|firm|notifications|install|bridges|health|request-lists|request-items|request-templates|requests|portal)(/|$) {
+      # Internal TLS mode: 301 to HTTPS — the LE challenge handler above is
+      # the only thing allowed on plain HTTP. External TLS mode: proxy to
+      # the app directly because Caddy already did the TLS work.
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      if ($vibe_wants_spa = 1) {
+        rewrite ^ /index.html last;
+      }
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      root /usr/share/nginx/html/web;
+      try_files $uri $uri/ /index.html;
+      # Default sub_filter_types is text/html — exactly what we want, so we
+      # don't override it (declaring text/html again warns about duplicates).
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+  }
+
+}

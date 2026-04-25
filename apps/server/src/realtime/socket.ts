@@ -13,6 +13,7 @@ import { logger } from '../logger.js';
 import { onEvent, publish, type RealtimeEvent } from './pgFanout.js';
 import { presenceRepo } from './presence.js';
 import { conversationMembersRepo } from '../repositories/conversations.js';
+import { db } from '../db/knex.js';
 
 interface SessionRequest extends IncomingMessage {
   session?: {
@@ -43,6 +44,13 @@ export function attachRealtime(httpServer: HttpServer): IOServer {
     }),
     cookie: {
       httpOnly: true,
+      // Match the HTTP-side session cookie config exactly. saveUninitialized:
+      // false means the handshake middleware never writes a Set-Cookie in
+      // practice — the staff session always already exists by the time the
+      // SPA opens a socket — but if a future code path triggers a regenerate
+      // we don't want a stale path-/ cookie shadowing the path-/connect
+      // cookie the HTTP side issued.
+      path: env.sessionCookiePath,
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       maxAge: 1000 * 60 * 60 * 12,
@@ -161,6 +169,36 @@ export function attachRealtime(httpServer: HttpServer): IOServer {
           });
         }
         break;
+      case 'request:changed':
+        // Phase 24: send to every member already in the conversation room.
+        // Both staff (in conv:<id>) and portal clients (joined via the same
+        // pattern in their own connect handler) refetch the request list.
+        io.to(`conv:${event.conversationId}`).emit('request:changed', {
+          conversationId: event.conversationId,
+          listId: event.listId,
+          itemId: event.itemId,
+        });
+        break;
+      case 'vault:file-uploaded':
+      case 'vault:file-deleted':
+        // Phase 26: target staff users who share at least one non-removed
+        // conversation membership with the vault's external identity. Payload
+        // is metadata-only (file id + zone + actor) — no filenames, no
+        // ciphertext. Portal clients poll for vault changes; we don't push
+        // through socket.io to them today.
+        if ('externalIdentityId' in event && event.externalIdentityId) {
+          void notifyStaffForExternalIdentity(io, event);
+        }
+        break;
+      case 'vault:rekey':
+        // Notify every staff socket so they can refetch wrapped keys for the
+        // vault if they have it open. Cheap: payload is three IDs.
+        io.emit('vault:rekey', {
+          vaultId: event.vaultId,
+          zone: event.zone,
+          rotationVersion: event.rotationVersion,
+        });
+        break;
       default:
         logger.warn('unhandled_realtime_event', { event });
     }
@@ -169,4 +207,38 @@ export function attachRealtime(httpServer: HttpServer): IOServer {
   io.on('close', () => off());
 
   return io;
+}
+
+/**
+ * Phase 26: fan out a vault file event to staff who share a conversation
+ * with the vault's external_identity. Payload is metadata only — file id,
+ * zone, vault id, actor id. No filename, no ciphertext, no audit detail.
+ */
+async function notifyStaffForExternalIdentity(
+  io: IOServer,
+  event: Extract<RealtimeEvent, { type: 'vault:file-uploaded' | 'vault:file-deleted' }>,
+): Promise<void> {
+  try {
+    const rows = (await db('conversation_members as cm')
+      .join('conversations as c', 'c.id', 'cm.conversation_id')
+      .join('conversation_members as cm2', 'cm2.conversation_id', 'c.id')
+      .where('cm.external_identity_id', event.externalIdentityId)
+      .whereNull('cm.removed_at')
+      .whereNotNull('cm2.user_id')
+      .whereNull('cm2.removed_at')
+      .distinct('cm2.user_id')) as Array<{ user_id: string }>;
+    for (const r of rows) {
+      io.to(`user:${r.user_id}`).emit(event.type, {
+        type: event.type,
+        vaultId: event.vaultId,
+        externalIdentityId: event.externalIdentityId,
+        fileId: event.fileId,
+        zone: event.zone,
+      });
+    }
+  } catch (err) {
+    logger.warn('vault_realtime_fanout_failed', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

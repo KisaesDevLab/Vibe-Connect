@@ -122,11 +122,21 @@ export function AppShell(): JSX.Element {
     queryKey: ['conversations'],
     queryFn: () => api.listConversations(),
   });
+  // Firm-level chrome label. Falls back to "Vibe Connect" when the admin
+  // hasn't set an override (or while the policy is still loading) so the
+  // header never flashes empty.
+  const policy = useQuery({
+    queryKey: ['security-policy'],
+    queryFn: () => api.getSecurityPolicy(),
+    staleTime: 60_000,
+  });
+  const appName = policy.data?.appName?.trim() || 'Vibe Connect';
+  const appBadge = useMemo(() => initialsFor(appName), [appName]);
   const totalUnread = useMemo(
     () => (convs.data?.conversations ?? []).reduce((s, c) => s + c.unreadCount, 0),
     [convs.data],
   );
-  useTabBadge(totalUnread);
+  useTabBadge(totalUnread, appName);
   return (
     <div className="h-screen grid md:grid-cols-[280px_1fr] grid-rows-[52px_1fr] bg-slate-50">
       <header className="col-span-full row-start-1 flex items-center justify-between px-4 bg-white border-b border-slate-200">
@@ -140,9 +150,9 @@ export function AppShell(): JSX.Element {
             ☰
           </button>
           <div className="w-7 h-7 rounded bg-brand-600 text-white grid place-items-center font-bold text-sm">
-            VC
+            {appBadge}
           </div>
-          <span className="font-semibold text-slate-900">Vibe Connect</span>
+          <span className="font-semibold text-slate-900">{appName}</span>
           <ConnectionDot status={connectionStatus} />
         </div>
         <div className="flex items-center gap-3 text-sm">
@@ -159,6 +169,11 @@ export function AppShell(): JSX.Element {
           <NavLink to="/account" className="text-brand-700 hover:underline">
             Account
           </NavLink>
+          {policy.data?.requestsEnabled !== false && (
+            <NavLink to="/requests" className="text-brand-700 hover:underline">
+              Requests
+            </NavLink>
+          )}
           <NavLink to="/notifications" className="text-brand-700 hover:underline">
             Notifications
           </NavLink>
@@ -209,4 +224,19 @@ export function AppShell(): JSX.Element {
       </main>
     </div>
   );
+}
+
+// Tiny helper for the square brand badge to the left of the app name. Picks
+// up to two letters from the configured app name (first letter of the first
+// word + first letter of the last word when there's more than one). Strips
+// non-letters so emoji-suffixed names like "Acme 🚀" still produce "A".
+function initialsFor(name: string): string {
+  const words = name
+    .replace(/[^A-Za-z\s]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return 'VC';
+  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
+  return (words[0]![0]! + words[words.length - 1]![0]!).toUpperCase();
 }

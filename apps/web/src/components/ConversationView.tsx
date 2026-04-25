@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { NavLink, useParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import type { SymmetricEnvelope } from '@vibe-connect/crypto';
@@ -10,6 +10,7 @@ import { useCrypto } from '../state/crypto.js';
 import { useRealtime } from '../state/realtime.js';
 import { useSearch } from '../state/searchContext.js';
 import { highlightQueryInHtml, minimalMarkdown } from './markdown.js';
+import { RequestPanel } from './RequestPanel.js';
 import { ScheduledPicker } from './ScheduledPicker.js';
 
 function useDecryptedMessages(
@@ -50,6 +51,27 @@ function useDecryptedMessages(
       const out: DecryptedMessage[] = [];
       let anyError: Error | null = null;
       for (const m of messagesQ.data) {
+        // Phase 27: deleted rows arrive with empty ciphertext + null meta;
+        // bypass decrypt entirely and let MessageRow render the tombstone.
+        if (m.deletedAt) {
+          out.push({
+            id: m.id,
+            conversationId: m.conversationId,
+            senderId: m.senderId,
+            senderExternalIdentityId: m.senderExternalIdentityId,
+            body: '',
+            urgent: m.urgent,
+            scheduledFor: m.scheduledFor,
+            source: m.source,
+            createdAt: m.createdAt,
+            editedAt: m.editedAt,
+            deletedAt: m.deletedAt,
+            destructAfterViewSeconds: m.destructAfterViewSeconds ?? null,
+            destructAt: m.destructAt ?? null,
+            attachments: [],
+          });
+          continue;
+        }
         try {
           const d = await decrypt(
             m as EncryptedMessage,
@@ -57,7 +79,11 @@ function useDecryptedMessages(
             recipientId,
             wrappedKeysByVersion,
           );
-          out.push(d);
+          out.push({
+            ...d,
+            destructAfterViewSeconds: m.destructAfterViewSeconds ?? null,
+            destructAt: m.destructAt ?? null,
+          });
         } catch (err) {
           anyError = err instanceof Error ? err : new Error(String(err));
           out.push({
@@ -72,6 +98,8 @@ function useDecryptedMessages(
             createdAt: m.createdAt,
             editedAt: m.editedAt,
             deletedAt: m.deletedAt,
+            destructAfterViewSeconds: m.destructAfterViewSeconds ?? null,
+            destructAt: m.destructAt ?? null,
             attachments: [],
           });
         }
@@ -163,6 +191,10 @@ export function ConversationView(): JSX.Element {
   const [body, setBody] = useState('');
   const [urgent, setUrgent] = useState(false);
   const [scheduledFor, setScheduledFor] = useState<string | null>(null);
+  // Phase 27: optional self-destruct timer the sender attaches to a single
+  // outbound message. null = off (default). Reset to null after each send so
+  // a timer doesn't bleed into the next message.
+  const [destructAfterViewSeconds, setDestructAfterViewSeconds] = useState<number | null>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   // In-thread filter. Runs against the already-decrypted messages in memory —
   // we don't hit the FlexSearch index here because (a) the visible list is
@@ -174,6 +206,16 @@ export function ConversationView(): JSX.Element {
     'idle' | 'encrypting' | 'uploading' | 'done' | 'infected' | 'blocked' | 'scanUnavailable'
   >('idle');
   const [uploadDetail, setUploadDetail] = useState<string | null>(null);
+  // Phase 24: right-rail request panel, toggled from a button in the header.
+  // Local state — persisted user preference is a 24.6 task.
+  const [requestsOpen, setRequestsOpen] = useState(false);
+  const policyQ = useQuery({
+    queryKey: ['security-policy'],
+    queryFn: () => api.getSecurityPolicy(),
+    staleTime: 60_000,
+  });
+  const requestsEnabled = policyQ.data?.requestsEnabled !== false;
+  const vaultEnabled = policyQ.data?.vaultEnabled !== false;
 
   // Typing indicator emission. Emit `start` at most every 3s while the user is typing,
   // and `stop` 2s after the last keystroke or immediately on send/leave.
@@ -247,7 +289,13 @@ export function ConversationView(): JSX.Element {
           : `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
       const sent = await api.sendMessage(
         id,
-        { ciphertext, contentKeyVersion: version, urgent, scheduledFor },
+        {
+          ciphertext,
+          contentKeyVersion: version,
+          urgent,
+          scheduledFor,
+          destructAfterViewSeconds,
+        },
         { idempotencyKey },
       );
       if (urgent) {
@@ -306,6 +354,7 @@ export function ConversationView(): JSX.Element {
       setBody('');
       setUrgent(false);
       setScheduledFor(null);
+      setDestructAfterViewSeconds(null);
       setPendingFile(null);
       if (id && lastTypingStartRef.current > 0) {
         emitTyping(id, 'stop');
@@ -317,6 +366,40 @@ export function ConversationView(): JSX.Element {
       qc.invalidateQueries({ queryKey: ['conversations'] });
     },
   });
+
+  // Phase 27: edit + delete mutations on the sender's own bubbles. Edit
+  // re-encrypts under the SAME conversation key (no rotation) and PATCHes —
+  // the server snapshots the prior ciphertext into `message_edits` for admin
+  // recovery. Delete soft-deletes; the row stays in the list as a tombstone
+  // and the server has the ciphertext for admin recovery.
+  const editMut = useMutation({
+    mutationFn: async (args: { messageId: string; newBody: string }) => {
+      if (!convQ.data?.wrappedKeys || !recipientId || !device) throw new Error('not_ready');
+      const secretKey = getSecretKey();
+      if (!secretKey) throw new Error('Device locked');
+      const cryptoMod = await import('@vibe-connect/crypto');
+      const convKey = await cryptoMod.unwrapConversationKey(
+        convQ.data.wrappedKeys,
+        recipientId,
+        device.publicKey,
+        secretKey,
+      );
+      const version = convQ.data.rotationVersion ?? 1;
+      const { ciphertext } = await encryptForConversation(args.newBody, convKey, version);
+      await api.editMessage(args.messageId, { ciphertext, ciphertextMeta: {} });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['messages', id] });
+    },
+  });
+  const deleteMut = useMutation({
+    mutationFn: (messageId: string) => api.deleteMessage(messageId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['messages', id] });
+      qc.invalidateQueries({ queryKey: ['conversations'] });
+    },
+  });
+  const editWindowMs = (policyQ.data?.messageEditWindowMinutes ?? 15) * 60 * 1000;
 
   /**
    * Download + decrypt an attachment to plaintext bytes. Used by both the
@@ -498,7 +581,8 @@ export function ConversationView(): JSX.Element {
     !(recipientId in (convQ.data!.wrappedKeys ?? {}));
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex">
+      <div className="h-full flex flex-col flex-1 min-w-0">
       <div className="px-4 py-3 border-b border-slate-200 bg-white flex items-center gap-3">
         <div className="font-semibold text-slate-900">{header.title}</div>
         <div className="text-xs text-slate-500">{header.subtitle}</div>
@@ -539,6 +623,45 @@ export function ConversationView(): JSX.Element {
                 : `${filteredMessages.length} of ${messages.length}`}
             </span>
           )}
+          {/* Phase 24: toggle the request panel. Hidden entirely when the
+              firm-wide kill switch is off — the admin guide tells admins
+              "data is preserved, re-enable to restore". Uses the existing
+              brand palette for the active state. */}
+          {requestsEnabled && (
+            <button
+              type="button"
+              onClick={() => setRequestsOpen((v) => !v)}
+              aria-pressed={requestsOpen}
+              aria-label={requestsOpen ? 'Hide request panel' : 'Show request panel'}
+              title={requestsOpen ? 'Hide requests' : 'Show requests'}
+              className={clsx(
+                'text-xs rounded-md px-2 py-1 border',
+                requestsOpen
+                  ? 'bg-brand-600 text-white border-brand-600 hover:bg-brand-700'
+                  : 'border-slate-300 text-slate-700 hover:bg-slate-50',
+              )}
+            >
+              Requests
+            </button>
+          )}
+          {/* Phase 26: Files link. Only present for external conversations —
+              internal/internal_thread don't have a client vault. The link
+              navigates to the per-client vault page; vault is shared across
+              every conversation that includes the same external identity.
+              Hidden entirely when the firm-wide kill switch is off. */}
+          {vaultEnabled &&
+            (() => {
+              const ext = convQ.data?.members?.find((m) => m.externalIdentityId);
+              if (!ext?.externalIdentityId) return null;
+              return (
+                <NavLink
+                  to={`/clients/${ext.externalIdentityId}/files`}
+                  className="text-xs rounded-md px-2 py-1 border border-slate-300 text-slate-700 hover:bg-slate-50"
+                >
+                  Files
+                </NavLink>
+              );
+            })()}
         </div>
       </div>
 
@@ -567,11 +690,17 @@ export function ConversationView(): JSX.Element {
                   msg={m}
                   sender={m.senderId ? usersById[m.senderId] : undefined}
                   me={me?.id ?? null}
+                  isAdmin={Boolean(me?.isAdmin)}
+                  editWindowMs={editWindowMs}
                   onDownloadAttachment={(a) => void downloadAttachment(a)}
                   onDownloadAttachmentAsPdf={(a) => void downloadImageAsPdf(a)}
                   onDownloadMessageAsPdf={(m2) => void downloadMessageImagesAsPdf(m2)}
                   decryptAttachmentBytes={decryptAttachmentBytes}
                   highlight={trimmedQuery || null}
+                  onEdit={(messageId, newBody) =>
+                    void editMut.mutateAsync({ messageId, newBody })
+                  }
+                  onDelete={(messageId) => void deleteMut.mutateAsync(messageId)}
                 />
               ))}
             </div>
@@ -585,6 +714,9 @@ export function ConversationView(): JSX.Element {
         body={body}
         urgent={urgent}
         scheduledFor={scheduledFor}
+        destructAfterViewSeconds={destructAfterViewSeconds}
+        destructEnabled={policyQ.data?.messageDestructEnabled !== false}
+        destructMaxSeconds={policyQ.data?.messageDestructMaxSeconds ?? 604800}
         pendingFile={pendingFile}
         uploadState={uploadState}
         uploadDetail={uploadDetail}
@@ -600,6 +732,7 @@ export function ConversationView(): JSX.Element {
         onBody={onBodyChange}
         onUrgent={setUrgent}
         onScheduledFor={setScheduledFor}
+        onDestructAfterViewSeconds={setDestructAfterViewSeconds}
         onPickFile={(f) => {
           setPendingFile(f);
           setUploadState('idle');
@@ -612,6 +745,16 @@ export function ConversationView(): JSX.Element {
       />
       {/* Hidden ref for lint + future reloads */}
       <button type="button" onClick={() => void reload()} className="hidden" />
+      </div>
+      {id && requestsEnabled && (
+        <RequestPanel
+          conversationId={id}
+          wrappedKeys={convQ.data?.wrappedKeys ?? null}
+          rotationVersion={convQ.data?.rotationVersion ?? null}
+          open={requestsOpen}
+          onClose={() => setRequestsOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -677,15 +820,21 @@ function MessageRow({
   msg,
   sender,
   me,
+  isAdmin,
+  editWindowMs,
   onDownloadAttachment,
   onDownloadAttachmentAsPdf,
   onDownloadMessageAsPdf,
   decryptAttachmentBytes,
   highlight,
+  onEdit,
+  onDelete,
 }: {
   msg: DecryptedMessage;
   sender: PublicUser | undefined;
   me: string | null;
+  isAdmin: boolean;
+  editWindowMs: number;
   onDownloadAttachment: (a: {
     id: string;
     filename: string;
@@ -708,8 +857,47 @@ function MessageRow({
   }) => Promise<Uint8Array | null>;
   /** Active in-thread search term. When set, matches are wrapped in <mark>. */
   highlight?: string | null;
+  onEdit: (messageId: string, newBody: string) => void;
+  onDelete: (messageId: string) => void;
 }): JSX.Element {
   const mine = msg.senderId === me;
+  const [editing, setEditing] = useState(false);
+  const [editBody, setEditBody] = useState(msg.body);
+  // Phase 27: tombstone rendering. Take the same row layout (so the timeline
+  // doesn't visually collapse where a message used to be) but swap the body
+  // for a placeholder. Admin-only "View original" deep-links to the history
+  // viewer with the message ID prefilled.
+  if (msg.deletedAt) {
+    return (
+      <div className={clsx('flex items-start gap-3', mine && 'flex-row-reverse')}>
+        <div className="w-8 h-8 rounded-full bg-slate-200 grid place-items-center text-xs font-medium text-slate-400">
+          {(sender?.displayName ?? '?').slice(0, 1).toUpperCase()}
+        </div>
+        <div
+          className={clsx(
+            'max-w-[72%] rounded-2xl px-3 py-2 text-xs italic',
+            mine ? 'bg-slate-200 text-slate-600' : 'bg-slate-100 text-slate-500',
+          )}
+        >
+          <span>Message deleted</span>
+          {sender && <span className="not-italic font-medium ml-1">· {sender.displayName}</span>}
+          <span className="not-italic ml-1">
+            · {new Date(msg.deletedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          {isAdmin && (
+            <NavLink
+              to={`/admin/message-history?id=${msg.id}`}
+              className="not-italic ml-2 text-brand-700 hover:underline"
+            >
+              View original
+            </NavLink>
+          )}
+        </div>
+      </div>
+    );
+  }
+  const withinEditWindow =
+    mine && editWindowMs > 0 && Date.now() - new Date(msg.createdAt).getTime() < editWindowMs;
   return (
     <div className={clsx('flex items-start gap-3', mine && 'flex-row-reverse')}>
       <div className="w-8 h-8 rounded-full bg-slate-200 grid place-items-center text-xs font-medium text-slate-700">
@@ -717,11 +905,44 @@ function MessageRow({
       </div>
       <div
         className={clsx(
-          'max-w-[72%] rounded-2xl px-3 py-2 shadow-card text-sm leading-relaxed',
+          'group max-w-[72%] rounded-2xl px-3 py-2 shadow-card text-sm leading-relaxed relative',
           mine ? 'bg-brand-600 text-white' : 'bg-white text-slate-800',
           msg.urgent && (mine ? 'ring-2 ring-amber-300' : 'ring-2 ring-rose-400'),
         )}
       >
+        {mine && !editing && (withinEditWindow || true) && (
+          <div
+            className={clsx(
+              'absolute -top-2 right-1 hidden group-hover:flex gap-1 text-[10px]',
+            )}
+          >
+            {withinEditWindow && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditBody(msg.body);
+                  setEditing(true);
+                }}
+                className="rounded bg-white text-slate-700 border border-slate-300 px-1.5 py-0.5 hover:bg-slate-50"
+                title="Edit message"
+              >
+                Edit
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm('Delete this message? Recipients will see a "deleted" placeholder.')) {
+                  onDelete(msg.id);
+                }
+              }}
+              className="rounded bg-white text-rose-600 border border-rose-200 px-1.5 py-0.5 hover:bg-rose-50"
+              title="Delete message"
+            >
+              Delete
+            </button>
+          </div>
+        )}
         {!mine && sender && (
           <div className="text-xs font-medium text-slate-500 mb-0.5">{sender.displayName}</div>
         )}
@@ -752,15 +973,57 @@ function MessageRow({
             <span>Bridged {msg.source === 'email-in' ? 'email' : 'SMS'}</span>
           </div>
         )}
-        {msg.body && (
-          <div
-            // eslint-disable-next-line react/no-danger
-            dangerouslySetInnerHTML={{
-              __html: highlight
-                ? highlightQueryInHtml(minimalMarkdown(msg.body), highlight)
-                : minimalMarkdown(msg.body),
-            }}
-          />
+        {editing ? (
+          <div className="space-y-1">
+            <textarea
+              value={editBody}
+              onChange={(e) => setEditBody(e.target.value)}
+              rows={2}
+              className="w-full rounded-md border border-slate-300 text-slate-800 px-2 py-1 text-sm"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setEditing(false)}
+                className={clsx(
+                  'px-2 py-0.5 rounded',
+                  mine ? 'bg-brand-500/40 text-white' : 'bg-slate-100 text-slate-700',
+                )}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const trimmed = editBody.trim();
+                  if (!trimmed || trimmed === msg.body.trim()) {
+                    setEditing(false);
+                    return;
+                  }
+                  onEdit(msg.id, trimmed);
+                  setEditing(false);
+                }}
+                className={clsx(
+                  'px-2 py-0.5 rounded font-medium',
+                  mine ? 'bg-white text-brand-700' : 'bg-brand-600 text-white',
+                )}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        ) : (
+          msg.body && (
+            <div
+              // eslint-disable-next-line react/no-danger
+              dangerouslySetInnerHTML={{
+                __html: highlight
+                  ? highlightQueryInHtml(minimalMarkdown(msg.body), highlight)
+                  : minimalMarkdown(msg.body),
+              }}
+            />
+          )
         )}
         {msg.attachments.length > 0 && (
           <div className={clsx('mt-1 space-y-1', msg.body && 'pt-2 border-t', mine ? 'border-brand-500' : 'border-slate-200')}>
@@ -796,6 +1059,14 @@ function MessageRow({
         <div className={clsx('text-[10px] mt-1', mine ? 'text-brand-100' : 'text-slate-400')}>
           {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           {msg.editedAt && ' · edited'}
+          {msg.destructAt
+            ? ` · self-destructs ${new Date(msg.destructAt).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}`
+            : msg.destructAfterViewSeconds
+              ? ` · self-destructs ${formatDestructLabel(msg.destructAfterViewSeconds)} after read`
+              : ''}
         </div>
       </div>
     </div>
@@ -1112,6 +1383,9 @@ function Compose({
   body,
   urgent,
   scheduledFor,
+  destructAfterViewSeconds,
+  destructEnabled,
+  destructMaxSeconds,
   pendingFile,
   uploadState,
   uploadDetail,
@@ -1121,12 +1395,16 @@ function Compose({
   onBody,
   onUrgent,
   onScheduledFor,
+  onDestructAfterViewSeconds,
   onPickFile,
   onSend,
 }: {
   body: string;
   urgent: boolean;
   scheduledFor: string | null;
+  destructAfterViewSeconds: number | null;
+  destructEnabled: boolean;
+  destructMaxSeconds: number;
   pendingFile: File | null;
   uploadState:
     | 'idle'
@@ -1143,6 +1421,7 @@ function Compose({
   onBody: (v: string) => void;
   onUrgent: (v: boolean) => void;
   onScheduledFor: (v: string | null) => void;
+  onDestructAfterViewSeconds: (v: number | null) => void;
   onPickFile: (f: File | null) => void;
   onSend: () => void;
 }): JSX.Element {
@@ -1337,11 +1616,78 @@ function Compose({
           )}
         </div>
       )}
-      <div className="mt-2">
+      <div className="mt-2 flex flex-wrap items-center gap-3">
         <ScheduledPicker value={scheduledFor} onChange={onScheduledFor} />
+        {destructEnabled && (
+          <DestructPicker
+            value={destructAfterViewSeconds}
+            maxSeconds={destructMaxSeconds}
+            onChange={onDestructAfterViewSeconds}
+          />
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * Phase 27: per-message self-destruct dropdown. Sender sets a duration; the
+ * server stamps `destruct_at = first-non-sender-read + duration` and the
+ * destruct ticker soft-deletes the row at fire time. UI is intentionally
+ * coarse — five presets capped to the firm's `messageDestructMaxSeconds`.
+ *
+ * UX caveat (rendered as a tiny note): self-destruct is best-effort. The
+ * server purges ciphertext on schedule, but recipient devices may have
+ * already cached plaintext (search index, scrollback). The threat model doc
+ * spells this out in full; this is the in-product hint.
+ */
+const DESTRUCT_OPTIONS: Array<{ label: string; seconds: number }> = [
+  { label: '5 minutes', seconds: 5 * 60 },
+  { label: '1 hour', seconds: 60 * 60 },
+  { label: '1 day', seconds: 24 * 60 * 60 },
+  { label: '7 days', seconds: 7 * 24 * 60 * 60 },
+];
+
+function DestructPicker({
+  value,
+  maxSeconds,
+  onChange,
+}: {
+  value: number | null;
+  maxSeconds: number;
+  onChange: (v: number | null) => void;
+}): JSX.Element {
+  const visible = DESTRUCT_OPTIONS.filter((o) => o.seconds <= maxSeconds);
+  return (
+    <label
+      className="flex items-center gap-1 text-xs text-slate-600"
+      title="Self-destruct after the first recipient reads this message. Best-effort: recipient devices may have cached the plaintext."
+    >
+      <span aria-hidden="true">⏳</span>
+      <span>Self-destruct</span>
+      <select
+        value={value ?? ''}
+        onChange={(e) => {
+          const v = e.target.value;
+          onChange(v === '' ? null : Number(v));
+        }}
+        className="rounded-md border border-slate-300 text-xs px-2 py-1"
+      >
+        <option value="">Off</option>
+        {visible.map((o) => (
+          <option key={o.seconds} value={o.seconds}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function formatDestructLabel(seconds: number): string {
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 24 * 3600) return `${Math.round(seconds / 3600)} hr`;
+  return `${Math.round(seconds / (24 * 3600))} day`;
 }
 
 function playUrgentSound(): void {

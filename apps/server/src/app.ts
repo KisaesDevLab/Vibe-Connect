@@ -10,6 +10,7 @@ import { env } from './env.js';
 import { logger } from './logger.js';
 import { adminRouter, clientsRouter, firmRouter } from './routes/admin.js';
 import { authRouter } from './routes/auth.js';
+import { bootstrapRouter } from './routes/bootstrap.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { firstBootRouter } from './routes/firstBoot.js';
 import { oidcRouter } from './routes/oidc.js';
@@ -18,6 +19,15 @@ import { notificationsRouter } from './routes/notifications.js';
 import { portalRouter } from './routes/portal.js';
 import { portalConversationsRouter } from './routes/portalConversations.js';
 import { portalUploadRouter } from './routes/portalUpload.js';
+import { portalRequestsRouter } from './routes/portalRequests.js';
+import {
+  conversationRequestsRouter,
+  requestsRouter,
+} from './routes/requests.js';
+import { vaultsRouter } from './routes/vaults.js';
+import { vaultsUploadRouter } from './routes/vaultsUpload.js';
+import { portalVaultRouter } from './routes/portalVault.js';
+import { portalVaultUploadRouter } from './routes/portalVaultUpload.js';
 import { emailBridgeRouter } from './routes/emailBridge.js';
 import { smsBridgeRouter } from './routes/smsBridge.js';
 import { serveAvatarFromDisk, usersRouter } from './routes/users.js';
@@ -133,10 +143,19 @@ export function createApp(): Express {
         conString: env.nodeEnv === 'test' ? env.testDatabaseUrl : env.databaseUrl,
         tableName: 'session',
         createTableIfMissing: false,
-        pruneSessionInterval: 60,
+        // Disable the background prune timer under test — the timer races the
+        // per-suite `resetTestDb()` schema-drop and logs `relation "session"
+        // does not exist` to stderr when it lands after a teardown. The data
+        // is wiped between suites anyway, so pruning adds no value here.
+        pruneSessionInterval: env.nodeEnv === 'test' ? false : 60,
       }),
       cookie: {
         httpOnly: true,
+        // Distribution mode: single-app pins '/', multi-app pins '/connect' so
+        // the staff cookie can't be read on a sibling app sharing the same
+        // host (e.g. /mybooks). Without this, the default '/' would broadcast
+        // every Vibe app's session cookie across the whole vhost.
+        path: env.sessionCookiePath,
         secure: env.sessionSecure,
         sameSite: env.sessionSameSite,
         maxAge: 1000 * 60 * 60 * 12, // 12h
@@ -182,7 +201,11 @@ export function createApp(): Express {
       limit: env.rateLimitGlobalPerMin,
       standardHeaders: true,
       legacyHeaders: false,
-      skip: (req) => req.path === '/health',
+      // Skip the public, per-page-load endpoints from the global limiter.
+      // /health is a load-balancer probe; /__vibe-boot.js is loaded by the
+      // browser before main.tsx and burning 600/min budget on tab refreshes
+      // would 429 a busy office during normal use.
+      skip: (req) => req.path === '/health' || req.path === '/__vibe-boot.js',
       // Key authenticated users by session userId so the office NAT doesn't
       // cluster every staff member into one rate bucket. Anonymous requests
       // and portal clients (no `userId` in the staff session) fall back to IP
@@ -204,11 +227,22 @@ export function createApp(): Express {
     res.json({ ok: true, service: 'vibe-connect-server' });
   });
 
+  // Distribution-mode bootstrap. Serves /__vibe-boot.js — a tiny script the
+  // SPAs load before their own bundle so they pick up BASE_PATH at runtime.
+  // Mounted at root so it works under any prefix (nginx proxies /__vibe-boot.js
+  // → here in both single-app and multi-app modes).
+  app.use(bootstrapRouter);
+
   app.use('/auth', authRouter);
   app.use('/auth/oidc', oidcRouter);
   app.use('/users', usersRouter);
   app.use('/groups', groupsRouter);
   app.use('/conversations', conversationsRouter);
+  // Phase 24: nested per-conversation list endpoints. Mount under the same
+  // /conversations path so the existing 25 MB body parser covers list-create
+  // payloads (which embed pre-encrypted item ciphertexts and can grow if a
+  // staff applies a long template).
+  app.use('/conversations/:id/request-lists', conversationRequestsRouter);
   app.use('/admin', adminRouter);
   app.use('/clients', clientsRouter);
   app.use('/firm', firmRouter);
@@ -217,8 +251,23 @@ export function createApp(): Express {
   app.use('/portal', portalRouter);
   app.use('/portal/conversations', portalConversationsRouter);
   app.use('/portal/conversations', portalUploadRouter);
+  app.use('/portal/request-lists', portalRequestsRouter);
   app.use('/bridges', emailBridgeRouter);
   app.use('/bridges', smsBridgeRouter);
+  // Phase 24 — flat top-level endpoints for items + templates +
+  // (24.6) dashboard. Per-conversation creation lives on
+  // conversationRequestsRouter above.
+  app.use('/', requestsRouter);
+
+  // Phase 26 — Client Vault. Two routers per side: the metadata + tus-init
+  // router (vaultsRouter / portalVaultRouter) and the tus protocol tail
+  // (vaultsUploadRouter / portalVaultUploadRouter). Tail routers are
+  // mounted as siblings so the tus PATCH body bypasses express.json (the
+  // body uses application/offset+octet-stream and streams directly).
+  app.use('/', vaultsRouter);
+  app.use('/', vaultsUploadRouter);
+  app.use('/', portalVaultRouter);
+  app.use('/', portalVaultUploadRouter);
 
   // Avatar file serving — requires auth for staff app.
   app.get('/attachments/avatars/:name', async (req, res) => {

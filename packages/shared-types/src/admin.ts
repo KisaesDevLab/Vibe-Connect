@@ -74,6 +74,11 @@ export interface TlsStatus {
   lastError: string | null;
   inFlight: boolean;
   requestedAt: string | null;
+  // Distribution mode: 'internal' is the in-app ACME ticker (single-app
+  // appliance). 'external' means an upstream proxy (Caddy / Cloudflare
+  // Tunnel) terminates TLS — the staff UI hides the renewal controls and
+  // shows an "TLS managed externally" notice instead.
+  tlsMode: 'internal' | 'external';
 }
 
 export interface InviteClientResponse {

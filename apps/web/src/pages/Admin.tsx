@@ -3,6 +3,8 @@ import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { splitRecoveryPhrase, combineRecoveryShares } from '@vibe-connect/crypto/shamir';
+import { url as appUrl } from '../lib/boot.js';
+import type { VaultFolderTemplate } from '@vibe-connect/shared-types';
 import { api } from '../api.js';
 import { InviteClientModal } from '../components/InviteClientModal.js';
 import { PasswordStrengthBar } from '../components/PasswordStrengthBar.js';
@@ -20,8 +22,10 @@ const tabs = [
   { path: 'client-sessions', label: 'Sessions' },
   { path: 'sms', label: 'SMS' },
   { path: 'export', label: 'Export' },
+  { path: 'message-history', label: 'Message history' },
   { path: 'recovery', label: 'Recovery' },
-];
+  { path: 'request-templates', label: 'Templates', requiresRequests: true },
+] as const;
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
@@ -35,11 +39,18 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function AdminPage(): JSX.Element {
   const loc = useLocation();
+  const policyQ = useQuery({
+    queryKey: ['security-policy'],
+    queryFn: () => api.getSecurityPolicy(),
+    staleTime: 60_000,
+  });
+  const requestsEnabled = policyQ.data?.requestsEnabled !== false;
+  const visibleTabs = tabs.filter((t) => !('requiresRequests' in t && t.requiresRequests) || requestsEnabled);
   return (
     <div className="h-full flex flex-col">
       <div className="border-b border-slate-200 bg-white px-4">
         <nav className="flex gap-2">
-          {tabs.map((t) => (
+          {visibleTabs.map((t) => (
             <NavLink
               key={t.path}
               to={`/admin/${t.path}`}
@@ -71,7 +82,9 @@ export function AdminPage(): JSX.Element {
           <Route path="client-sessions" element={<AdminClientSessions />} />
           <Route path="sms" element={<AdminSms />} />
           <Route path="export" element={<AdminExport />} />
+          <Route path="message-history" element={<AdminMessageHistory />} />
           <Route path="recovery" element={<AdminRecovery />} />
+          <Route path="request-templates" element={<AdminRequestTemplates />} />
           <Route index element={<AdminUsers />} />
         </Routes>
       </div>
@@ -807,6 +820,7 @@ function AdminSettings(): JSX.Element {
   if (q.isLoading || !q.data) return <div className="p-4 text-sm text-slate-500">Loading…</div>;
   const s = q.data as {
     firm_name: string;
+    app_name: string | null;
     retention_days: number | null;
     stepup_timeout_hours: number;
     email_outbound_mode: 'summary' | 'content';
@@ -814,7 +828,30 @@ function AdminSettings(): JSX.Element {
     email_provider: 'mock' | 'postmark' | 'postfix';
     idle_lock_minutes: number;
     client_messaging_enabled: boolean;
+    requests_enabled: boolean;
+    vault_enabled: boolean;
+    vault_folder_templates: VaultFolderTemplate[] | string | null;
+    auto_nudge_enabled: boolean;
+    auto_nudge_offsets_hours: number[] | null;
+    message_edit_window_minutes: number;
+    message_destruct_enabled: boolean;
+    message_destruct_max_seconds: number;
   };
+  // pg returns JSONB as parsed objects in most cases, but a few code paths
+  // hand it back as a string — normalize defensively so the editor never
+  // chokes on a serialized payload.
+  const initialTemplates: VaultFolderTemplate[] = (() => {
+    const v = s.vault_folder_templates;
+    if (!v) return [];
+    if (typeof v === 'string') {
+      try {
+        return JSON.parse(v) as VaultFolderTemplate[];
+      } catch {
+        return [];
+      }
+    }
+    return v;
+  })();
   return (
     <div className="p-4 max-w-lg space-y-4">
       <h2 className="font-semibold text-slate-900">Firm settings</h2>
@@ -831,6 +868,22 @@ function AdminSettings(): JSX.Element {
           type="text"
           defaultValue={s.firm_name}
           onBlur={(e) => mut.mutate({ firmName: e.target.value })}
+          className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+        />
+      </label>
+      <label className="block">
+        <span className="text-sm text-slate-700">
+          App display name <span className="text-slate-400">(optional — replaces &quot;Vibe Connect&quot; in the staff app header and browser tab title)</span>
+        </span>
+        <input
+          type="text"
+          maxLength={80}
+          defaultValue={s.app_name ?? ''}
+          placeholder="Vibe Connect"
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            mut.mutate({ appName: v.length > 0 ? v : null });
+          }}
           className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
         />
       </label>
@@ -880,6 +933,157 @@ function AdminSettings(): JSX.Element {
           </span>
         </span>
       </label>
+      <label className="flex items-start gap-2 text-sm text-slate-700 bg-white rounded shadow-card p-3">
+        <input
+          type="checkbox"
+          defaultChecked={s.requests_enabled}
+          onChange={(e) => mut.mutate({ requestsEnabled: e.target.checked })}
+          className="mt-1"
+        />
+        <span>
+          <strong>Enable client requests</strong>
+          <span className="block text-[11px] text-slate-500 mt-0.5">
+            When off: the staff Requests panel + dashboard are hidden, the portal Requests
+            tab is empty, the Requests API returns <code>403 requests_disabled</code>, and
+            queued auto-nudges are dropped. Existing lists + items remain in the database
+            and reappear when re-enabled. Internal messaging is unaffected.
+          </span>
+        </span>
+      </label>
+      <label className="flex items-start gap-2 text-sm text-slate-700 bg-white rounded shadow-card p-3">
+        <input
+          type="checkbox"
+          defaultChecked={s.vault_enabled}
+          onChange={(e) => mut.mutate({ vaultEnabled: e.target.checked })}
+          className="mt-1"
+        />
+        <span>
+          <strong>Enable client files (Vault)</strong>
+          <span className="block text-[11px] text-slate-500 mt-0.5">
+            When off: the staff Files tab is hidden, the portal Files page shows a
+            firm-disabled notice, and the Vault API returns <code>403 vault_disabled</code>.
+            Existing files + folders + zone keys remain in the database and reappear when
+            re-enabled. ClamAV scans, retention sweeps, and crypto-shred actions still run
+            on existing rows. Internal messaging and client messaging are unaffected.
+          </span>
+        </span>
+      </label>
+      <VaultTemplateEditor
+        initial={initialTemplates}
+        onSave={(arr) => mut.mutate({ vaultFolderTemplates: arr })}
+        disabled={!s.vault_enabled}
+      />
+      <fieldset
+        className="rounded-md border border-slate-200 bg-white p-3 space-y-2"
+        disabled={!s.requests_enabled}
+      >
+        <legend className="text-sm font-medium text-slate-800 px-1">
+          Auto-nudge for request lists
+        </legend>
+        {!s.requests_enabled && (
+          <p className="text-[11px] text-slate-500">
+            Requests are currently disabled — auto-nudge settings have no effect until you
+            re-enable them above.
+          </p>
+        )}
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            defaultChecked={s.auto_nudge_enabled}
+            onChange={(e) => mut.mutate({ autoNudgeEnabled: e.target.checked })}
+          />
+          Send automatic reminders before a list is due
+        </label>
+        <label className="block">
+          <span className="text-[11px] text-slate-600">
+            Offsets, in hours before due. Comma-separated, e.g. <code>72, 24, 0</code>.
+          </span>
+          <input
+            type="text"
+            defaultValue={(s.auto_nudge_offsets_hours ?? [72, 24, 0]).join(', ')}
+            onBlur={(e) => {
+              const parsed = e.target.value
+                .split(',')
+                .map((s) => Number(s.trim()))
+                .filter((n) => Number.isFinite(n) && n >= 0 && n <= 8760);
+              mut.mutate({ autoNudgeOffsetsHours: parsed });
+            }}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          />
+          <p className="text-[11px] text-slate-500 mt-1">
+            Each list with a due date enqueues one nudge per offset, capped at 3 nudges per
+            list per 24 hours (manual + auto combined). Nudges that arrive after a list is
+            already complete are silently dropped.
+          </p>
+        </label>
+      </fieldset>
+
+      <fieldset className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+        <legend className="text-sm font-medium text-slate-800 px-1">
+          Message lifecycle
+        </legend>
+        <label className="block">
+          <span className="text-sm text-slate-700">Edit window (minutes)</span>
+          <input
+            type="number"
+            min={0}
+            max={1440}
+            step={1}
+            defaultValue={s.message_edit_window_minutes}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 0 && v <= 1440)
+                mut.mutate({ messageEditWindowMinutes: v });
+            }}
+            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+          />
+          <p className="text-[11px] text-slate-500 mt-1">
+            How long after sending a staffer can edit a message. Each edit snapshots the
+            prior ciphertext into the admin-recoverable history. <strong>0 = edits
+            disabled</strong> (send-only). Max 1440 (24 h).
+          </p>
+        </label>
+        <label className="flex items-start gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            defaultChecked={s.message_destruct_enabled}
+            onChange={(e) => mut.mutate({ messageDestructEnabled: e.target.checked })}
+            className="mt-1"
+          />
+          <span>
+            <strong>Allow self-destruct timer on outbound messages</strong>
+            <span className="block text-[11px] text-slate-500 mt-0.5">
+              When on, the staff compose box gets a &quot;Self-destruct&quot; dropdown.
+              The timer starts when the first non-sender recipient marks the message
+              read; the server soft-deletes the row on fire (recipients see a
+              &quot;Message deleted&quot; placeholder). Ciphertext is preserved for
+              admin recovery via Message history. Best-effort: recipient devices may
+              have cached plaintext (search index, scrollback) before the purge.
+            </span>
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-sm text-slate-700">Self-destruct max seconds</span>
+          <input
+            type="number"
+            min={60}
+            max={2_592_000}
+            step={60}
+            defaultValue={s.message_destruct_max_seconds}
+            onBlur={(e) => {
+              const v = Number(e.target.value);
+              if (Number.isFinite(v) && v >= 60 && v <= 2_592_000)
+                mut.mutate({ messageDestructMaxSeconds: v });
+            }}
+            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+          />
+          <p className="text-[11px] text-slate-500 mt-1">
+            Caps the compose dropdown so a staffer can&apos;t pick a value beyond this.
+            7 days (604800) is the install default; 30 days (2592000) is the ceiling.
+          </p>
+        </label>
+      </fieldset>
+
       <label className="block">
         <span className="text-sm text-slate-700">Idle auto-lock (minutes)</span>
         <input
@@ -958,6 +1162,11 @@ const AUDIT_ACTION_FILTERS: Array<{ value: string; label: string }> = [
   { value: 'portal.*', label: 'Portal events' },
   { value: 'email.*', label: 'Email bridge' },
   { value: 'sms.*', label: 'SMS bridge' },
+  // Phase 24.8: surface every Phase 24 audit action under a single
+  // "Requests" filter so a peer reviewer can pull the full chain
+  // (list_created → item_created × N → item_submitted → item_marked_done →
+  // list_completed) for an engagement in one filter.
+  { value: 'request.*', label: 'Requests' },
   { value: 'install.complete', label: 'Install' },
 ];
 
@@ -1215,6 +1424,152 @@ function AdminDevices(): JSX.Element {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * Phase 26 — editor for `firm_settings.vault_folder_templates`.
+ *
+ * The list is small (≤64 entries by Zod cap) and edits are rare, so the
+ * UX is "edit locally, click Save to ship the whole array." Mirrors how
+ * `auto_nudge_offsets_hours` works elsewhere on this page — the server
+ * accepts a full replacement array, not row-level patches.
+ *
+ * `{YYYY}` in `nameTemplate` is substituted at apply-time on the staff
+ * client; we surface a small hint about that here.
+ */
+function VaultTemplateEditor({
+  initial,
+  onSave,
+  disabled,
+}: {
+  initial: VaultFolderTemplate[];
+  onSave: (next: VaultFolderTemplate[]) => void;
+  disabled: boolean;
+}): JSX.Element {
+  const [rows, setRows] = useState<VaultFolderTemplate[]>(initial);
+  const [dirty, setDirty] = useState(false);
+  // Re-seed local state whenever the upstream value reloads — e.g. after a
+  // successful save invalidates the query and refetches.
+  useEffect(() => {
+    setRows(initial);
+    setDirty(false);
+  }, [initial]);
+
+  function update(idx: number, patch: Partial<VaultFolderTemplate>): void {
+    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+    setDirty(true);
+  }
+  function remove(idx: number): void {
+    setRows((prev) => prev.filter((_, i) => i !== idx));
+    setDirty(true);
+  }
+  function add(): void {
+    setRows((prev) => [
+      ...prev,
+      { nameTemplate: 'New folder', zone: 'shared', retentionDays: null },
+    ]);
+    setDirty(true);
+  }
+
+  return (
+    <fieldset className="rounded-md border border-slate-200 bg-white p-3 space-y-2" disabled={disabled}>
+      <legend className="text-sm font-medium text-slate-800 px-1">Folder template</legend>
+      <p className="text-[11px] text-slate-500">
+        Default folders the staff app offers when applying a template to a client&apos;s vault.
+        Use <code>{'{YYYY}'}</code> in a name to insert the current year at apply time.
+      </p>
+      {rows.length === 0 ? (
+        <p className="text-[11px] text-slate-400">No template entries.</p>
+      ) : (
+        <table className="w-full text-xs">
+          <thead className="text-slate-500">
+            <tr>
+              <th className="text-left font-medium pb-1">Name</th>
+              <th className="text-left font-medium pb-1 w-28">Zone</th>
+              <th className="text-left font-medium pb-1 w-28">Retention (days)</th>
+              <th className="w-8"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, idx) => (
+              <tr key={idx} className="border-t border-slate-100">
+                <td className="py-1 pr-2">
+                  <input
+                    type="text"
+                    value={row.nameTemplate}
+                    onChange={(e) => update(idx, { nameTemplate: e.target.value })}
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </td>
+                <td className="py-1 pr-2">
+                  <select
+                    value={row.zone}
+                    onChange={(e) =>
+                      update(idx, { zone: e.target.value as VaultFolderTemplate['zone'] })
+                    }
+                    className="rounded border border-slate-300 px-2 py-1 text-xs"
+                  >
+                    <option value="shared">Shared</option>
+                    <option value="staff_only">Staff-only</option>
+                  </select>
+                </td>
+                <td className="py-1 pr-2">
+                  <input
+                    type="number"
+                    min={1}
+                    max={36500}
+                    value={row.retentionDays ?? ''}
+                    placeholder="∞"
+                    onChange={(e) =>
+                      update(idx, {
+                        retentionDays: e.target.value === '' ? null : Number(e.target.value),
+                      })
+                    }
+                    className="w-full rounded border border-slate-300 px-2 py-1 text-xs"
+                  />
+                </td>
+                <td className="py-1 text-right">
+                  <button
+                    type="button"
+                    onClick={() => remove(idx)}
+                    className="text-slate-500 hover:text-red-700"
+                    aria-label="Remove row"
+                    title="Remove"
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={add}
+          className="text-xs rounded-md border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-50"
+        >
+          + Add row
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            // Drop empty-name rows defensively; the server-side Zod schema
+            // rejects them anyway and a stray blank entry wedges Apply Template.
+            const cleaned = rows
+              .map((r) => ({ ...r, nameTemplate: r.nameTemplate.trim() }))
+              .filter((r) => r.nameTemplate.length > 0);
+            onSave(cleaned);
+          }}
+          disabled={!dirty}
+          className="ml-auto text-xs rounded-md bg-brand-600 text-white font-medium px-3 py-1 hover:bg-brand-700 disabled:opacity-50"
+        >
+          Save template
+        </button>
+      </div>
+    </fieldset>
   );
 }
 
@@ -1888,7 +2243,7 @@ function ExportDialog({
         .trim()
         .split(/\s+/)
         .filter((w) => w.length > 0);
-      const r = await fetch('/admin/export', {
+      const r = await fetch(appUrl('/admin/export'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
@@ -1990,6 +2345,199 @@ function ExportDialog({
 // This is a pure client-side tool. Neither the typed phrase nor the generated shares
 // ever leave the browser. The server has no recovery_shares table by design — shares are
 // distributed to partners and physically stored outside Vibe Connect.
+interface MessageHistoryBundle {
+  conversation: { id: string; type: string; displayName: string | null } | null;
+  message: {
+    id: string;
+    senderId: string | null;
+    senderExternalIdentityId: string | null;
+    ciphertext: string;
+    ciphertextMeta: Record<string, unknown> | null;
+    contentKeyVersion: number;
+    source: string;
+    createdAt: string;
+    editedAt: string | null;
+    deletedAt: string | null;
+    destructAfterViewSeconds: number | null;
+    destructAt: string | null;
+  };
+  edits: Array<{
+    id: string;
+    ciphertext: string;
+    ciphertextMeta: Record<string, unknown>;
+    contentKeyVersion: number;
+    replacedAt: string;
+    replacedByUserId: string | null;
+  }>;
+  conversationKeys: Array<{ rotationVersion: number; wrappedKeys: Record<string, string> }>;
+}
+
+function AdminMessageHistory(): JSX.Element {
+  // Phase 27: pull the prior versions + final state of an edited or deleted
+  // message. The actual decrypt happens locally — admins enrolled on this
+  // device can decrypt directly via the conversation's wrappedKeys; an admin
+  // without a device key in the bundle should download the JSON and decrypt
+  // offline with the recovery phrase (same flow as Export).
+  const [messageId, setMessageId] = useState('');
+  const [bundle, setBundle] = useState<MessageHistoryBundle | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fetcher = useMutation({
+    mutationFn: async (id: string): Promise<MessageHistoryBundle> => {
+      const r = await fetch(appUrl(`/admin/messages/${id}/history`), {
+        credentials: 'include',
+      });
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `${r.status}`);
+      }
+      return (await r.json()) as MessageHistoryBundle;
+    },
+    onSuccess: (b) => {
+      setBundle(b);
+      setError(null);
+    },
+    onError: (e: Error) => {
+      setBundle(null);
+      setError(e.message);
+    },
+  });
+  function downloadJson(): void {
+    if (!bundle) return;
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `message-history-${bundle.message.id.slice(0, 8)}-${Date.now()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return (
+    <div className="p-4 space-y-4">
+      <h2 className="font-semibold text-slate-900">Message history</h2>
+      <p className="text-xs text-slate-500 max-w-prose">
+        Returns the live message + every prior ciphertext snapshot from before each edit, plus
+        the conversation&apos;s wrapped-key bundle. Decrypt locally with an enrolled device key or
+        the firm recovery phrase. Every lookup writes an audit row.
+      </p>
+      <div className="flex items-end gap-2">
+        <label className="block flex-1 max-w-md">
+          <span className="text-sm text-slate-700">Message ID</span>
+          <input
+            type="text"
+            value={messageId}
+            onChange={(e) => setMessageId(e.target.value.trim())}
+            placeholder="00000000-0000-0000-0000-000000000000"
+            className="input font-mono text-xs"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => fetcher.mutate(messageId)}
+          disabled={!messageId || fetcher.isPending}
+          className="btn-primary"
+        >
+          {fetcher.isPending ? 'Loading…' : 'Load'}
+        </button>
+      </div>
+      {error && (
+        <div className="text-sm text-rose-600">
+          {error === 'not_found' ? 'No such message.' : `Error: ${error}`}
+        </div>
+      )}
+      {bundle && (
+        <div className="space-y-3 text-xs">
+          <div className="bg-slate-50 border border-slate-200 rounded p-3 space-y-1">
+            <div>
+              <strong>Conversation:</strong>{' '}
+              <span className="font-mono">{bundle.conversation?.id ?? '—'}</span>{' '}
+              {bundle.conversation && (
+                <span className="text-slate-500">
+                  ({bundle.conversation.type} · {bundle.conversation.displayName ?? 'no name'})
+                </span>
+              )}
+            </div>
+            <div>
+              <strong>Created:</strong> {new Date(bundle.message.createdAt).toLocaleString()}
+            </div>
+            {bundle.message.editedAt && (
+              <div>
+                <strong>Last edited:</strong>{' '}
+                {new Date(bundle.message.editedAt).toLocaleString()}
+              </div>
+            )}
+            {bundle.message.deletedAt && (
+              <div className="text-amber-700">
+                <strong>Deleted:</strong>{' '}
+                {new Date(bundle.message.deletedAt).toLocaleString()}
+              </div>
+            )}
+            {bundle.message.destructAt && (
+              <div className="text-amber-700">
+                <strong>Self-destruct fired:</strong>{' '}
+                {new Date(bundle.message.destructAt).toLocaleString()}
+              </div>
+            )}
+            <div>
+              <strong>Sender (user):</strong>{' '}
+              <span className="font-mono">{bundle.message.senderId ?? '—'}</span>
+            </div>
+            <div>
+              <strong>Sender (external):</strong>{' '}
+              <span className="font-mono">
+                {bundle.message.senderExternalIdentityId ?? '—'}
+              </span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <h3 className="font-semibold text-slate-800">Timeline</h3>
+            <ol className="space-y-2">
+              {bundle.edits.map((e, i) => (
+                <li
+                  key={e.id}
+                  className="bg-white border border-slate-200 rounded p-2 space-y-1"
+                >
+                  <div className="text-slate-500">
+                    Version {i + 1} (replaced{' '}
+                    {new Date(e.replacedAt).toLocaleString()}{' '}
+                    {e.replacedByUserId ? `by ${e.replacedByUserId.slice(0, 8)}` : ''})
+                  </div>
+                  <div className="font-mono break-all text-[10px] text-slate-700">
+                    {e.ciphertext.slice(0, 80)}
+                    {e.ciphertext.length > 80 && '…'}
+                  </div>
+                  <div className="text-slate-400">
+                    {e.ciphertext.length} bytes · key v{e.contentKeyVersion}
+                  </div>
+                </li>
+              ))}
+              <li className="bg-white border border-emerald-300 rounded p-2 space-y-1">
+                <div className="text-emerald-700 font-medium">
+                  Current{bundle.message.deletedAt ? ' (DELETED)' : ''}
+                </div>
+                <div className="font-mono break-all text-[10px] text-slate-700">
+                  {bundle.message.ciphertext.slice(0, 80)}
+                  {bundle.message.ciphertext.length > 80 && '…'}
+                </div>
+                <div className="text-slate-400">
+                  {bundle.message.ciphertext.length} bytes · key v
+                  {bundle.message.contentKeyVersion}
+                </div>
+              </li>
+            </ol>
+          </div>
+          <div>
+            <button type="button" onClick={downloadJson} className="btn-ghost">
+              Download bundle (JSON)
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminRecovery(): JSX.Element {
   return (
     <div className="p-4 max-w-2xl space-y-6">
@@ -2927,6 +3475,35 @@ function AdminTls(): JSX.Element {
   const cert = status.cert;
   const isActive = Boolean(cert && cert.daysUntilExpiry > 0);
   const canRequest = Boolean(settings.tls_staff_domain && settings.tls_acme_email);
+  // Distribution mode: when an upstream Caddy / Cloudflare Tunnel terminates
+  // TLS, the in-app ACME ticker is off and the request/renew/clear endpoints
+  // 409. Show a notice instead of a half-functional renewal panel.
+  const tlsExternal = status.tlsMode === 'external';
+
+  if (tlsExternal) {
+    return (
+      <div className="p-4 max-w-3xl space-y-5">
+        <header>
+          <h2 className="font-semibold text-slate-900">TLS</h2>
+        </header>
+        <div className="rounded-md border border-slate-200 bg-slate-50 text-slate-700 text-sm px-4 py-3 leading-relaxed">
+          <p>
+            <strong>TLS managed externally.</strong> This appliance is configured
+            with <code className="text-xs bg-white px-1 rounded">TLS_MODE=external</code>
+            , meaning an upstream reverse proxy (Caddy in the Vibe installer&apos;s
+            multi-app mode, or Cloudflare Tunnel) terminates TLS before traffic
+            reaches the appliance.
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            The in-app Let&apos;s Encrypt renewal job is disabled in this mode.
+            To re-enable in-app TLS, restart the appliance with{' '}
+            <code className="bg-white px-1 rounded">TLS_MODE=internal</code> and a
+            staff domain configured.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 max-w-3xl space-y-5">
@@ -3155,6 +3732,440 @@ function AdminTls(): JSX.Element {
           )}
         </div>
       </section>
+    </div>
+  );
+}
+
+// =================================================================
+// Phase 24.6 — Request templates CRUD
+// =================================================================
+
+interface TemplateItemSpec {
+  title: string;
+  description?: string | null;
+  responseType: 'file' | 'text' | 'both';
+  sortOrder: number;
+  defaultDueOffsetDays?: number | null;
+}
+
+function blankSpec(sortOrder = 0): TemplateItemSpec {
+  return { title: '', description: '', responseType: 'both', sortOrder };
+}
+
+function AdminRequestTemplates(): JSX.Element {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ['admin', 'request-templates'],
+    queryFn: () => api.requests.listTemplates().then((r) => r.templates),
+    staleTime: 15_000,
+  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const archiveMut = useMutation({
+    mutationFn: (id: string) => api.requests.archiveTemplate(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'request-templates'] }),
+    onError: (e: Error) => setError(e.message),
+  });
+
+  return (
+    <div className="p-4 max-w-4xl">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="font-semibold text-slate-900">Request templates</h2>
+          <p className="text-xs text-slate-500">
+            Reusable checklists. Applied to a conversation, items are encrypted under
+            that conversation&apos;s content key — the template itself stays cleartext.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setEditingId(null);
+            setCreating(true);
+          }}
+          className="text-sm rounded-md bg-brand-600 text-white px-3 py-1.5 hover:bg-brand-700"
+        >
+          + New template
+        </button>
+      </div>
+
+      {error && (
+        <div className="mb-3 text-xs rounded-md border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 flex justify-between gap-2">
+          <span>{error}</span>
+          <button onClick={() => setError(null)}>×</button>
+        </div>
+      )}
+
+      {(creating || editingId) && (
+        <TemplateEditor
+          templateId={editingId}
+          onClose={() => {
+            setEditingId(null);
+            setCreating(false);
+          }}
+          onSaved={() => {
+            void qc.invalidateQueries({ queryKey: ['admin', 'request-templates'] });
+            setEditingId(null);
+            setCreating(false);
+          }}
+        />
+      )}
+
+      <div className="bg-white rounded shadow-card overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-[11px] uppercase text-slate-500 tracking-wide">
+            <tr>
+              <th className="text-left px-3 py-2">Name</th>
+              <th className="text-left px-3 py-2">Items</th>
+              <th className="text-left px-3 py-2">Updated</th>
+              <th className="text-right px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {q.isLoading && (
+              <tr>
+                <td colSpan={4} className="px-3 py-6 text-center text-slate-500 text-xs">
+                  Loading…
+                </td>
+              </tr>
+            )}
+            {!q.isLoading && (q.data ?? []).length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-6 text-center text-slate-500 text-xs">
+                  No templates yet.
+                </td>
+              </tr>
+            )}
+            {(q.data ?? []).map((t) => (
+              <tr key={t.id} className="hover:bg-slate-50">
+                <td className="px-3 py-2">
+                  <div className="font-medium text-slate-900">{t.name}</div>
+                  {t.description && (
+                    <div className="text-[11px] text-slate-500 max-w-[280px] truncate">
+                      {t.description}
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-xs text-slate-600">
+                  {t.itemSpecs.length} item{t.itemSpecs.length === 1 ? '' : 's'}
+                </td>
+                <td className="px-3 py-2 text-[11px] text-slate-500">
+                  {new Date(t.updatedAt).toLocaleDateString()}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCreating(false);
+                      setEditingId(t.id);
+                    }}
+                    className="text-[11px] text-brand-700 hover:underline mr-2"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `Archive template "${t.name}"? Existing lists already created from it are unaffected.`,
+                        )
+                      ) {
+                        archiveMut.mutate(t.id);
+                      }
+                    }}
+                    className="text-[11px] text-rose-700 hover:underline"
+                  >
+                    Archive
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TemplateEditor({
+  templateId,
+  onClose,
+  onSaved,
+}: {
+  templateId: string | null;
+  onClose: () => void;
+  onSaved: () => void;
+}): JSX.Element {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [items, setItems] = useState<TemplateItemSpec[]>([blankSpec(0)]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // For edit mode: hydrate from the existing template once.
+  const existingQ = useQuery({
+    queryKey: ['admin', 'request-template', templateId],
+    queryFn: () =>
+      templateId
+        ? api.requests.listTemplates().then((r) => r.templates.find((t) => t.id === templateId))
+        : Promise.resolve(null),
+    enabled: Boolean(templateId),
+  });
+  useEffect(() => {
+    if (!templateId) return;
+    if (!existingQ.data) return;
+    setName(existingQ.data.name);
+    setDescription(existingQ.data.description ?? '');
+    setItems(
+      existingQ.data.itemSpecs.length > 0
+        ? existingQ.data.itemSpecs.map((s, i) => ({ ...s, sortOrder: i }))
+        : [blankSpec(0)],
+    );
+  }, [templateId, existingQ.data]);
+
+  async function save(): Promise<void> {
+    setError(null);
+    if (!name.trim()) {
+      setError('Name is required.');
+      return;
+    }
+    const cleanItems = items
+      .filter((i) => i.title.trim().length > 0)
+      .map((i, idx) => ({
+        title: i.title.trim(),
+        description: i.description?.trim() || null,
+        responseType: i.responseType,
+        sortOrder: idx,
+        defaultDueOffsetDays:
+          i.defaultDueOffsetDays !== undefined && i.defaultDueOffsetDays !== null
+            ? Number(i.defaultDueOffsetDays)
+            : undefined,
+      }));
+    if (cleanItems.length === 0) {
+      setError('Add at least one item.');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (templateId) {
+        await api.requests.patchTemplate(templateId, {
+          name: name.trim(),
+          description: description.trim() || null,
+          itemSpecs: cleanItems,
+        });
+      } else {
+        await api.requests.createTemplate({
+          name: name.trim(),
+          description: description.trim() || null,
+          itemSpecs: cleanItems,
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['admin', 'request-templates'] });
+      onSaved();
+    } catch (err) {
+      const e = err as { status?: number; body?: string };
+      if (e.status === 409) {
+        setError('A template with that name already exists.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Save failed');
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function moveItem(from: number, dir: -1 | 1): void {
+    setItems((prev) => {
+      const next = [...prev];
+      const target = from + dir;
+      if (target < 0 || target >= next.length) return prev;
+      const tmp = next[from]!;
+      next[from] = next[target]!;
+      next[target] = tmp;
+      return next.map((s, i) => ({ ...s, sortOrder: i }));
+    });
+  }
+
+  return (
+    <div className="bg-white rounded shadow-card border border-slate-200 mb-3">
+      <header className="px-4 py-2 border-b border-slate-200 flex items-center justify-between">
+        <h3 className="text-sm font-medium text-slate-900">
+          {templateId ? 'Edit template' : 'New template'}
+        </h3>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="text-slate-500 hover:text-slate-800 px-2 py-0.5"
+        >
+          ×
+        </button>
+      </header>
+      <div className="px-4 py-3 space-y-3">
+        <label className="block">
+          <span className="text-[11px] text-slate-600">Name</span>
+          <input
+            value={name}
+            maxLength={120}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Year-end tax documents"
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </label>
+        <label className="block">
+          <span className="text-[11px] text-slate-600">Description</span>
+          <textarea
+            value={description}
+            maxLength={2000}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={2}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          />
+        </label>
+        <div>
+          <div className="text-[11px] text-slate-600 mb-1">Items</div>
+          <ul className="space-y-2">
+            {items.map((it, idx) => (
+              <li
+                key={idx}
+                className="rounded-md border border-slate-200 p-2 space-y-1.5 bg-slate-50/50"
+              >
+                <div className="flex items-center gap-2">
+                  <input
+                    value={it.title}
+                    onChange={(e) =>
+                      setItems((prev) =>
+                        prev.map((p, i) => (i === idx ? { ...p, title: e.target.value } : p)),
+                      )
+                    }
+                    maxLength={200}
+                    placeholder="Item title"
+                    className="flex-1 rounded border border-slate-300 text-sm px-2 py-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => moveItem(idx, -1)}
+                    disabled={idx === 0}
+                    className="text-slate-500 hover:text-slate-800 disabled:opacity-30"
+                    aria-label="Move up"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => moveItem(idx, 1)}
+                    disabled={idx === items.length - 1}
+                    className="text-slate-500 hover:text-slate-800 disabled:opacity-30"
+                    aria-label="Move down"
+                  >
+                    ↓
+                  </button>
+                  {items.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
+                      className="text-rose-600 hover:underline text-[11px]"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                <input
+                  value={it.description ?? ''}
+                  onChange={(e) =>
+                    setItems((prev) =>
+                      prev.map((p, i) =>
+                        i === idx ? { ...p, description: e.target.value } : p,
+                      ),
+                    )
+                  }
+                  maxLength={2000}
+                  placeholder="Description (optional)"
+                  className="w-full rounded border border-slate-300 text-xs px-2 py-1"
+                />
+                <div className="flex items-center gap-2 text-xs">
+                  <select
+                    value={it.responseType}
+                    onChange={(e) =>
+                      setItems((prev) =>
+                        prev.map((p, i) =>
+                          i === idx
+                            ? {
+                                ...p,
+                                responseType: e.target.value as
+                                  | 'file'
+                                  | 'text'
+                                  | 'both',
+                              }
+                            : p,
+                        ),
+                      )
+                    }
+                    className="rounded border border-slate-300 px-1.5 py-0.5 bg-white"
+                  >
+                    <option value="both">File or text</option>
+                    <option value="file">File only</option>
+                    <option value="text">Text only</option>
+                  </select>
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                    Due offset (days)
+                    <input
+                      type="number"
+                      min={0}
+                      max={3650}
+                      value={it.defaultDueOffsetDays ?? ''}
+                      onChange={(e) =>
+                        setItems((prev) =>
+                          prev.map((p, i) =>
+                            i === idx
+                              ? {
+                                  ...p,
+                                  defaultDueOffsetDays:
+                                    e.target.value === ''
+                                      ? null
+                                      : Number(e.target.value),
+                                }
+                              : p,
+                          ),
+                        )
+                      }
+                      className="w-16 rounded border border-slate-300 px-1.5 py-0.5"
+                    />
+                  </label>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={() => setItems((prev) => [...prev, blankSpec(prev.length)])}
+            className="mt-2 text-[11px] text-brand-700 hover:underline"
+          >
+            + Add item
+          </button>
+        </div>
+        {error && <p className="text-xs text-rose-700">{error}</p>}
+      </div>
+      <footer className="px-4 py-2 border-t border-slate-200 bg-slate-50/50 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-xs rounded-md border border-slate-300 px-3 py-1 hover:bg-slate-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving}
+          className="text-xs rounded-md bg-brand-600 text-white px-3 py-1 hover:bg-brand-700 disabled:bg-slate-300"
+        >
+          {saving ? 'Saving…' : templateId ? 'Save changes' : 'Create template'}
+        </button>
+      </footer>
     </div>
   );
 }

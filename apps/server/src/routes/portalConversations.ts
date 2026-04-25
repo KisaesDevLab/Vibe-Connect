@@ -5,10 +5,25 @@ import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { auditRepo } from '../repositories/audit.js';
-import { messagesRepo } from '../repositories/messages.js';
+import { messagesRepo, readReceiptsRepo } from '../repositories/messages.js';
 import { conversationsRepo } from '../repositories/conversations.js';
 import { publish } from '../realtime/pgFanout.js';
+import { logger } from '../logger.js';
+import { notifyForNewMessage } from '../services/offlineNotify.js';
+import { onMessagePosted } from '../services/requestsService.js';
 import { loadSessionFromCookie } from './portal.js';
+
+/**
+ * Phase 24: pull the `requestItemId` linkage out of a message's
+ * ciphertext_meta. Mirror of the helper in routes/conversations.ts —
+ * duplicated here to keep both routers free of cross-imports.
+ */
+const REQUEST_ITEM_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function readRequestItemId(meta: Record<string, unknown> | null | undefined): string | null {
+  if (!meta) return null;
+  const v = (meta as { requestItemId?: unknown }).requestItemId;
+  return typeof v === 'string' && REQUEST_ITEM_UUID.test(v) ? v : null;
+}
 
 export const portalConversationsRouter = Router();
 
@@ -185,9 +200,12 @@ portalConversationsRouter.get(
       res.json({ messages: [], stepupRequired: true });
       return;
     }
+    // Phase 27: include deleted rows so the portal renders the "deleted"
+    // placeholder for messages a staffer removed. Ciphertext + attachments
+    // get stripped on the wire below; the DB row keeps the ciphertext for
+    // admin recovery.
     const rows = await db('messages')
       .where({ conversation_id: req.params.id! })
-      .whereNull('deleted_at')
       .where((b) => b.whereNull('scheduled_for').orWhere('scheduled_for', '<=', db.fn.now()))
       .orderBy('created_at', 'desc')
       .limit(100);
@@ -196,11 +214,13 @@ portalConversationsRouter.get(
     // can render inline image previews (and a normal download chip otherwise)
     // without having to round-trip to a separate endpoint per message.
     const orderedMessages = rows.reverse();
-    const messageIds = orderedMessages.map((m) => m.id as string);
+    const liveMessageIds = orderedMessages
+      .filter((m) => m.deleted_at === null)
+      .map((m) => m.id as string);
     const attachmentsByMessageId: Record<string, Array<Record<string, unknown>>> = {};
-    if (messageIds.length > 0) {
+    if (liveMessageIds.length > 0) {
       const atts = await db('attachments')
-        .whereIn('message_id', messageIds)
+        .whereIn('message_id', liveMessageIds)
         .select(
           'id',
           'message_id',
@@ -229,18 +249,27 @@ portalConversationsRouter.get(
       }
     }
     res.json({
-      messages: orderedMessages.map((m) => ({
-        id: m.id,
-        senderId: m.sender_id,
-        senderExternalIdentityId: m.sender_external_identity_id,
-        ciphertext: (m.ciphertext as Buffer).toString('base64'),
-        contentKeyVersion: m.content_key_version,
-        urgent: m.urgent,
-        source: m.source,
-        createdAt: m.created_at,
-        editedAt: m.edited_at,
-        attachments: attachmentsByMessageId[m.id as string] ?? [],
-      })),
+      messages: orderedMessages.map((m) => {
+        const isDeleted = m.deleted_at !== null;
+        return {
+          id: m.id,
+          senderId: m.sender_id,
+          senderExternalIdentityId: m.sender_external_identity_id,
+          ciphertext: isDeleted ? '' : (m.ciphertext as Buffer).toString('base64'),
+          contentKeyVersion: m.content_key_version,
+          urgent: m.urgent,
+          source: m.source,
+          createdAt: m.created_at,
+          editedAt: m.edited_at,
+          deletedAt: m.deleted_at,
+          // Phase 24: portal needs the cleartext metadata for system-source
+          // messages (revision-requested, nudge-sent) so it can render them
+          // without trying to decrypt the empty ciphertext. The blob is
+          // already capped at 4 KiB by boundedMeta.
+          ciphertextMeta: isDeleted ? null : (m.ciphertext_meta as Record<string, unknown> | null),
+          attachments: attachmentsByMessageId[m.id as string] ?? [],
+        };
+      }),
     });
   }),
 );
@@ -332,9 +361,117 @@ portalConversationsRouter.post(
       urgent: false,
       createdAt: row.created_at,
     });
+    void notifyForNewMessage({
+      conversationId: row.conversation_id,
+      messageId: row.id,
+      senderUserId: null,
+      senderExternalIdentityId: session.external_identity_id,
+      urgent: false,
+    });
+    // Phase 24: auto-flip a linked request item to `submitted` if the response
+    // type is satisfied at message-create time (text or both). File-only
+    // items wait for the attachment-create hook in portalUpload.ts.
+    const linkedItemId = readRequestItemId(parsed.data.ciphertextMeta);
+    if (linkedItemId) {
+      const hasTextBody = row.ciphertext.length > 0;
+      void onMessagePosted({
+        messageId: row.id,
+        itemId: linkedItemId,
+        conversationId: row.conversation_id,
+        attachmentCount: 0,
+        hasTextBody,
+        actorUserId: null,
+        actorExternalIdentityId: session.external_identity_id,
+      })
+        .then((updated) => {
+          if (updated) {
+            void publish({
+              type: 'request:changed',
+              conversationId: row.conversation_id,
+              listId: updated.listId,
+              itemId: updated.id,
+            });
+          }
+        })
+        .catch((err) => {
+          logger.warn('portal_request_item_link_hook_failed', {
+            messageId: row.id,
+            itemId: linkedItemId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
     res.status(201).json({
       id: row.id,
       createdAt: row.created_at,
     });
+  }),
+);
+
+// -------- Mark message read (portal) --------
+//
+// Phase 27: portal clients now mark messages read so the destruct timer can
+// arm on first non-sender view. The staff app already had this endpoint;
+// before this we tracked client read state implicitly via the message GET,
+// which gave no per-message granularity for the destruct trigger.
+//
+// The destruct stamp uses `WHERE destruct_at IS NULL` so concurrent reads
+// from a multi-tab portal client cannot race-double-stamp.
+portalConversationsRouter.post(
+  '/messages/:messageId/read',
+  asyncHandler(async (req, res) => {
+    const session = (
+      req as unknown as {
+        clientSession: { external_identity_id: string };
+      }
+    ).clientSession;
+    const msg = await messagesRepo.byId(req.params.messageId!);
+    if (!msg) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const member = await db('conversation_members')
+      .where({
+        conversation_id: msg.conversation_id,
+        external_identity_id: session.external_identity_id,
+      })
+      .whereNull('removed_at')
+      .first();
+    if (!member) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    await readReceiptsRepo.markReadExternal(msg.id, session.external_identity_id);
+    // Phase 27: arm destruct timer. The reader is necessarily a non-sender —
+    // portal clients post via `sender_external_identity_id`, so any message
+    // they could read was sent by staff. We pass `readerUserId: null` and the
+    // repo's predicate becomes a no-op for the sender check.
+    if (msg.destruct_after_view_seconds !== null && msg.destruct_at === null) {
+      const fireAt = new Date(Date.now() + msg.destruct_after_view_seconds * 1000);
+      const stamped = await messagesRepo.stampDestructAt(msg.id, fireAt, null);
+      if (stamped > 0) {
+        await auditRepo.write({
+          actorExternalIdentityId: session.external_identity_id,
+          action: 'message.destruct_armed',
+          targetType: 'message',
+          targetId: msg.id,
+          details: {
+            conversationId: msg.conversation_id,
+            fireAt: fireAt.toISOString(),
+            afterViewSeconds: msg.destruct_after_view_seconds,
+            via: 'portal',
+          },
+        });
+      }
+    }
+    await publish({
+      type: 'message:read',
+      conversationId: msg.conversation_id,
+      messageId: msg.id,
+      userId: null,
+      externalIdentityId: session.external_identity_id,
+      readAt: new Date().toISOString(),
+    });
+    res.json({ ok: true });
   }),
 );

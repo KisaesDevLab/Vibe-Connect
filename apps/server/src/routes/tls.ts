@@ -1,9 +1,10 @@
 // Admin-facing TLS / ACME endpoints. Mounted as a child router under
 // /admin via adminRouter.use('/', tlsRouter) in routes/admin.ts.
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import rateLimit from 'express-rate-limit';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAdmin } from '../middleware/auth.js';
+import { env } from '../env.js';
 import { logger } from '../logger.js';
 import { auditRepo } from '../repositories/audit.js';
 import {
@@ -15,6 +16,20 @@ import {
 } from '../services/tlsAcme.js';
 
 export const tlsRouter = Router();
+
+/**
+ * Distribution mode: when TLS_MODE=external (Caddy / Cloudflare Tunnel
+ * fronts the appliance), refuse write paths so two TLS managers can't race
+ * for :80 ACME challenges. GET /tls/status keeps working — the UI uses it
+ * to render "managed externally" instead of the renewal panel.
+ */
+function requireInternalTls(_req: Request, res: Response, next: NextFunction): void {
+  if (env.tlsMode !== 'internal') {
+    res.status(409).json({ error: 'tls_managed_externally', tlsMode: env.tlsMode });
+    return;
+  }
+  next();
+}
 
 // 5/hr per admin session. ACME has strict per-account + per-domain rate
 // limits and a compromised admin cookie shouldn't be able to burn them.
@@ -32,13 +47,16 @@ tlsRouter.get(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     const status = await getStatus();
-    res.json(status);
+    // Surface tlsMode so the staff UI can pick the right panel (in-app
+    // renewal controls vs. an "TLS managed by your reverse proxy" notice).
+    res.json({ ...status, tlsMode: env.tlsMode });
   }),
 );
 
 tlsRouter.post(
   '/tls/request',
   requireAdmin,
+  requireInternalTls,
   tlsWriteLimiter,
   asyncHandler(async (req, res) => {
     if (isOrderInFlight()) {
@@ -61,6 +79,7 @@ tlsRouter.post(
 tlsRouter.post(
   '/tls/renew',
   requireAdmin,
+  requireInternalTls,
   tlsWriteLimiter,
   asyncHandler(async (req, res) => {
     if (isOrderInFlight()) {
@@ -80,6 +99,7 @@ tlsRouter.post(
 tlsRouter.delete(
   '/tls/config',
   requireAdmin,
+  requireInternalTls,
   asyncHandler(async (req, res) => {
     if (isOrderInFlight()) {
       res.status(409).json({ error: 'order_in_flight' });

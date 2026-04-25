@@ -71,8 +71,11 @@ vi.mock('acme-client', () => {
       const authz = { identifier: { value: 'connect.example.test' } };
       const challenge = { type: 'http-01', token };
       await opts.challengeCreateFn(authz, challenge, keyAuth);
-      // Give the test a deterministic pause to probe the responder.
-      await new Promise((r) => setTimeout(r, 5));
+      // Give the test a deterministic pause to probe the responder. Windows
+      // CI has variable scheduling latency well above 5ms; using 250ms keeps
+      // the probe + getHttp01KeyAuthorization assertion race-free without
+      // making the suite noticeably slower (one order per test file run).
+      await new Promise((r) => setTimeout(r, 250));
       await opts.challengeRemoveFn(authz, challenge, keyAuth);
       return FAKE_CERT_PEM;
     }
@@ -218,26 +221,38 @@ describe('HTTP-01 responder + background order', () => {
     );
 
     // Kick the order + race it with a probe against the responder. The
-    // FakeClient sleeps 5ms between provision and cleanup to give us a
-    // deterministic window.
+    // FakeClient sleeps between provision and cleanup to give us a
+    // deterministic window for the in-flight probe + key-auth lookup.
+    //
+    // Critical: orderPromise MUST be awaited (or settled) before the next
+    // test's beforeEach runs, otherwise the in-flight writeCertBundle's
+    // .tmp file gets clobbered by the cleanup loop and the rename ENOENTs
+    // out as an Unhandled Rejection. Wrap the assertions in try / finally
+    // so the order always drains even if an assertion throws.
     const orderPromise = runAcmeOrder({ actorUserId: null });
-    // Poll until a token shows up, then probe.
     let probeStatus = 0;
     let probeBody = '';
-    for (let i = 0; i < 50; i++) {
-      if (orderState.tokensSeen.length > 0) break;
-      await new Promise((r) => setTimeout(r, 1));
+    let token: string | undefined;
+    let liveKeyAuth: string | null = null;
+    try {
+      for (let i = 0; i < 1000; i++) {
+        if (orderState.tokensSeen.length > 0) break;
+        await new Promise((r) => setTimeout(r, 1));
+      }
+      [token] = orderState.tokensSeen;
+      expect(token).toBeTruthy();
+      // Responder sees the registered token. Snapshot the service-level
+      // accessor at the same moment so we don't race the cleanup window.
+      const probe = await request(app).get(`/.well-known/acme-challenge/${token}`);
+      probeStatus = probe.status;
+      probeBody = probe.text;
+      liveKeyAuth = getHttp01KeyAuthorization(token!);
+    } finally {
+      await orderPromise.catch(() => {
+        /* surfaced via the assertions below */
+      });
     }
-    const [token] = orderState.tokensSeen;
-    expect(token).toBeTruthy();
-    // Responder sees the registered token.
-    const probe = await request(app).get(`/.well-known/acme-challenge/${token}`);
-    probeStatus = probe.status;
-    probeBody = probe.text;
-    // Also verify the service-level accessor resolves the same key-auth.
-    expect(getHttp01KeyAuthorization(token!)).toBe(probeBody);
-
-    await orderPromise;
+    expect(liveKeyAuth).toBe(probeBody);
 
     expect(probeStatus).toBe(200);
     expect(probeBody).toBe(orderState.keyAuthByToken.get(token!));

@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 // Type-only — keeps libsodium (~986 KB) out of the first-paint bundle for /login and /verify.
 import type * as CryptoModule from '@vibe-connect/crypto';
 import { portalApi } from '../api.js';
 import { getSessionKeys } from '../state/clientSession.js';
+import { url as buildUrl } from '../lib/boot.js';
+import { RequestsPanel, type PickedItem } from './RequestsPanel.js';
 
 let cryptoPromise: Promise<typeof CryptoModule> | null = null;
 async function loadCrypto(): Promise<typeof CryptoModule> {
@@ -12,8 +14,11 @@ async function loadCrypto(): Promise<typeof CryptoModule> {
   return c;
 }
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, {
+async function json<T>(path: string, init?: RequestInit): Promise<T> {
+  // Distribution mode: prepend BASE_PATH so multi-app deploys hit
+  // /connect/portal/... instead of /portal/... (which would land on a
+  // sibling Vibe app under the same Caddy ingress).
+  const r = await fetch(buildUrl(path), {
     ...init,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
@@ -62,7 +67,38 @@ interface Msg {
   source: 'app' | 'email-in' | 'sms-in' | 'system';
   createdAt: string;
   editedAt: string | null;
+  /** Phase 27: present when staff has soft-deleted this message. The portal
+   *  renders a "Message deleted" placeholder; the row stays in the list so
+   *  the timeline doesn't visually collapse where the message used to be. */
+  deletedAt?: string | null;
+  /** Cleartext metadata; for `source='system'` carries `systemEventType` and
+   *  Phase 24 nudge/revision payloads we render directly without decrypt. */
+  ciphertextMeta?: Record<string, unknown> | null;
   attachments?: MsgAttachment[];
+}
+
+/**
+ * Phase 24 follow-up: render system messages from their cleartext
+ * `ciphertext_meta` instead of trying to decrypt the empty ciphertext.
+ * Mirrors the matching branch in apps/web/src/state/crypto.tsx.
+ */
+function renderSystemMessageBody(m: Msg): string {
+  const meta = (m.ciphertextMeta ?? {}) as Record<string, unknown>;
+  const eventType = String(meta.systemEventType ?? '');
+  if (eventType === 'request_item_revision') {
+    return '🔁 Your firm asked for a revision. See the Requests panel for the note.';
+  }
+  if (eventType === 'request_nudge_sent') {
+    const listTitle =
+      typeof meta.listTitle === 'string' ? meta.listTitle : 'pending items';
+    const custom = typeof meta.customBody === 'string' ? meta.customBody : null;
+    return custom
+      ? `🔔 Reminder: ${custom}`
+      : `🔔 Reminder — items still needed for ${listTitle}.`;
+  }
+  if (eventType === 'request_item_done') return '✅ Item marked done.';
+  if (eventType === 'request_list_created') return '📝 New request list created.';
+  return '⚙ System event';
 }
 
 /** Files above this size render as a download chip even when image/*. See
@@ -161,7 +197,7 @@ export function ConversationsPage(): JSX.Element {
         // page silently shows "No conversations yet" when the session cookie
         // is invalid or expired, hiding the real cause from the user.
         if (!r.identity) {
-          window.location.href = '/';
+          window.location.href = buildUrl('/');
           return;
         }
         setMe({
@@ -171,7 +207,7 @@ export function ConversationsPage(): JSX.Element {
         });
       })
       .catch(() => {
-        window.location.href = '/';
+        window.location.href = buildUrl('/');
       });
     json<{ conversations: ConversationSummary[] }>('/portal/conversations').then((r) =>
       setConvs(r.conversations),
@@ -191,7 +227,7 @@ export function ConversationsPage(): JSX.Element {
           {me?.displayName} ·{' '}
           <button
             type="button"
-            onClick={() => portalApi.logout().then(() => (window.location.href = '/'))}
+            onClick={() => portalApi.logout().then(() => (window.location.href = buildUrl('/')))}
             className="text-brand-700 hover:underline"
           >
             Sign out
@@ -199,6 +235,7 @@ export function ConversationsPage(): JSX.Element {
         </div>
       </header>
       <main className="max-w-2xl mx-auto p-4 space-y-3">
+        <PendingRequestsBanner onOpen={(convId) => setActiveId(convId)} />
         {/* relativeTick is read here so the render depends on it; a bare read
             in the map() below would also work but keeping the acknowledgement
             up-front makes the intent obvious. */}
@@ -244,6 +281,95 @@ export function ConversationsPage(): JSX.Element {
   );
 }
 
+/**
+ * Phase 24.8 — portal home banner. Counts open items (pending + revision)
+ * across every active list the client is a member of, and surfaces them
+ * above the conversation list. Tapping the banner jumps into the first
+ * conversation that has open items so the client lands one click away
+ * from responding.
+ *
+ * Item titles + descriptions are E2EE; the banner renders only counts +
+ * the cleartext list title, no item details. We don't decrypt items here
+ * — that happens inside the Requests panel after the conversation key is
+ * unwrapped.
+ */
+function PendingRequestsBanner({
+  onOpen,
+}: {
+  onOpen: (conversationId: string) => void;
+}): JSX.Element | null {
+  const [counts, setCounts] = useState<{
+    pending: number;
+    revision: number;
+    firstConvId: string | null;
+    firstListTitle: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const summary = await portalApi.requests.list();
+        if (cancelled) return;
+        // Walk each active list once to get item counts. The portal endpoint
+        // returns metadata only — counts come from the per-list /get call.
+        let pending = 0;
+        let revision = 0;
+        let firstConvId: string | null = null;
+        let firstListTitle: string | null = null;
+        for (const l of summary.lists) {
+          const detail = await portalApi.requests.get(l.id);
+          if (cancelled) return;
+          for (const item of detail.list.items) {
+            if (item.status === 'pending') pending++;
+            else if (item.status === 'revision') revision++;
+          }
+          if (!firstConvId && (pending > 0 || revision > 0)) {
+            firstConvId = l.conversationId;
+            firstListTitle = l.title;
+          }
+        }
+        setCounts({ pending, revision, firstConvId, firstListTitle });
+      } catch {
+        // Silent — server might be down or not yet seeded; no banner is fine.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!counts || (counts.pending === 0 && counts.revision === 0)) return null;
+  const total = counts.pending + counts.revision;
+  return (
+    <button
+      type="button"
+      onClick={() => counts.firstConvId && onOpen(counts.firstConvId)}
+      className="w-full text-left rounded border border-brand-200 bg-brand-50 px-4 py-3 hover:bg-brand-100"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-brand-900">
+            You have {total} item{total === 1 ? '' : 's'} to respond to
+          </div>
+          {counts.firstListTitle && (
+            <div className="text-xs text-brand-800 mt-0.5">
+              Starting with <strong>{counts.firstListTitle}</strong>
+              {counts.revision > 0 && (
+                <span className="ml-1 text-rose-700">
+                  · {counts.revision} need
+                  {counts.revision === 1 ? 's' : ''} another look
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <span className="text-xs text-brand-700 font-medium whitespace-nowrap">Open →</span>
+      </div>
+    </button>
+  );
+}
+
 function ActiveConversation({
   id,
   myIdentityId,
@@ -256,17 +382,66 @@ function ActiveConversation({
   const [convKey, setConvKey] = useState<Uint8Array | null>(null);
   const [decryptedBodies, setDecryptedBodies] = useState<Record<string, string>>({});
   const [body, setBody] = useState('');
-  // Track the file the user picked but hasn't sent yet — see sendMessage for
-  // the "send message then attach" ordering that relies on this.
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  // Track the files the user has staged but hasn't sent yet — see sendMessage
+  // for the "send message then attach" ordering that relies on this. Phase
+  // 24.5 expanded this from a single file to a small array so a client can
+  // attach a stack of receipts in one submission.
+  // Each staged file gets a stable id at staging time so React's chip list
+  // reconciles correctly across removes. Using array index as the key would
+  // unmount/remount the wrong chips when an earlier one is removed.
+  interface StagedFile {
+    id: string;
+    file: File;
+  }
+  const [pendingFiles, setPendingFiles] = useState<StagedFile[]>([]);
+  const PORTAL_MAX_ATTACHMENTS = 10;
+  const stageFile = (f: File): StagedFile => ({
+    id:
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`,
+    file: f,
+  });
   // Inline error for the "combine images as PDF" flow. Replaces a window.alert
   // call that jarred the portal out of its polished style.
   const [combineError, setCombineError] = useState<string | null>(null);
+  // Phase 24 follow-up: distinct send-error surface so a failed message POST
+  // (rate-limit, validation, server 5xx) doesn't get conflated with the
+  // combine-PDF error chip. The dismiss action on send errors should be
+  // semantically "ack and retry" not "abandon"; we keep the linked-item pin
+  // so the retry preserves the user's intent.
+  const [sendError, setSendError] = useState<string | null>(null);
   const [uploadState, setUploadState] = useState<
     'idle' | 'encrypting' | 'uploading' | 'scanning' | 'done' | 'blocked' | 'infected' | 'scanUnavailable'
   >('idle');
   const [uploadDetail, setUploadDetail] = useState<string | null>(null);
   const session = useMemo(() => getSessionKeys(), []);
+  // Phase 24: Requests panel state. `linkedItem` pins the next outbound
+  // message to a specific request item — the staff side then sees the
+  // submission auto-flip the item's status to "submitted".
+  const [requestsOpen, setRequestsOpen] = useState(false);
+  const [linkedItem, setLinkedItem] = useState<PickedItem | null>(null);
+  // Phase 24 kill switch: hide the Requests pill + block opening the panel
+  // when the firm has turned the feature off. The portal has no security-
+  // policy endpoint, so we infer the toggle from the same /portal/request-
+  // lists payload the banner already calls (it returns requestsDisabled:true
+  // and an empty list when the feature is off).
+  const [requestsDisabled, setRequestsDisabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void portalApi.requests
+      .list()
+      .then((r) => {
+        if (!cancelled) setRequestsDisabled(r.requestsDisabled === true);
+      })
+      .catch(() => {
+        // Network failure leaves the pill visible — opening it will surface
+        // the error properly inside the panel.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setDetail(null);
@@ -330,6 +505,28 @@ function ActiveConversation({
     })();
   }, [detail, session]);
 
+  // Phase 27: mark every staff-sent message read once it surfaces in the
+  // portal. This is what arms the destruct timer server-side; without it,
+  // self-destruct messages would never start their countdown for client
+  // recipients. Local memo prevents re-marking on every poll tick.
+  const markedReadRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (messages.length === 0) return;
+    for (const m of messages) {
+      if (m.deletedAt) continue;
+      if (m.senderExternalIdentityId === myIdentityId) continue;
+      if (markedReadRef.current.has(m.id)) continue;
+      markedReadRef.current.add(m.id);
+      // Best-effort POST. The server idempotently no-ops a duplicate read,
+      // and a network failure just means the next poll will retry once we
+      // clear the memo if needed (we don't here; the next session will).
+      void fetch(buildUrl(`/portal/conversations/messages/${m.id}/read`), {
+        method: 'POST',
+        credentials: 'include',
+      }).catch(() => undefined);
+    }
+  }, [messages, myIdentityId]);
+
   useEffect(() => {
     if (!convKey || messages.length === 0) return;
     let cancelled = false;
@@ -343,6 +540,12 @@ function ActiveConversation({
         const out = { ...prev };
         for (const m of messages) {
           if (out[m.id]) continue;
+          // Phase 27: deleted rows arrive with empty ciphertext. Render the
+          // tombstone placeholder directly without trying to decrypt.
+          if (m.deletedAt) {
+            out[m.id] = '__deleted__';
+            continue;
+          }
           // Bridged-in messages (email-in, sms-in) are sealed to the firm
           // public key, not the conversation key. Staff sees a placeholder
           // until the first rewrap pass; the portal should do the same
@@ -354,6 +557,12 @@ function ActiveConversation({
                 : '[bridged SMS — preview unavailable until staff opens it]';
             continue;
           }
+          // Phase 24: system messages render directly from cleartext meta;
+          // skip the `__decrypting__` placeholder for them.
+          if (m.source === 'system') {
+            out[m.id] = renderSystemMessageBody(m);
+            continue;
+          }
           out[m.id] = '__decrypting__';
         }
         return out;
@@ -363,7 +572,13 @@ function ActiveConversation({
         // Skip messages already decrypted or marked bridge-pending.
         // decryptedBodies state isn't read here directly (stale closure), so
         // we re-check by attempting parse/decrypt and catching.
+        if (m.deletedAt) continue;
         if (m.contentKeyVersion === 0 && (m.source === 'email-in' || m.source === 'sms-in')) {
+          continue;
+        }
+        // Phase 24: system messages have empty ciphertext; render from meta.
+        if (m.source === 'system') {
+          setDecryptedBodies((prev) => ({ ...prev, [m.id]: renderSystemMessageBody(m) }));
           continue;
         }
         try {
@@ -488,38 +703,81 @@ function ActiveConversation({
   async function sendMessage(): Promise<{ id: string } | null> {
     if (!convKey || !detail) return null;
     const trimmed = body.trim();
-    if (!trimmed && !pendingFile) return null;
+    if (!trimmed && pendingFiles.length === 0) return null;
     const crypto = await loadCrypto();
-    const messageBody = trimmed || (pendingFile ? `(attachment: ${pendingFile.name})` : '');
+    const messageBody =
+      trimmed ||
+      (pendingFiles.length > 0
+        ? `(attachment${pendingFiles.length > 1 ? 's' : ''}: ${pendingFiles
+            .map((f) => f.file.name)
+            .join(', ')})`
+        : '');
     const env = await crypto.encryptMessage(
       crypto.utf8Encode(messageBody),
       convKey,
       detail.rotationVersion ?? 1,
     );
     const ciphertext = btoa(JSON.stringify(env));
+    // Phase 24: pin the message to a request item when one is selected. The
+    // server-side post-insert hook reads `ciphertextMeta.requestItemId` and
+    // auto-flips the item to `submitted` once the response_type rule is met
+    // (text content, attachment, or both). The pin clears after this send so
+    // a follow-up unrelated message doesn't accidentally re-link.
+    const ciphertextMeta = linkedItem ? { requestItemId: linkedItem.itemId } : undefined;
     const res = await fetch(`/portal/conversations/${id}/messages`, {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ciphertext, contentKeyVersion: detail.rotationVersion ?? 1 }),
+      body: JSON.stringify({
+        ciphertext,
+        contentKeyVersion: detail.rotationVersion ?? 1,
+        ...(ciphertextMeta ? { ciphertextMeta } : {}),
+      }),
     });
     setBody('');
-    if (!res.ok) return null;
-    const created = (await res.json()) as { id: string };
-    if (pendingFile) {
+    if (!res.ok) {
+      // Phase 24 follow-up: surface failed sends so the user knows their
+      // pinned item didn't actually go through. Pre-fix the empty composer
+      // looked like success while linkedItem stayed pinned, confusing
+      // downstream sends. Keep linkedItem so a retry preserves the pin.
+      let errMsg = `Send failed (${res.status})`;
       try {
-        await uploadFile(pendingFile, created.id);
+        const body = (await res.json()) as { error?: string };
+        if (body.error === 'rate_limited') errMsg = 'Rate limit hit. Please wait and retry.';
+        else if (body.error) errMsg = `Send failed: ${body.error}`;
+      } catch {
+        /* non-JSON response */
+      }
+      setSendError(errMsg);
+      return null;
+    }
+    const created = (await res.json()) as { id: string };
+    if (pendingFiles.length > 0) {
+      // Sequential upload — peak memory stays bounded at one file's worth of
+      // plaintext, and the per-IP rate limiter doesn't trip on a parallel
+      // burst of N attachments. uploadFile returns the final state for THIS
+      // file so we can break on infected/scan-unavailable without relying
+      // on the React state ref (which is closure-captured and stale).
+      try {
+        for (const staged of pendingFiles) {
+          const outcome = await uploadFile(staged.file, created.id);
+          if (outcome === 'infected' || outcome === 'scanUnavailable') break;
+        }
       } finally {
-        setPendingFile(null);
+        setPendingFiles([]);
       }
     }
+    setLinkedItem(null);
     const reload = await json<{ messages: Msg[] }>(`/portal/conversations/${id}/messages`);
     setMessages(reload.messages);
     return created;
   }
 
-  async function uploadFile(file: File, messageId: string): Promise<void> {
-    if (!convKey) return;
+  async function uploadFile(
+    file: File,
+    messageId: string,
+  ): Promise<'done' | 'infected' | 'scanUnavailable' | 'blocked'> {
+    if (!convKey) return 'blocked';
     setUploadState('encrypting');
     const crypto = await loadCrypto();
     const fileKey = await crypto.generateSymmetricKey();
@@ -553,7 +811,12 @@ function ActiveConversation({
           if (body.error === 'infected') {
             setUploadDetail(body.signature ? `Match: ${body.signature}` : null);
             setUploadState('infected');
-            return;
+            return 'infected';
+          }
+          if (body.error === 'attachment_limit_reached') {
+            setUploadDetail('Server attachment cap reached');
+            setUploadState('blocked');
+            return 'blocked';
           }
         } catch {
           /* fall through */
@@ -563,17 +826,20 @@ function ActiveConversation({
         // portalUpload.ts returns 503 when ClamAV can't scan. We refuse to
         // ship unscanned bytes — the user should retry shortly.
         setUploadState('scanUnavailable');
-        return;
+        return 'scanUnavailable';
       }
       setUploadState('blocked');
-      return;
+      return 'blocked';
     }
     setUploadState('scanning');
     try {
       const body = (await res.json()) as { scanStatus?: string };
-      setUploadState(body.scanStatus === 'infected' ? 'infected' : 'done');
+      const final = body.scanStatus === 'infected' ? 'infected' : 'done';
+      setUploadState(final);
+      return final;
     } catch {
       setUploadState('done');
+      return 'done';
     }
   }
 
@@ -594,7 +860,25 @@ function ActiveConversation({
 
   return (
     <div className="bg-white rounded shadow divide-y divide-slate-100">
-      <div className="px-4 py-3 font-semibold">{detail.displayName ?? 'Conversation'}</div>
+      <div className="px-4 py-3 flex items-center gap-2">
+        <span className="font-semibold flex-1 truncate">
+          {detail.displayName ?? 'Conversation'}
+        </span>
+        {/* Phase 24: Requests pill. Hidden entirely when the firm-wide kill
+            switch is off; otherwise always visible — the panel itself shows
+            "no open requests" when there's nothing to show, which beats
+            asking the panel to load + count just to decide whether to render
+            the button. */}
+        {!requestsDisabled && (
+          <button
+            type="button"
+            onClick={() => setRequestsOpen(true)}
+            className="text-xs rounded-md bg-brand-50 text-brand-700 px-3 py-1 font-medium hover:bg-brand-100"
+          >
+            Requests
+          </button>
+        )}
+      </div>
       <div className="p-4 space-y-2 max-h-[55vh] overflow-y-auto">
         {messages.map((m) => {
           // "Mine" = this session's identity. Pre-fix this was any external
@@ -629,12 +913,14 @@ function ActiveConversation({
                   <span>Bridged {m.source === 'email-in' ? 'email' : 'SMS'}</span>
                 </div>
               )}
-              {renderedBody === '__decrypting__' || renderedBody === undefined ? (
+              {m.deletedAt || renderedBody === '__deleted__' ? (
+                <span className="italic opacity-70">Message deleted</span>
+              ) : renderedBody === '__decrypting__' || renderedBody === undefined ? (
                 <span className="italic opacity-60">decrypting…</span>
               ) : (
                 renderedBody
               )}
-              {!isBridgePending && m.attachments && m.attachments.length > 0 && (
+              {!isBridgePending && !m.deletedAt && m.attachments && m.attachments.length > 0 && (
                 <div className={`mt-1 space-y-1 ${renderedBody && renderedBody !== '__decrypting__' ? 'pt-2 border-t border-white/20' : ''}`}>
                   {m.attachments.map((att) => (
                     <PortalAttachmentView
@@ -658,6 +944,7 @@ function ActiveConversation({
                   hour: '2-digit',
                   minute: '2-digit',
                 })}
+                {!m.deletedAt && m.editedAt && ' · edited'}
               </div>
             </div>
           );
@@ -666,11 +953,65 @@ function ActiveConversation({
           <div className="text-sm text-slate-500 text-center py-6">No messages yet.</div>
         )}
       </div>
+      {linkedItem && (
+        <div className="px-3 py-2 bg-brand-50 border-t border-brand-200 text-xs text-brand-900 flex items-center gap-2">
+          <span aria-hidden>📌</span>
+          <span className="flex-1 min-w-0 truncate">
+            Replying to <strong>{linkedItem.title}</strong>
+            {linkedItem.responseType === 'file' && (
+              <span className="ml-1 opacity-75">· attach a file to send</span>
+            )}
+            {linkedItem.responseType === 'text' && (
+              <span className="ml-1 opacity-75">· type a note to send</span>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => setLinkedItem(null)}
+            className="text-brand-700 hover:underline"
+            aria-label="Unlink"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {pendingFiles.length > 0 && (
+        <div className="px-3 py-2 border-t border-slate-200 bg-slate-50/50 flex flex-wrap gap-1.5">
+          {pendingFiles.map((staged) => (
+            <span
+              key={staged.id}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white border border-slate-300 px-2 py-1 text-[11px] text-slate-700"
+              title={`${staged.file.name} · ${(staged.file.size / 1024).toFixed(0)} KB · encrypts on send`}
+            >
+              <span aria-hidden>📎</span>
+              <span className="max-w-[120px] truncate">{staged.file.name}</span>
+              <span className="text-slate-400">
+                {(staged.file.size / 1024).toFixed(0)} KB
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setPendingFiles((prev) => prev.filter((s) => s.id !== staged.id))
+                }
+                className="text-slate-400 hover:text-rose-700 leading-none"
+                aria-label={`Remove ${staged.file.name}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {pendingFiles.length >= PORTAL_MAX_ATTACHMENTS && (
+            <span className="text-[11px] text-slate-500 self-center">
+              Max {PORTAL_MAX_ATTACHMENTS} files per message
+            </span>
+          )}
+        </div>
+      )}
       <div className="p-3 flex items-start gap-2">
         <textarea
           rows={2}
           className="flex-1 resize-none rounded-md border border-slate-300 px-2 py-1 text-sm"
-          placeholder="Message"
+          placeholder={linkedItem ? `Reply for "${linkedItem.title}"` : 'Message'}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => {
@@ -683,22 +1024,48 @@ function ActiveConversation({
         <div className="flex flex-col gap-2">
           <label
             className={`text-xs rounded border border-slate-300 px-2 py-1 cursor-pointer hover:bg-slate-50 ${
-              pendingFile ? 'bg-brand-50 text-brand-700 border-brand-300' : 'text-slate-600'
+              pendingFiles.length > 0
+                ? 'bg-brand-50 text-brand-700 border-brand-300'
+                : 'text-slate-600'
             }`}
-            title={pendingFile ? `Attached: ${pendingFile.name} (click Send)` : 'Attach a file'}
+            title={
+              pendingFiles.length === 0
+                ? 'Attach files'
+                : `${pendingFiles.length} file${pendingFiles.length === 1 ? '' : 's'} attached (click Send)`
+            }
           >
-            {pendingFile ? `📎 ${pendingFile.name.slice(0, 16)}…` : 'Attach'}
+            {pendingFiles.length === 0
+              ? 'Attach'
+              : `📎 ${pendingFiles.length} file${pendingFiles.length === 1 ? '' : 's'}`}
             <input
               type="file"
               className="hidden"
+              multiple
               accept=".pdf,.jpg,.jpeg,.png,.heic,.docx,.xlsx,.csv,.txt"
               onChange={(e) => {
-                // Stage the file locally — the upload runs after sendMessage
+                // Stage files locally — the upload runs after sendMessage
                 // creates the real message id to attach to. Pre-fix the code
                 // fired a fire-and-forget upload against the last-seen
                 // messageId, which could be someone else's message.
-                const f = e.target.files?.[0];
-                if (f) setPendingFile(f);
+                const picked = Array.from(e.target.files ?? []);
+                if (picked.length > 0) {
+                  setPendingFiles((prev) => {
+                    const staged = picked.map(stageFile);
+                    const merged = [...prev, ...staged];
+                    if (merged.length > PORTAL_MAX_ATTACHMENTS) {
+                      const dropped = merged.length - PORTAL_MAX_ATTACHMENTS;
+                      // Surface the silent truncation so the user knows their
+                      // overflow files weren't queued. combineError is
+                      // semantically correct here — this is an attach-time
+                      // warning, not a send failure.
+                      setCombineError(
+                        `Only ${PORTAL_MAX_ATTACHMENTS} files per submission — ${dropped} extra dropped.`,
+                      );
+                      return merged.slice(0, PORTAL_MAX_ATTACHMENTS);
+                    }
+                    return merged;
+                  });
+                }
                 // Reset the input so picking the same filename again fires onChange.
                 e.target.value = '';
               }}
@@ -707,7 +1074,11 @@ function ActiveConversation({
           <button
             type="button"
             onClick={() => void sendMessage()}
-            disabled={(!body.trim() && !pendingFile) || !convKey}
+            disabled={
+              !convKey ||
+              (!body.trim() && pendingFiles.length === 0) ||
+              !linkedItemSatisfied(linkedItem, body, pendingFiles)
+            }
             className="rounded bg-brand-600 text-white text-sm px-3 py-1 hover:bg-brand-700 disabled:opacity-60"
           >
             Send
@@ -739,6 +1110,27 @@ function ActiveConversation({
           )}
         </div>
       )}
+      {sendError && (
+        <div className="px-3 py-2 text-xs bg-rose-50 text-rose-900 border-t border-rose-200 flex items-start justify-between gap-2">
+          <span>
+            <span className="font-medium">Couldn&apos;t send:</span> {sendError}
+            {linkedItem && (
+              <span className="block text-[11px] text-rose-700/80 mt-0.5">
+                Your pin to <strong>{linkedItem.title}</strong> is preserved — click
+                Send again to retry.
+              </span>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => setSendError(null)}
+            className="text-rose-700 hover:text-rose-900 font-semibold"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
       {combineError && (
         <div className="px-3 py-2 text-xs bg-amber-50 text-amber-900 border-t border-amber-200 flex items-start justify-between gap-2">
           <span>{combineError}</span>
@@ -752,8 +1144,52 @@ function ActiveConversation({
           </button>
         </div>
       )}
+      <RequestsPanel
+        conversationId={id}
+        convKey={convKey}
+        open={requestsOpen && !requestsDisabled}
+        onClose={() => setRequestsOpen(false)}
+        onPick={(item, path, file) => {
+          // Wire the picked item back into the compose flow. The user can
+          // adjust the body text or swap the file before hitting Send; the
+          // ciphertextMeta.requestItemId pin survives until they cancel or
+          // send. We stage but don't auto-send so the user can add a
+          // sentence ("here's last year's W-2 for comparison") before
+          // shipping.
+          setLinkedItem(item);
+          if ((path === 'photo' || path === 'file') && file) {
+            setPendingFiles((prev) =>
+              [...prev, stageFile(file)].slice(0, PORTAL_MAX_ATTACHMENTS),
+            );
+          }
+        }}
+      />
     </div>
   );
+}
+
+/**
+ * Phase 24.5: enforces the per-item response_type rule on the Send button so
+ * a client can't submit a `file`-only item with text-only content (or vice
+ * versa). Returns true when no item is pinned (regular chat reply), or when
+ * the staged content satisfies the linked item's rule.
+ */
+function linkedItemSatisfied(
+  linkedItem: PickedItem | null,
+  body: string,
+  pendingFiles: { id: string; file: File }[],
+): boolean {
+  if (!linkedItem) return true;
+  const hasText = body.trim().length > 0;
+  const hasFiles = pendingFiles.length > 0;
+  switch (linkedItem.responseType) {
+    case 'file':
+      return hasFiles;
+    case 'text':
+      return hasText;
+    case 'both':
+      return hasText || hasFiles;
+  }
 }
 
 /**

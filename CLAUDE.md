@@ -33,6 +33,28 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
   Never imply end-to-end for bridged-in content.
 - Never send message content in push notification payloads, email fallback notifications,
   or SMS outbound notification bodies — metadata + "open the portal/app" only.
+- **Phase 24 deliberate exception (Client Requests).** `request_lists.title` /
+  `description` and `request_items.status` / `due_date` are stored cleartext so the
+  server can render the portal Requests tab pre-unwrap, compute progress, and template
+  nudge bodies. **Item titles, descriptions, and revision notes** stay E2EE under the
+  conversation's content key (same envelope as messages). Linkage from a message to
+  an item lives on the existing `messages.ciphertext_meta` JSONB blob — reserved keys
+  are `requestItemId`, `requestListId`, `systemEventType`, `revisionNoteCiphertext`.
+  See `docs/ops/REQUESTS.md` for the full crypto split + threat-model trade-off.
+- **Phase 26 — Client Vault.** Per-client durable file storage with two zones
+  (`shared`, `staff_only`). Each `client_vaults` row has zone keys in `vault_keys`
+  (mirrors `conversation_keys.wrapped_keys` shape; same recipientId scheme). File
+  bytes and filenames are E2EE under a per-file key wrapped to the zone key;
+  `mime_type`, `size_bytes`, `uploaded_at`, and folder structure remain plaintext
+  metadata. Hard zone-separation invariant: `staff_only` wrapped keys are never
+  emitted to a `client:*` recipient — enforced at `vaultKeysRepo.byVaultIdForSession`
+  (load-bearing) plus belt-and-suspenders 404 on portal vault routes for any
+  staff-only file id. `messages.ciphertext_meta` reserved keys for vault system
+  events: `vaultFileId`, `vaultFolderId`, `vaultZone` (`'shared'` only — staff_only
+  events never appear in client-visible threads), and `systemEventType` extended with
+  `'vault_file_uploaded'`, `'vault_file_deleted'`. Resumable uploads use tus 1.0.0
+  (vault only — message attachments stay multipart). See `docs/ops/VAULT.md` (admin)
+  and `docs/ops/VAULT_CLIENT.md` (client).
 
 ## Non-goals — do not build these
 
@@ -62,6 +84,10 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
 - `AUDIT:` — audit-log emitters.
 - `STEPUP:` — SSN/EIN step-up gates.
 - `TODO(phaseN)` — deferred work keyed to the build plan phase.
+- `Phase 24` / `request.*` audit actions — Client Requests & Document Collection.
+  See `docs/ops/REQUESTS.md` (admin) and `docs/ops/REQUESTS_CLIENT.md` (client).
+- `Phase 26` / `vault.*` audit actions — Client Vault. See `docs/ops/VAULT.md`
+  (admin) and `docs/ops/VAULT_CLIENT.md` (client).
 
 ## Stack pins
 
@@ -100,9 +126,46 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
 - Real provider credentials go in `.env` (gitignored).
 - Dev mock providers write outbound messages to `.outbox/` for inspection.
 
+### Distribution mode (Vibe family integration)
+
+The same image runs in **single-app** mode (one product per host, direct
+ports) and **multi-app** mode (shared Caddy ingress at
+`https://<host>/connect/`). Mode is a runtime choice — never bake it into a
+build. See `vibe-distribution-plan.md` for the cross-product shape and
+`C:\Users\kwkcp\.claude\plans\polymorphic-brewing-corbato.md` for the
+Vibe-Connect-specific implementation phases.
+
+Mode-switching env knobs (defaults are single-app):
+
+- `BASE_PATH` — `/` or `/connect`. Read by the server (`env.basePath`) and
+  emitted to the SPA via `/__vibe-boot.js` so React Router gets the right
+  basename and `apps/{web,portal}/src/lib/boot.ts:url()` prepends it to
+  every fetch.
+- `SESSION_COOKIE_PATH` — `/` or `/connect`. Wired into both `req.session`
+  cookie (in `app.ts`) and the portal's manual `res.cookie(SESSION_COOKIE,
+  …)` calls in `routes/portal.ts`. Sibling Vibe apps on the same host can't
+  read each other's sessions.
+- `TLS_MODE` — `internal` (Phase-23 in-app ACME ticker is on; admin TLS
+  endpoints accept writes) or `external` (Caddy / Cloudflare Tunnel
+  terminates TLS upstream; ticker is skipped at startup; admin write paths
+  return 409 `tls_managed_externally`). The HTTP-01 responder route stays
+  mounted in both modes.
+- `APP_PUBLISH_PORT`, `POSTGRES_PUBLISH_PORT`, `NGINX_PUBLISH_PORT_*` —
+  Compose-only knobs the single-app `docker-compose.yml` honors. The
+  `docker-compose.grouped.yml` overlay clears them with `!reset []` so the
+  containers reach the host only via the `vibe_ingress` external network.
+- `BUILD_VERSION` — surfaced to the SPA via the bootstrap script. Set by
+  the release pipeline; defaults to `'dev'`.
+
+The SPA bundles build with Vite `base: './'` and use a
+`<base href="__BASE_HREF__/">` placeholder that nginx's `sub_filter`
+substitutes at request time. One bundle, two modes, no rebuild.
+
 ## Things to ignore / defer
 
-- OIDC — deferred.
+- OIDC — present but off by default. Activated by setting `OIDC_ISSUER_URL`
+  + the related env vars. The login page hides the "Sign in with SSO"
+  button when issuer discovery fails or the env is blank.
 - Shamir secret sharing of recovery phrase — future phase.
 - Dark theme — deferred.
 - S3 attachment driver — interface shaped for it, local driver is default.

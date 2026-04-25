@@ -7,6 +7,7 @@
 // browser reconstructs the matching private key and requests a portal session.
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { url } from '../lib/boot.js';
 
 export function InvitePage(): JSX.Element {
   const nav = useNavigate();
@@ -40,7 +41,7 @@ export function InvitePage(): JSX.Element {
         // tokenId is the first half of the token, base64-encoded (standard) — matches what
         // the server bcrypts.
         const tokenIdBase64 = btoa(String.fromCharCode(...tokenId));
-        const res = await fetch('/portal/invite-accept', {
+        const res = await fetch(url('/portal/invite-accept'), {
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },

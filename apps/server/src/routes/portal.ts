@@ -169,6 +169,11 @@ portalRouter.post(
 
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
+      // Distribution mode: scope to BASE_PATH so a sibling Vibe app on the
+      // same host can't read the portal cookie (single-app: '/'; multi-app:
+      // '/connect'). clearCookie below uses the same path so logout works
+      // regardless of mode.
+      path: env.sessionCookiePath,
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       maxAge: 8 * 60 * 60 * 1000,
@@ -258,6 +263,11 @@ portalRouter.post(
     });
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
+      // Distribution mode: scope to BASE_PATH so a sibling Vibe app on the
+      // same host can't read the portal cookie (single-app: '/'; multi-app:
+      // '/connect'). clearCookie below uses the same path so logout works
+      // regardless of mode.
+      path: env.sessionCookiePath,
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       maxAge: 8 * 60 * 60 * 1000,
@@ -348,7 +358,7 @@ portalRouter.post(
           targetType: 'client_session',
           targetId: session.id,
         });
-        res.clearCookie(SESSION_COOKIE);
+        res.clearCookie(SESSION_COOKIE, { path: env.sessionCookiePath });
         res.status(401).json({ error: 'session_revoked' });
         return;
       }
@@ -393,6 +403,7 @@ portalRouter.post(
     });
     res.cookie(SESSION_COOKIE, newToken, {
       httpOnly: true,
+      path: env.sessionCookiePath,
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       // Keep the same remaining lifetime as the absolute_expires_at on the
@@ -446,7 +457,7 @@ portalRouter.post(
         targetId: session.id,
       });
     }
-    res.clearCookie(SESSION_COOKIE);
+    res.clearCookie(SESSION_COOKIE, { path: env.sessionCookiePath });
     res.json({ ok: true });
   }),
 );

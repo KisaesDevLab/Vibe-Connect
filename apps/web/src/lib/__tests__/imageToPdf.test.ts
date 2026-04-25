@@ -61,14 +61,24 @@ function startsWithPdfMagic(bytes: Uint8Array): boolean {
 }
 
 describe('isPdfConvertible', () => {
-  it('accepts jpeg and png, rejects everything else', () => {
+  it('accepts every image format the wrapper knows how to convert', () => {
     expect(isPdfConvertible('image/jpeg')).toBe(true);
     expect(isPdfConvertible('image/jpg')).toBe(true);
     expect(isPdfConvertible('image/png')).toBe(true);
-    expect(isPdfConvertible('image/webp')).toBe(false);
-    expect(isPdfConvertible('image/gif')).toBe(false);
+    expect(isPdfConvertible('image/webp')).toBe(true);
+    expect(isPdfConvertible('image/gif')).toBe(true);
+    expect(isPdfConvertible('image/heic')).toBe(true);
+    expect(isPdfConvertible('image/heif')).toBe(true);
+    // Case-insensitive — UAs sometimes capitalize.
+    expect(isPdfConvertible('IMAGE/JPEG')).toBe(true);
+  });
+
+  it('rejects non-image and unsupported image types', () => {
     expect(isPdfConvertible('application/pdf')).toBe(false);
     expect(isPdfConvertible('text/plain')).toBe(false);
+    expect(isPdfConvertible('image/svg+xml')).toBe(false);
+    expect(isPdfConvertible('image/bmp')).toBe(false);
+    expect(isPdfConvertible('')).toBe(false);
   });
 });
 

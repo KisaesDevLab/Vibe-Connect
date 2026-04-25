@@ -205,9 +205,15 @@ describe('conversation + messaging E2EE', () => {
     const kurtDel = await kurt.agent.delete(`/conversations/messages/${msgId}`);
     expect(kurtDel.status).toBe(200);
 
-    // And the message no longer appears in the list.
+    // Phase 27: deleted messages stay in the list as a tombstone so the UI
+    // can render the "Message deleted" placeholder. Ciphertext + meta are
+    // stripped on the wire, but the DB row keeps the bytes for admin
+    // recovery.
     const list = await kurt.agent.get(`/conversations/${convId}/messages`);
-    expect(list.body.messages).toHaveLength(0);
+    expect(list.body.messages).toHaveLength(1);
+    expect(list.body.messages[0].deletedAt).not.toBeNull();
+    expect(list.body.messages[0].ciphertext).toBe('');
+    expect(list.body.messages[0].ciphertextMeta).toBeNull();
   });
 
   it('scheduled messages are hidden until scheduledFor ≤ now', async () => {

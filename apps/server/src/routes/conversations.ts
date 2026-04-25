@@ -19,6 +19,8 @@ import {
 } from '../repositories/conversations.js';
 import { attachmentsRepo, messagesRepo, readReceiptsRepo } from '../repositories/messages.js';
 import { publish } from '../realtime/pgFanout.js';
+import { notifyForNewMessage } from '../services/offlineNotify.js';
+import { onAttachmentScanFailed, onMessagePosted } from '../services/requestsService.js';
 import {
   addMember,
   assertCallerIsMember,
@@ -27,6 +29,60 @@ import {
 } from '../services/conversationService.js';
 
 export const conversationsRouter = Router();
+
+/**
+ * Phase 24 helper: pull the `requestItemId` linkage out of a message's
+ * ciphertext_meta blob. Validates UUID shape so a malformed claim from the
+ * client can't reach the service layer. Returns null when no linkage is
+ * present or the value isn't a UUID.
+ */
+const REQUEST_ITEM_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function readRequestItemId(meta: Record<string, unknown> | null | undefined): string | null {
+  if (!meta) return null;
+  const v = (meta as { requestItemId?: unknown }).requestItemId;
+  return typeof v === 'string' && REQUEST_ITEM_UUID.test(v) ? v : null;
+}
+
+/**
+ * Phase 24.5: when an attachment fails ClamAV (infected or scan-unavailable),
+ * walk back any request item that auto-submitted on the strength of this
+ * message and emit a request:changed event so the UI re-fetches. Background
+ * work — never await; never block the upload's HTTP response.
+ */
+async function revertLinkedRequestItem(
+  messageId: string,
+  reason: 'infected' | 'scan_unavailable',
+  actor: { actorUserId?: string | null; actorExternalIdentityId?: string | null },
+): Promise<void> {
+  try {
+    const msg = await messagesRepo.byId(messageId);
+    if (!msg) return;
+    const itemId = readRequestItemId(msg.ciphertext_meta as Record<string, unknown>);
+    if (!itemId) return;
+    const updated = await onAttachmentScanFailed({
+      messageId,
+      itemId,
+      conversationId: msg.conversation_id,
+      reason,
+      actorUserId: actor.actorUserId ?? null,
+      actorExternalIdentityId: actor.actorExternalIdentityId ?? null,
+    });
+    if (updated) {
+      await publish({
+        type: 'request:changed',
+        conversationId: msg.conversation_id,
+        listId: updated.listId,
+        itemId: updated.id,
+      });
+    }
+  } catch (err) {
+    logger.warn('request_item_scan_revert_failed', {
+      messageId,
+      reason,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /** Payloads — the server never sees plaintext. Clients upload ciphertext + wrapped keys. */
 
@@ -40,6 +96,25 @@ const createSchema = z.object({
 });
 
 // Cap ciphertextMeta to keep the JSONB column from becoming a DoS vector.
+//
+// Reserved keys (callers MUST NOT collide with these, Phase 24+):
+//   - requestItemId          : string (uuid). Linkage from a message to a
+//                              request_items row; the post-insert hook in
+//                              the message-create handler reads this and
+//                              auto-flips item status (see services/
+//                              requestsService.ts onMessagePosted).
+//   - requestListId          : string (uuid). Used on system messages
+//                              announcing list-level events (nudge sent,
+//                              revision requested) so clients can refetch
+//                              without a parallel API call.
+//   - systemEventType        : enum string (request_item_revision |
+//                              request_nudge_sent | request_item_done | …).
+//                              Marks system-authored thread messages.
+//   - revisionNoteCiphertext : base64 string. Echoed onto the system
+//                              message that announces a revision so the
+//                              portal can render the note inline without a
+//                              second fetch. Sourced from
+//                              request_items.revision_note_ciphertext.
 const boundedMeta = z
   .record(z.string(), z.unknown())
   .default({})
@@ -63,6 +138,10 @@ const messageCreateSchema = z.object({
     .nullable()
     .optional(),
   ciphertextMeta: boundedMeta,
+  // Phase 27: optional self-destruct timer. Strictly positive seconds; the
+  // upper bound is enforced against `firm_settings.message_destruct_max_seconds`
+  // inside the route so an admin can tighten the cap without a redeploy.
+  destructAfterViewSeconds: z.number().int().positive().nullable().optional(),
 });
 
 const messageEditSchema = z.object({
@@ -196,13 +275,17 @@ conversationsRouter.get(
     const rows = await messagesRepo.list(req.params.id!, { limit, beforeId });
     const withAtts = await Promise.all(
       rows.map(async (m) => {
-        const atts = await attachmentsRepo.byMessage(m.id);
+        // Phase 27: deleted messages stay in the list so the UI renders the
+        // tombstone, but ciphertext + attachments are stripped on the wire.
+        // The DB row keeps the ciphertext for admin recovery.
+        const isDeleted = m.deleted_at !== null;
+        const atts = isDeleted ? [] : await attachmentsRepo.byMessage(m.id);
         return {
           id: m.id,
           conversationId: m.conversation_id,
           senderId: m.sender_id,
           senderExternalIdentityId: m.sender_external_identity_id,
-          ciphertext: m.ciphertext.toString('base64'),
+          ciphertext: isDeleted ? '' : m.ciphertext.toString('base64'),
           contentKeyVersion: m.content_key_version,
           urgent: m.urgent,
           scheduledFor: m.scheduled_for,
@@ -210,7 +293,9 @@ conversationsRouter.get(
           createdAt: m.created_at,
           editedAt: m.edited_at,
           deletedAt: m.deleted_at,
-          ciphertextMeta: m.ciphertext_meta,
+          destructAfterViewSeconds: m.destruct_after_view_seconds,
+          destructAt: m.destruct_at,
+          ciphertextMeta: isDeleted ? null : m.ciphertext_meta,
           attachments: atts.map((a) => ({
             id: a.id,
             messageId: a.message_id,
@@ -272,6 +357,24 @@ conversationsRouter.post(
         return;
       }
     }
+    // Phase 27: enforce firm-level destruct gates. Hidden in the compose UI
+    // when disabled, but a hostile client could still POST the field; reject
+    // here. The cap is also applied so a tweaked client can't pick a 100-year
+    // timer.
+    if (parsed.data.destructAfterViewSeconds !== null && parsed.data.destructAfterViewSeconds !== undefined) {
+      const firmSettings = await db('firm_settings').where({ id: 1 }).first();
+      if (!(firmSettings?.message_destruct_enabled ?? true)) {
+        res.status(400).json({ error: 'destruct_disabled' });
+        return;
+      }
+      const cap = Number(firmSettings?.message_destruct_max_seconds ?? 604800);
+      if (parsed.data.destructAfterViewSeconds > cap) {
+        res
+          .status(400)
+          .json({ error: 'destruct_seconds_too_large', details: { maxSeconds: cap } });
+        return;
+      }
+    }
     // Atomic insert + touchUpdated + setLastRead. Pre-fix these ran outside a
     // transaction, and a mid-sequence failure (DB hiccup between the insert
     // and the setLastRead) left the sidebar badge inflated for the sender
@@ -291,6 +394,7 @@ conversationsRouter.post(
           scheduledFor: parsed.data.scheduledFor ?? null,
           source: 'app',
           ciphertextMeta: parsed.data.ciphertextMeta,
+          destructAfterViewSeconds: parsed.data.destructAfterViewSeconds ?? null,
         },
         trx,
       );
@@ -319,6 +423,52 @@ conversationsRouter.post(
         urgent: row.urgent,
         createdAt: row.created_at,
       });
+      // Fire-and-forget the offline-notify fanout. We don't await it —
+      // a slow Postmark/Twilio call must not block the request path. Errors
+      // are caught inside the service and logged so the request still 201s.
+      void notifyForNewMessage({
+        conversationId: row.conversation_id,
+        messageId: row.id,
+        senderUserId: row.sender_id,
+        senderExternalIdentityId: row.sender_external_identity_id,
+        urgent: row.urgent,
+      });
+      // Phase 24: if this message links a request item, run the auto-submit
+      // check. Wrapped in try/catch so a stale `requestItemId` (item deleted
+      // out from under us) can't 500 the message-send. Attachments arrive in
+      // a SEPARATE POST, so for response_type='file' items the auto-flip
+      // won't happen here — it'll fire from the attachments handler instead
+      // once the file lands. The service is idempotent, so the retry is safe.
+      const linkedItemId = readRequestItemId(parsed.data.ciphertextMeta);
+      if (linkedItemId) {
+        const hasTextBody = row.ciphertext.length > 0;
+        void onMessagePosted({
+          messageId: row.id,
+          itemId: linkedItemId,
+          conversationId: row.conversation_id,
+          attachmentCount: 0,
+          hasTextBody,
+          actorUserId: row.sender_id,
+          actorExternalIdentityId: row.sender_external_identity_id,
+        })
+          .then((updated) => {
+            if (updated) {
+              void publish({
+                type: 'request:changed',
+                conversationId: row.conversation_id,
+                listId: updated.listId,
+                itemId: updated.id,
+              });
+            }
+          })
+          .catch((err) => {
+            logger.warn('request_item_link_hook_failed', {
+              messageId: row.id,
+              itemId: linkedItemId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          });
+      }
     }
     const response = {
       id: row.id,
@@ -360,6 +510,17 @@ conversationsRouter.patch(
       res.status(403).json({ error: 'forbidden' });
       return;
     }
+    // Phase 24 follow-up: refuse edits on system-source messages. They
+    // represent server-emitted events (revision-requested, nudge-sent,
+    // future request_item_done announcements). Letting the staff who
+    // happened to be `sender_id` rewrite their ciphertext_meta would let
+    // them retroactively change the audit-visible record of what the
+    // system announced. Audit log is the source of truth, but a tampered
+    // thread message is still a confusing artefact for downstream review.
+    if (msg.source === 'system') {
+      res.status(400).json({ error: 'system_message_immutable' });
+      return;
+    }
     // Ex-members shouldn't be able to edit prior messages.
     await assertCallerIsMember(msg.conversation_id, req.session.userId!);
     // Firm-configurable window (minutes). 0 = edits disabled. See the
@@ -376,6 +537,14 @@ conversationsRouter.patch(
       res.status(400).json({ error: 'edit_window_expired' });
       return;
     }
+    // Phase 27: a destruct timer that has already elapsed but hasn't been
+    // claimed by the ticker is morally a deleted message. Refuse the edit so
+    // a staffer can't sneak content back into the row right before the
+    // ticker soft-deletes it.
+    if (msg.destruct_at !== null && new Date(msg.destruct_at).getTime() <= Date.now()) {
+      res.status(400).json({ error: 'destruct_pending' });
+      return;
+    }
     const parsed = messageEditSchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'bad_request', details: parsed.error.flatten() });
@@ -385,11 +554,22 @@ conversationsRouter.patch(
       msg.id,
       Buffer.from(parsed.data.ciphertext, 'base64'),
       parsed.data.ciphertextMeta,
+      req.session.userId!,
     );
     // Bump conversation.updated_at so the sidebar reflects the edit's ordering.
     // Without this, a late edit to an older message wouldn't nudge the
     // conversation's place in the list-for-user query.
     await conversationsRepo.touchUpdated(msg.conversation_id);
+    // Phase 27: audit every edit so the admin history surface has a complete
+    // record of who changed what and when. The pre-edit ciphertext lives in
+    // `message_edits`; this row is the index entry.
+    await auditRepo.write({
+      actorUserId: req.session.userId!,
+      action: 'message.edited',
+      targetType: 'message',
+      targetId: msg.id,
+      details: { conversationId: msg.conversation_id },
+    });
     await publish({ type: 'message:edit', conversationId: msg.conversation_id, messageId: msg.id });
     res.json({ id: updated!.id, editedAt: updated!.edited_at });
   }),
@@ -444,6 +624,27 @@ conversationsRouter.post(
     await assertCallerIsMember(msg.conversation_id, req.session.userId!);
     await readReceiptsRepo.markRead(msg.id, req.session.userId!);
     await conversationMembersRepo.setLastRead(msg.conversation_id, req.session.userId!, msg.id);
+    // Phase 27: arm the destruct timer on the first non-sender read. Idempotent
+    // — a second concurrent read no-ops via `WHERE destruct_at IS NULL`. We
+    // only audit when the row count reflects an actual stamp, otherwise every
+    // re-open of a thread by the same recipient would write a new audit row.
+    if (msg.destruct_after_view_seconds !== null && msg.destruct_at === null) {
+      const fireAt = new Date(Date.now() + msg.destruct_after_view_seconds * 1000);
+      const stamped = await messagesRepo.stampDestructAt(msg.id, fireAt, req.session.userId!);
+      if (stamped > 0) {
+        await auditRepo.write({
+          actorUserId: req.session.userId!,
+          action: 'message.destruct_armed',
+          targetType: 'message',
+          targetId: msg.id,
+          details: {
+            conversationId: msg.conversation_id,
+            fireAt: fireAt.toISOString(),
+            afterViewSeconds: msg.destruct_after_view_seconds,
+          },
+        });
+      }
+    }
     await publish({
       type: 'message:read',
       conversationId: msg.conversation_id,
@@ -625,6 +826,18 @@ conversationsRouter.post(
       res.status(400).json({ error: 'message_mismatch' });
       return;
     }
+    // Phase 24.5 server-side cap on attachments-per-message (10). Mirrors
+    // the portal client's PORTAL_MAX_ATTACHMENTS to prevent an API-direct
+    // caller from blowing past the limit and sinking ClamAV time + storage.
+    const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+    const existingCount = (await attachmentsRepo.byMessage(msg.id)).length;
+    if (existingCount >= MAX_ATTACHMENTS_PER_MESSAGE) {
+      res.status(409).json({
+        error: 'attachment_limit_reached',
+        detail: `max ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`,
+      });
+      return;
+    }
     // Store ciphertext via the configured driver. File is already encrypted client-side,
     // so neither the driver nor the storage backend ever sees plaintext.
     // Storage key carries msg.id for audit-log traceability, a timestamp for
@@ -669,6 +882,12 @@ conversationsRouter.post(
         targetId: row.id,
         details: { signature: scan.signature },
       });
+      // Phase 24.5 staff-side mirror of the portalUpload revert. If a sibling
+      // attachment of this message had already pushed its linked request item
+      // to `submitted`, walk it back to `revision`.
+      void revertLinkedRequestItem(msg.id, 'infected', {
+        actorUserId: req.session.userId!,
+      });
       res.status(422).json({ error: 'infected', signature: scan.signature });
       return;
     }
@@ -705,10 +924,48 @@ conversationsRouter.post(
         targetId: row.id,
         details: { message: scan.message, blobDeleted, rowDeleted, storageKey },
       });
+      void revertLinkedRequestItem(msg.id, 'scan_unavailable', {
+        actorUserId: req.session.userId!,
+      });
       res.status(503).json({ error: 'scan_unavailable' });
       return;
     }
     await attachmentsRepo.updateScanStatus(row.id, 'clean');
+    // Phase 24: re-run the request-item auto-submit check now that an
+    // attachment has landed. Items with response_type='file' or 'both' that
+    // didn't satisfy at message-create time may now have enough payload to
+    // transition. Idempotent — already-submitted items no-op.
+    const linkedItemId = readRequestItemId(msg.ciphertext_meta as Record<string, unknown>);
+    if (linkedItemId) {
+      const attachmentCount = (await attachmentsRepo.byMessage(msg.id)).length;
+      const hasTextBody = msg.ciphertext.length > 0;
+      void onMessagePosted({
+        messageId: msg.id,
+        itemId: linkedItemId,
+        conversationId: msg.conversation_id,
+        attachmentCount,
+        hasTextBody,
+        actorUserId: msg.sender_id,
+        actorExternalIdentityId: msg.sender_external_identity_id,
+      })
+        .then((updated) => {
+          if (updated) {
+            void publish({
+              type: 'request:changed',
+              conversationId: msg.conversation_id,
+              listId: updated.listId,
+              itemId: updated.id,
+            });
+          }
+        })
+        .catch((err) => {
+          logger.warn('request_item_attachment_hook_failed', {
+            messageId: msg.id,
+            itemId: linkedItemId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
     res.status(201).json({
       id: row.id,
       storagePath: row.storage_path,

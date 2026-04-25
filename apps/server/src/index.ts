@@ -10,7 +10,17 @@ import {
   startScheduledMessageTicker,
   stopScheduledMessageTicker,
 } from './services/scheduledMessages.js';
+import {
+  setDestructBroadcaster,
+  startDestructTicker,
+  stopDestructTicker,
+} from './services/destructMessages.js';
+import { startAutoNudgeJob, stopAutoNudgeJob } from './services/autoNudge.js';
 import { startRetentionTicker, stopRetentionTicker } from './services/retention.js';
+import {
+  startVaultRetentionTicker,
+  stopVaultRetentionTicker,
+} from './services/vaultRetention.js';
 import { startTlsRenewalTicker, stopTlsRenewalTicker } from './services/tlsAcme.js';
 
 async function main(): Promise<void> {
@@ -34,7 +44,20 @@ async function main(): Promise<void> {
     },
   });
   startScheduledMessageTicker();
+  setDestructBroadcaster({
+    broadcastMessageDestructed: async (m) => {
+      const { publish } = await import('./realtime/pgFanout.js');
+      await publish({
+        type: 'message:delete',
+        conversationId: m.conversationId,
+        messageId: m.id,
+      });
+    },
+  });
+  startDestructTicker();
+  startAutoNudgeJob();
   startRetentionTicker();
+  startVaultRetentionTicker();
   startTlsRenewalTicker();
 
   server.listen(env.port, () => {
@@ -66,7 +89,10 @@ async function main(): Promise<void> {
     hardTimeout.unref();
     // Tickers stop synchronously.
     stopScheduledMessageTicker();
+    stopDestructTicker();
+    stopAutoNudgeJob();
     stopRetentionTicker();
+    stopVaultRetentionTicker();
     stopTlsRenewalTicker();
     // Drain HTTP. server.close stops accepting new connections and fires the
     // callback after all in-flight requests complete. We give that chance up

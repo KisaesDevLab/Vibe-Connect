@@ -10,7 +10,16 @@
 const bcrypt = require('bcryptjs');
 
 exports.seed = async function seed(knex) {
-  // Clear in FK-safe order
+  // Clear in FK-safe order. Phase 24 added request_templates / request_lists
+  // / request_items with FKs back to users(id); wipe them BEFORE deleting
+  // users so a re-seed against an existing DB doesn't trip the FK
+  // ON DELETE RESTRICT. The IF EXISTS guards keep the seed safe to run on a
+  // pre-Phase-24 database (e.g. in a downgrade scenario).
+  const phase24Tables = ['request_items', 'request_lists', 'request_templates'];
+  for (const t of phase24Tables) {
+    const exists = await knex.schema.hasTable(t);
+    if (exists) await knex(t).del();
+  }
   await knex('user_groups').del();
   await knex('users').del();
   await knex('groups').del();

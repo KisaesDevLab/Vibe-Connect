@@ -373,6 +373,47 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
       if (!forThisVersion) {
         throw new Error('no wrapped_keys available for this message version');
       }
+      // Phase 24: system-source messages (revision-requested, nudge-sent,
+      // future request-item-done announcements) carry empty ciphertext and
+      // render from ciphertextMeta instead. The decrypt path would otherwise
+      // throw on `JSON.parse(atob(""))` and surface a confusing
+      // "(unable to decrypt)" bubble. Branch early and produce a cleartext
+      // body the UI can style as a system event.
+      if (message.source === 'system') {
+        const meta = (message.ciphertextMeta ?? {}) as Record<string, unknown>;
+        const eventType = String(meta.systemEventType ?? '');
+        let body = '';
+        if (eventType === 'request_item_revision') {
+          body = '🔁 Revision requested. See the Requests panel for the note.';
+        } else if (eventType === 'request_nudge_sent') {
+          const listTitle =
+            typeof meta.listTitle === 'string' ? meta.listTitle : 'pending items';
+          const custom = typeof meta.customBody === 'string' ? meta.customBody : null;
+          body = custom
+            ? `🔔 Reminder: ${custom}`
+            : `🔔 Reminder — items still needed in ${listTitle}.`;
+        } else if (eventType === 'request_item_done') {
+          body = '✅ Item marked done.';
+        } else if (eventType === 'request_list_created') {
+          body = '📝 New request list created.';
+        } else {
+          body = '⚙ System event';
+        }
+        return {
+          id: message.id,
+          conversationId: message.conversationId,
+          senderId: message.senderId,
+          senderExternalIdentityId: message.senderExternalIdentityId,
+          body,
+          urgent: message.urgent,
+          scheduledFor: message.scheduledFor,
+          source: message.source,
+          createdAt: message.createdAt,
+          editedAt: message.editedAt,
+          deletedAt: message.deletedAt,
+          attachments: [],
+        };
+      }
       // Bridge-sealed messages (email-in / sms-in) are wrapped to the firm public key,
       // not the conversation key. They stay unreadable on staff devices until an admin
       // "rewraps" them under the conversation key (future phase). Surface them with a

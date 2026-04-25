@@ -13,11 +13,20 @@ import { InboxPage, QuickSwitcher, SearchModal } from './pages/Inbox.js';
 import { InstallPage } from './pages/Install.js';
 import { NotificationPrefsPage } from './pages/NotificationPrefs.js';
 import { LoginPage } from './pages/Login.js';
+import { RequestsDashboardPage } from './pages/RequestsDashboard.js';
+import { ClientFilesPage } from './pages/ClientFiles.js';
 import { AuthProvider, useAuth } from './state/auth.js';
 import { CryptoProvider, useCrypto } from './state/crypto.js';
 import { RealtimeProvider } from './state/realtime.js';
 import { SearchProvider, useSearch } from './state/searchContext.js';
 import { ThemeProvider } from './state/theme.js';
+import { getBoot } from './lib/boot.js';
+
+// Distribution mode: BrowserRouter strips this prefix from the URL before
+// matching routes, so <Route path="/inbox" /> resolves whether the app is at
+// '/' or '/connect/'. Empty BASE_PATH (single-app) falls back to '/' which
+// is the react-router default.
+const routerBasename = getBoot().basePath || '/';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -181,7 +190,7 @@ export function App(): JSX.Element {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={routerBasename}>
         <AuthProvider>
           <CryptoProvider>
             <SearchProvider>
@@ -208,6 +217,8 @@ export function App(): JSX.Element {
                     <Route path="admin/*" element={<AdminPage />} />
                     <Route path="account" element={<AccountPage />} />
                     <Route path="notifications" element={<NotificationPrefsPage />} />
+                    <Route path="requests" element={<RequestsDashboardPage />} />
+                    <Route path="clients/:id/files" element={<ClientFilesPage />} />
                   </Route>
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

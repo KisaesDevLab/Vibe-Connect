@@ -416,6 +416,25 @@ This is the client-side entry point. Push-invite via email/SMS and pull-access v
 
 ---
 
+## Phase 26 — Client Vault (per-client durable E2EE storage)
+
+*See `vibe-connect-phase-26-build-plan.md` for the full plan and
+`docs/ops/VAULT.md` for admin runbook.*
+
+- [ ] One vault per `external_identity`, two zones (`shared`, `staff_only`)
+- [ ] One level of folder nesting in v1 (deeper trees deferred to v2)
+- [ ] tus 1.0.0 resumable uploads (vault only; messages stay multipart)
+- [ ] 250 MB per-file cap, configurable via `firm_settings.vault_max_file_bytes`
+- [ ] ClamAV scan reused as-is; allowlist extended for `.qbb`/`.qbm`/`.qbo`
+- [ ] Hard zone-separation invariant at `vaultKeysRepo.byVaultIdForSession`
+- [ ] Folder templates per firm, default tax-engagement set seeded
+- [ ] Per-folder retention with zone defaults; crypto-shred on expiry
+- [ ] Recovery-phrase emergency decrypt covers vaults; audit-logged
+- [ ] Realtime fanout via socket.io (`vault:file-uploaded`, `vault:file-deleted`, `vault:rekey`)
+- [ ] Step-up gate identical to conversation key delivery; portal Shared zone only
+- [ ] Staff UI: `/clients/:id/files` two-pane page with zone toggle
+- [ ] Portal UI: `/files` Shared-zone-only page
+
 ## Phase 25 — SMS bridge with TextLink (primary) + Twilio (alternative)
 
 - [ ] Define `SmsProvider` interface: `sendMessage({ to, body })`, `onInboundMessage(handler)`, `verifyWebhookSignature(req)`
@@ -451,6 +470,7 @@ This is the client-side entry point. Push-invite via email/SMS and pull-access v
 - Phase 19 → 20 → 21 sequential (portal → step-up → client UI)
 - Phases 22, 23, 24 can parallelize with 21
 - Phase 25 last — TextLink hardware shipping or Twilio 10DLC approval externally gated
+- Phase 26 (Client Vault) parallelises with Phase 25; shares no surface area beyond the scheduled-job ticker, which already exists. Recommended order: ship 26 first (most-requested feature) since SMS waits on external gating
 
 ## Realistic timeline
 

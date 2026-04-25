@@ -1,17 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRealtime } from './realtime.js';
+import { url } from '../lib/boot.js';
 
-/** Tab title / favicon / unread-count coordinator. */
-export function useTabBadge(unread: number): void {
-  const originalTitleRef = useRef<string>('');
+/** Tab title / favicon / unread-count coordinator. Pass the desired base
+ *  title (e.g. the firm's admin-configured app name); the hook prefixes an
+ *  unread badge when there's something to read. We don't latch on the
+ *  initial document.title anymore — that broke when the admin changed the
+ *  app name and the tab title kept showing the old value until reload. */
+export function useTabBadge(unread: number, baseTitle?: string): void {
   useEffect(() => {
-    if (!originalTitleRef.current) originalTitleRef.current = document.title;
-    document.title =
-      unread > 0
-        ? `(${unread > 99 ? '99+' : unread}) ${originalTitleRef.current}`
-        : originalTitleRef.current;
-  }, [unread]);
+    const base = (baseTitle ?? '').trim() || 'Vibe Connect';
+    document.title = unread > 0 ? `(${unread > 99 ? '99+' : unread}) ${base}` : base;
+  }, [unread, baseTitle]);
 }
 
 /** Browser Notifications API + urgent-distinct sound. */
@@ -99,7 +100,7 @@ export async function postDeviceHeartbeat(
   version: string,
 ): Promise<void> {
   try {
-    await fetch('/admin/devices/heartbeat', {
+    await fetch(url('/admin/devices/heartbeat'), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -159,8 +160,12 @@ export function useDeviceHeartbeat(
 /** Register service worker + push subscription. */
 export async function enablePush(): Promise<boolean> {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
-  const reg = await navigator.serviceWorker.register('/sw.js');
-  const vapidRes = await fetch('/notifications/vapid-public-key', { credentials: 'include' });
+  // Service worker scope must equal the SW's URL prefix. Under multi-app
+  // (BASE_PATH=/connect) the SW lives at /connect/sw.js and only controls
+  // /connect/* — exactly what we want so a sibling app's SW can't eat our
+  // notifications.
+  const reg = await navigator.serviceWorker.register(url('/sw.js'));
+  const vapidRes = await fetch(url('/notifications/vapid-public-key'), { credentials: 'include' });
   const { publicKey } = (await vapidRes.json()) as { publicKey: string | null };
   if (!publicKey) return false;
   const perm = await Notification.requestPermission();
@@ -169,7 +174,7 @@ export async function enablePush(): Promise<boolean> {
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(publicKey).buffer as ArrayBuffer,
   });
-  const res = await fetch('/notifications/subscribe', {
+  const res = await fetch(url('/notifications/subscribe'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },

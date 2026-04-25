@@ -1,17 +1,35 @@
+# Production / installer-rendered Compose. Vendored verbatim by the
+# `vibe-installer` repo into `apps/connect/docker-compose.yml` and layered
+# with installer overrides for ingress, secrets, and host paths.
+#
+# The same image runs in both single-app and multi-app modes — flip the
+# distribution-mode env knobs (`BASE_PATH`, `SESSION_COOKIE_PATH`,
+# `TLS_MODE`, `APP_PUBLISH_PORT`, `NGINX_PUBLISH_PORT_*`) at deploy time;
+# see `vibe-distribution-plan.md` and `.env.example` for the full table.
+#
+# Image references pin to GHCR. Operators set VERSION (e.g. VERSION=1.4.2)
+# in `/etc/vibe/connect/.env`; defaults to `:latest` for first-time installs
+# that haven't yet pinned to a release tag.
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: vibe
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # Operator drops the password into a 0600 file at this host path; the
+      # installer creates it at install time. Avoids the inlined-in-DATABASE_URL
+      # antipattern (env vars leak via `docker inspect` / process listings).
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: vibe_connect
     ports:
-      # Bound only to localhost so the host's test suite can reach it; never
-      # expose this to the LAN in a real deployment.
-      - '127.0.0.1:5435:5432'
+      # Bound to localhost only so the operator's psql can reach it for
+      # debugging. The installer's `vibe doctor` and backup tooling go through
+      # this socket; direct LAN exposure is never exposed.
+      - '127.0.0.1:${POSTGRES_PUBLISH_PORT:-5435}:5432'
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      - /var/lib/vibe/connect/postgres-data:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U vibe']
       interval: 10s
@@ -22,32 +40,36 @@ services:
     cpus: 2
 
   app:
-    image: vibeconnect/appliance:${VERSION:-latest}
-    build:
-      context: ../..
-      dockerfile: infra/docker/Dockerfile
+    image: ghcr.io/kisaesdevlab/vibe-connect-app:${VERSION:-latest}
     restart: unless-stopped
-    env_file: ../../.env
+    env_file:
+      - /etc/vibe/connect/.env
+    environment:
+      # Distribution-mode knobs. Each is overridable in /etc/vibe/connect/.env;
+      # defaults match the single-app shape so a `vibe install connect` on an
+      # otherwise-empty host produces a working appliance immediately.
+      BASE_PATH: '${BASE_PATH:-/}'
+      SESSION_COOKIE_PATH: '${SESSION_COOKIE_PATH:-/}'
+      TLS_MODE: '${TLS_MODE:-internal}'
+      BUILD_VERSION: '${VERSION:-dev}'
     depends_on:
       postgres:
         condition: service_healthy
-    # DO NOT expose the app container port to the host. Nginx reaches the
-    # app on the internal docker network via `app:4000`; exposing it here
-    # would bypass TLS, HSTS, CSP, and the port-8443 portal isolation, and
-    # let a LAN client hit the raw Express server. If you need local admin
-    # access during debugging, use `docker compose exec app wget ...`.
     expose:
       - '4000'
+    ports:
+      # Single-app: publish so curl localhost:4000/health works during
+      # bringup. The installer's grouped overlay clears this with
+      # `!reset []` and routes traffic through Caddy on the vibe_ingress
+      # network instead.
+      - '${APP_PUBLISH_PORT:-4000}:4000'
     volumes:
-      - app_uploads:/app/uploads
-      # TLS certs written by the tlsAcme service live here. Nginx
-      # bind-mounts the same host directory read-only below and reloads
-      # when files change.
-      - ./tls:/app/tls
-    # Appliance host may be a single-tenant VPS; cap so a runaway request
-    # surge can't OOM the host and take postgres with it. Tune in ops as
-    # load patterns become clearer. mem_limit/cpus work on both swarm and
-    # compose v2 without requiring a `deploy:` block under `docker compose`.
+      - /var/lib/vibe/connect/uploads:/var/lib/vibe/connect/uploads
+      # In-app ACME ticker drops new certs here; nginx reads from the same
+      # host path read-only. Matches the Dockerfile's TLS_OUTPUT_DIR env so
+      # the writes land in the bind-mount, not the container's ephemeral
+      # writable layer.
+      - /var/lib/vibe/connect/tls:/var/lib/vibe/connect/tls
     mem_limit: 2g
     mem_reservation: 512m
     cpus: 2
@@ -59,30 +81,30 @@ services:
       start_period: 20s
 
   nginx:
-    build:
-      # Repo root so the Dockerfile can reach apps/{web,portal} + packages/*
-      # to build fresh frontend bundles instead of relying on a pre-populated
-      # ./static directory on the host.
-      context: ../..
-      dockerfile: infra/docker/nginx/Dockerfile
-    image: vibeconnect/appliance-nginx:${VERSION:-latest}
+    image: ghcr.io/kisaesdevlab/vibe-connect-nginx:${VERSION:-latest}
     restart: unless-stopped
     depends_on:
       app:
         condition: service_healthy
+    environment:
+      BASE_PATH: '${BASE_PATH:-/}'
+      TLS_MODE: '${TLS_MODE:-internal}'
+      HTTP_PORT: '80'
+      HTTPS_PORT: '443'
+      PORTAL_HTTPS_PORT: '8443'
     ports:
-      - '80:80'
-      - '443:443'
-      - '8443:8443'
+      - '${NGINX_PUBLISH_PORT_HTTP:-80}:80'
+      - '${NGINX_PUBLISH_PORT_HTTPS:-443}:443'
+      - '${NGINX_PUBLISH_PORT_PORTAL:-8443}:8443'
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./tls:/etc/nginx/tls:ro
-      # Frontend assets are now baked into the image by the multi-stage
-      # build above — no host bind-mount needed, and no risk of nginx
-      # serving a stale committed bundle that drifts from apps/* source.
+      # nginx reads certs the app's tlsAcme service drops here. Read-only —
+      # nginx never writes back. Empty in TLS_MODE=external (Caddy
+      # terminates upstream) but the mount stays so a flip back to
+      # internal mode works without a compose recreate. The host source
+      # matches the app's TLS_OUTPUT_DIR exactly so atomic .tmp+rename
+      # writes are visible to nginx's inotify loop.
+      - /var/lib/vibe/connect/tls:/etc/nginx/tls:ro
 
-volumes:
-  pg_data:
-    name: vibe_connect_pg
-  app_uploads:
-    name: vibe_connect_uploads
+secrets:
+  postgres_password:
+    file: /etc/vibe/connect/postgres_password

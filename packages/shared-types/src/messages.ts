@@ -29,6 +29,10 @@ export interface EncryptedMessage {
   createdAt: string;
   editedAt: string | null;
   deletedAt: string | null;
+  /** Phase 27: optional self-destruct timer (seconds after first non-sender read). */
+  destructAfterViewSeconds?: number | null;
+  /** Phase 27: ISO timestamp at which the destruct ticker will soft-delete the row. */
+  destructAt?: string | null;
   ciphertextMeta: Record<string, unknown> | null;
   attachments: Attachment[];
 }
@@ -45,6 +49,8 @@ export interface DecryptedMessage {
   createdAt: string;
   editedAt: string | null;
   deletedAt: string | null;
+  destructAfterViewSeconds?: number | null;
+  destructAt?: string | null;
   attachments: DecryptedAttachmentMeta[];
 }
 

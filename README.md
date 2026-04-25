@@ -47,6 +47,88 @@ yarn portal:dev                                   # http://localhost:5174
 - `yarn db:migrate` / `db:rollback` / `db:seed` / `db:reset` — database lifecycle
 - `yarn compose:up` / `compose:down` / `compose:logs` — appliance compose controls
 
+## Distribution
+
+Vibe Connect ships as two GHCR images that the `vibe-installer` repo pulls
+at install time. Single source of truth for the cross-product distribution
+scheme is `vibe-distribution-plan.md`.
+
+**Images** (multi-arch: `linux/amd64`, `linux/arm64`):
+
+- `ghcr.io/kisaesdevlab/vibe-connect-app:<version>` — Express API + bundled
+  SPA assets, runs as the `vibe` user, exposes :4000.
+- `ghcr.io/kisaesdevlab/vibe-connect-nginx:<version>` — nginx 1.27 with
+  the staff and portal SPAs baked in, plus an envsubst-templated
+  `nginx.conf` so the same image works in both single-app and multi-app
+  modes. Listens on :80, :443, :8443.
+
+Tag conventions: `:1.4.2` (immutable), `:1.4` (rolling minor), `:1`
+(rolling major), `:latest`. Operators pin to `:1.4` in production.
+
+**Mode-switching env contract** (defaults are single-app):
+
+| Variable | Single-app | Multi-app |
+|---|---|---|
+| `BASE_PATH` | `/` | `/connect` |
+| `SESSION_COOKIE_PATH` | `/` | `/connect` |
+| `TLS_MODE` | `internal` (in-app ACME) | `external` (Caddy / CF Tunnel) |
+| `APP_PUBLISH_PORT` | `4000` | unset (`!reset []`) |
+| `POSTGRES_PUBLISH_PORT` | `5435` | `5435` |
+| `NGINX_PUBLISH_PORT_*` | `80` / `443` / `8443` | unset |
+
+**Volume host paths** (created by the installer):
+
+- `/var/lib/vibe/connect/postgres-data/` — Postgres 16 data dir
+- `/var/lib/vibe/connect/uploads/` — encrypted attachment ciphertext
+- `/var/lib/vibe/connect/tls/` — certs the in-app ACME ticker drops here
+  (read-only mounted into nginx)
+
+The app container runs as a fixed `vibe` user at uid/gid `10001:10001`.
+The installer must `chown 10001:10001` on each of those host directories
+before first start; without that the in-container `vibe` user can't write
+into the bind-mount and the appliance fails health checks. (`postgres-data`
+is owned by Postgres's own internal uid 70 — that one is the postgres
+image's responsibility, not the operator's.)
+
+**Secrets** (operator-rendered files, mode `0600`, owned by `vibe`):
+
+- `/etc/vibe/connect/.env` — env contract (above) plus provider creds
+- `/etc/vibe/connect/postgres_password` — Postgres password (mounted as a
+  Docker secret, never in env vars)
+
+**Health endpoint**: `GET /health` returns `200 {ok:true,
+service:'vibe-connect-server'}`.
+
+**Migrations** run on app boot and tolerate concurrent starts (Knex's
+advisory-lock-backed migrate).
+
+**Compose files** the installer cares about:
+
+- `infra/docker/docker-compose.yml` — dev/single-app, builds from source
+- `infra/docker/docker-compose.grouped.yml` — multi-app overlay (joins
+  `vibe_ingress` external network, clears host ports)
+- `infra/docker/docker-compose.prod.yml` — installer copies this verbatim;
+  references GHCR images, host bind-mounts, Docker secrets
+
+### Releasing
+
+Tag and push:
+
+```bash
+git tag v1.4.2
+git push --tags
+```
+
+`.github/workflows/release.yml` builds + signs both images, pushes to GHCR
+under all four tag forms, and attaches Cosign signatures + SBOMs.
+Operators verify with:
+
+```bash
+cosign verify ghcr.io/kisaesdevlab/vibe-connect-app:1.4.2 \
+  --certificate-identity-regexp 'github.com/KisaesDevLab/vibe-connect' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
 ## Documentation
 
 - `CLAUDE.md` — project conventions, grep anchors, crypto rules for Claude Code

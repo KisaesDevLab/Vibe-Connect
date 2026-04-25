@@ -1,20 +1,40 @@
 // Thin JSON + form fetch wrappers. Always include credentials so the session cookie flows.
+import { url } from './lib/boot.js';
 import type {
+  ClientVault,
   ConversationSummary,
+  CreateRequestItemBody,
+  CreateRequestListBody,
+  CreateRequestTemplateBody,
   DecryptedMessage,
   EncryptedMessage,
   FirmPublicKey,
   Group,
   InviteClientRequest,
   InviteClientResponse,
+  PatchRequestItemBody,
+  PatchRequestListBody,
+  PatchRequestTemplateBody,
   PublicUser,
+  RequestDashboardRow,
+  RequestItem,
+  RequestList,
+  RequestListWithItems,
+  RequestTemplate,
   TlsStatus,
+  VaultFile,
+  VaultFolder,
+  VaultKeyBundle,
+  VaultZone,
 } from '@vibe-connect/shared-types';
 
-const base = ''; // same-origin via Vite proxy in dev; Nginx in prod.
-
+// Distribution mode: `url()` prepends BASE_PATH so the same code runs under
+// both single-app ('/') and multi-app ('/connect/') prefixes. Single-app
+// passes through verbatim. Vite dev proxy still works because the proxy
+// matches paths after the prefix is stripped (single-app keeps the prefix
+// empty so nothing changes for daily `yarn dev`).
 async function json<T>(input: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${base}${input}`, {
+  const res = await fetch(url(input), {
     ...init,
     credentials: 'include',
     headers: {
@@ -45,7 +65,7 @@ export const api = {
   uploadAvatar: async (file: File): Promise<{ avatarUrl: string }> => {
     const form = new FormData();
     form.set('avatar', file);
-    const r = await fetch('/users/me/avatar', {
+    const r = await fetch(url('/users/me/avatar'), {
       method: 'POST',
       credentials: 'include',
       body: form,
@@ -54,6 +74,13 @@ export const api = {
     return (await r.json()) as { avatarUrl: string };
   },
   me: () => json<{ user: PublicUser }>('/auth/me'),
+  // Self-service profile patch. Either field can be `null` to clear, or
+  // omitted to leave alone. Server normalizes phone to E.164.
+  updateMe: (patch: { email?: string | null; phone?: string | null }) =>
+    json<{ user: PublicUser }>('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
   oidcConfig: () =>
     json<{ enabled: boolean; loginUrl: string | null }>('/auth/oidc/config').catch(() => ({
       enabled: false,
@@ -202,6 +229,8 @@ export const api = {
       urgent?: boolean;
       scheduledFor?: string | null;
       ciphertextMeta?: Record<string, unknown>;
+      /** Phase 27: optional self-destruct timer (seconds after first non-sender read). */
+      destructAfterViewSeconds?: number | null;
     },
     opts?: { idempotencyKey?: string },
   ) =>
@@ -240,15 +269,27 @@ export const api = {
     json<{
       idleLockMinutes: number;
       clientMessagingEnabled?: boolean;
+      requestsEnabled?: boolean;
+      vaultEnabled?: boolean;
       firmName?: string;
+      appName?: string | null;
       stepupTimeoutHours?: 4 | 8 | 24 | 168 | -1;
       smsAvailable?: boolean;
+      messageEditWindowMinutes?: number;
+      messageDestructEnabled?: boolean;
+      messageDestructMaxSeconds?: number;
     }>('/firm/security-policy').catch(() => ({
       idleLockMinutes: 15,
       clientMessagingEnabled: true,
+      requestsEnabled: true,
+      vaultEnabled: true,
       firmName: 'Your Firm',
+      appName: null,
       stepupTimeoutHours: 24,
       smsAvailable: false,
+      messageEditWindowMinutes: 15,
+      messageDestructEnabled: true,
+      messageDestructMaxSeconds: 604800,
     })),
 
   // Ask every other device of every member to re-run the rewrap sweep. Used
@@ -400,6 +441,96 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  // Phase 24: Client Requests & Document Collection. Item titles +
+  // descriptions + revision notes are E2EE under the conversation's content
+  // key — callers must encrypt before passing them through these helpers.
+  // List titles are cleartext.
+  requests: {
+    listForConversation: (conversationId: string) =>
+      json<{ lists: RequestList[] }>(
+        `/conversations/${encodeURIComponent(conversationId)}/request-lists`,
+      ),
+    createList: (conversationId: string, body: CreateRequestListBody) =>
+      json<{ list: RequestListWithItems }>(
+        `/conversations/${encodeURIComponent(conversationId)}/request-lists`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    getList: (id: string) =>
+      json<{ list: RequestListWithItems }>(`/request-lists/${encodeURIComponent(id)}`),
+    patchList: (id: string, body: PatchRequestListBody) =>
+      json<{ list: RequestList }>(`/request-lists/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    cancelList: (id: string) =>
+      json<{ list: RequestList }>(`/request-lists/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    addItem: (listId: string, body: CreateRequestItemBody) =>
+      json<{ item: RequestItem }>(`/request-lists/${encodeURIComponent(listId)}/items`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    patchItem: (id: string, body: PatchRequestItemBody) =>
+      json<{ item: RequestItem }>(`/request-items/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    deleteItem: (id: string) =>
+      fetch(url(`/request-items/${encodeURIComponent(id)}`), {
+        method: 'DELETE',
+        credentials: 'include',
+      }).then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+      }),
+    markDone: (id: string) =>
+      json<{ item: RequestItem; listCompleted: boolean }>(
+        `/request-items/${encodeURIComponent(id)}/mark-done`,
+        { method: 'POST', body: '{}' },
+      ),
+    requestRevision: (
+      id: string,
+      body: { noteCiphertext: string; contentKeyVersion: number },
+    ) =>
+      json<{ item: RequestItem }>(
+        `/request-items/${encodeURIComponent(id)}/request-revision`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    linkMessage: (id: string, messageId: string) =>
+      json<{ ok: true }>(`/request-items/${encodeURIComponent(id)}/link-message`, {
+        method: 'POST',
+        body: JSON.stringify({ messageId }),
+      }),
+    listTemplates: () => json<{ templates: RequestTemplate[] }>('/request-templates'),
+    createTemplate: (body: CreateRequestTemplateBody) =>
+      json<{ template: RequestTemplate }>('/request-templates', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    patchTemplate: (id: string, body: PatchRequestTemplateBody) =>
+      json<{ template: RequestTemplate }>(`/request-templates/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    archiveTemplate: (id: string) =>
+      json<{ template: RequestTemplate }>(`/request-templates/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+    dashboard: () => json<{ rows: RequestDashboardRow[] }>('/requests/dashboard'),
+    nudge: (
+      listId: string,
+      body: {
+        sendAt?: string | null;
+        channel: 'inapp' | 'email' | 'sms' | 'all';
+        customBody?: string | null;
+      },
+    ) =>
+      json<{ messageId: string }>(
+        `/request-lists/${encodeURIComponent(listId)}/nudge`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+  },
+
   uploadAttachment: async (
     conversationId: string,
     body: {
@@ -420,7 +551,7 @@ export const api = {
     form.set('messageId', body.messageId);
     form.set('filenameCiphertext', body.filenameCiphertext);
     form.set('wrappedFileKey', body.wrappedFileKey);
-    const res = await fetch(`/conversations/${conversationId}/attachments`, {
+    const res = await fetch(url(`/conversations/${conversationId}/attachments`), {
       method: 'POST',
       credentials: 'include',
       body: form,
@@ -447,13 +578,102 @@ export const api = {
   },
 
   downloadAttachment: async (attachmentId: string): Promise<ArrayBuffer> => {
-    const res = await fetch(`/conversations/attachments/${attachmentId}`, {
+    const res = await fetch(url(`/conversations/attachments/${attachmentId}`), {
       credentials: 'include',
     });
     if (!res.ok) {
       throw new Error(`download_failed_${res.status}`);
     }
     return res.arrayBuffer();
+  },
+
+  getVaultTemplates: () =>
+    json<{
+      templates: Array<{
+        nameTemplate: string;
+        zone: 'shared' | 'staff_only';
+        retentionDays: number | null;
+      }>;
+    }>('/firm/vault-templates').catch(() => ({ templates: [] })),
+
+  // ---------- Phase 26 — Client Vault ----------
+  vault: {
+    list: (externalIdentityId: string) =>
+      json<{
+        vault: ClientVault;
+        folders: VaultFolder[];
+        files: VaultFile[];
+        keys: VaultKeyBundle[];
+      }>(`/clients/${externalIdentityId}/vault`),
+    createFolder: (
+      externalIdentityId: string,
+      body: {
+        zone: VaultZone;
+        parentFolderId?: string | null;
+        nameCiphertext: string;
+        contentKeyVersion: number;
+        sortOrder?: number;
+      },
+    ) =>
+      json<{ folder: VaultFolder }>(`/clients/${externalIdentityId}/vault/folders`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    patchFolder: (
+      externalIdentityId: string,
+      folderId: string,
+      patch: {
+        nameCiphertext?: string;
+        contentKeyVersion?: number;
+        sortOrder?: number;
+        parentFolderId?: string | null;
+      },
+    ) =>
+      json<{ folder: VaultFolder }>(`/clients/${externalIdentityId}/vault/folders/${folderId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    deleteFolder: (externalIdentityId: string, folderId: string) =>
+      json<void>(`/clients/${externalIdentityId}/vault/folders/${folderId}`, { method: 'DELETE' }),
+    patchFile: (
+      externalIdentityId: string,
+      fileId: string,
+      patch: {
+        filenameCiphertext?: string;
+        contentKeyVersion?: number;
+        folderId?: string | null;
+        retentionExpiresAt?: string | null;
+      },
+    ) =>
+      json<{ file: VaultFile }>(`/clients/${externalIdentityId}/vault/files/${fileId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      }),
+    deleteFile: (externalIdentityId: string, fileId: string) =>
+      json<void>(`/clients/${externalIdentityId}/vault/files/${fileId}`, { method: 'DELETE' }),
+    download: async (externalIdentityId: string, fileId: string): Promise<ArrayBuffer> => {
+      const res = await fetch(url(`/clients/${externalIdentityId}/vault/files/${fileId}`), {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(`vault_download_failed_${res.status}`);
+      return res.arrayBuffer();
+    },
+    rotateKeys: (
+      externalIdentityId: string,
+      body: { zone: VaultZone; rotationVersion: number; wrappedKeys: Record<string, string> },
+    ) =>
+      json<{ key: VaultKeyBundle }>(`/clients/${externalIdentityId}/vault/rotate-keys`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    addRecipients: (
+      externalIdentityId: string,
+      body: { zone: VaultZone; rotationVersion: number; added: Record<string, string> },
+    ) =>
+      json<{ added: string[] }>(`/clients/${externalIdentityId}/vault/recipients`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
   },
 };
 

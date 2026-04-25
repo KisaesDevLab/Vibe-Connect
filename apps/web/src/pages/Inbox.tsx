@@ -35,6 +35,7 @@ export function InboxPage(): JSX.Element {
     <div className="h-full overflow-y-auto">
       <div className="max-w-3xl mx-auto p-6">
         <h1 className="text-xl font-semibold text-slate-900 mb-4">Inbox</h1>
+        <RequestsAttentionWidget />
         {convQ.isLoading && <div className="text-sm text-slate-500">Loading…</div>}
         {unread.length === 0 && !convQ.isLoading && (
           <div className="text-sm text-slate-500">You&apos;re all caught up.</div>
@@ -62,6 +63,77 @@ export function InboxPage(): JSX.Element {
         </ul>
       </div>
     </div>
+  );
+}
+
+/**
+ * Phase 24.8 — "Attention needed" widget for the Inbox home. Counts active
+ * lists with overdue dates plus items currently in `submitted` (waiting for
+ * staff review). Hidden when nothing's open. Click-through deep-links to
+ * the bulk Requests dashboard with the relevant filter pre-applied via the
+ * existing `/requests` route — that page handles its own filter state, so
+ * we just send the staff there and let them pivot.
+ */
+function RequestsAttentionWidget(): JSX.Element | null {
+  const policyQ = useQuery({
+    queryKey: ['security-policy'],
+    queryFn: () => api.getSecurityPolicy(),
+    staleTime: 60_000,
+  });
+  const requestsEnabled = policyQ.data?.requestsEnabled !== false;
+  const dashQ = useQuery({
+    queryKey: ['request-dashboard'],
+    queryFn: () => api.requests.dashboard().then((r) => r.rows),
+    staleTime: 30_000,
+    enabled: requestsEnabled,
+  });
+  const stats = useMemo(() => {
+    const rows = dashQ.data ?? [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let overdueLists = 0;
+    let needsReview = 0;
+    for (const r of rows) {
+      if (r.list.status === 'active' && r.list.dueDate) {
+        const due = new Date(r.list.dueDate + 'T00:00:00');
+        if (due.getTime() < today.getTime()) overdueLists++;
+      }
+      needsReview += r.itemCounts.submitted;
+    }
+    return { overdueLists, needsReview };
+  }, [dashQ.data]);
+  if (!requestsEnabled) return null;
+  if (dashQ.isLoading) return null;
+  if (stats.overdueLists === 0 && stats.needsReview === 0) return null;
+  return (
+    <NavLink
+      to="/requests"
+      className="block mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 hover:bg-amber-100"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-amber-900">Attention needed</div>
+          <div className="text-xs text-amber-800 mt-0.5">
+            {stats.overdueLists > 0 && (
+              <span>
+                <strong>{stats.overdueLists}</strong> list
+                {stats.overdueLists === 1 ? '' : 's'} overdue
+              </span>
+            )}
+            {stats.overdueLists > 0 && stats.needsReview > 0 && <span> · </span>}
+            {stats.needsReview > 0 && (
+              <span>
+                <strong>{stats.needsReview}</strong> item
+                {stats.needsReview === 1 ? '' : 's'} awaiting review
+              </span>
+            )}
+          </div>
+        </div>
+        <span className="text-xs text-amber-900 font-medium whitespace-nowrap">
+          Open dashboard →
+        </span>
+      </div>
+    </NavLink>
   );
 }
 

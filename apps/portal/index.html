@@ -2,11 +2,14 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- Distribution mode: see apps/web/index.html for the rationale. -->
+    <base href="__BASE_HREF__/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#1e3a8a" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <title>Firm Portal</title>
+    <script src="__vibe-boot.js"></script>
   </head>
   <body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>

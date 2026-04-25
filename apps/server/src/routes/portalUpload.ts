@@ -15,7 +15,59 @@ import { auditRepo } from '../repositories/audit.js';
 import { logger } from '../logger.js';
 import { attachmentStorage } from '../services/attachmentStorage.js';
 import { clamdEnabled, scanBuffer } from '../services/clamav.js';
+import { onAttachmentScanFailed, onMessagePosted } from '../services/requestsService.js';
+import { publish } from '../realtime/pgFanout.js';
+import { messagesRepo, attachmentsRepo } from '../repositories/messages.js';
 import { loadSessionFromCookie } from './portal.js';
+
+const REQUEST_ITEM_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function readRequestItemId(meta: Record<string, unknown> | null | undefined): string | null {
+  if (!meta) return null;
+  const v = (meta as { requestItemId?: unknown }).requestItemId;
+  return typeof v === 'string' && REQUEST_ITEM_UUID.test(v) ? v : null;
+}
+
+/**
+ * Phase 24.5: when an attachment fails ClamAV (infected or scan-unavailable),
+ * walk back any request item that auto-submitted on the strength of this
+ * message. Posts a `request:changed` realtime event so the staff panel +
+ * portal request panel re-fetch and surface the rejection. Errors are
+ * caught + logged so the upload's HTTP response (422 / 503) lands on time.
+ */
+async function revertLinkedRequestItem(
+  messageId: string,
+  reason: 'infected' | 'scan_unavailable',
+  actor: { actorUserId?: string | null; actorExternalIdentityId?: string | null },
+): Promise<void> {
+  try {
+    const msg = await messagesRepo.byId(messageId);
+    if (!msg) return;
+    const itemId = readRequestItemId(msg.ciphertext_meta as Record<string, unknown>);
+    if (!itemId) return;
+    const updated = await onAttachmentScanFailed({
+      messageId,
+      itemId,
+      conversationId: msg.conversation_id,
+      reason,
+      actorUserId: actor.actorUserId ?? null,
+      actorExternalIdentityId: actor.actorExternalIdentityId ?? null,
+    });
+    if (updated) {
+      await publish({
+        type: 'request:changed',
+        conversationId: msg.conversation_id,
+        listId: updated.listId,
+        itemId: updated.id,
+      });
+    }
+  } catch (err) {
+    logger.warn('portal_request_item_scan_revert_failed', {
+      messageId,
+      reason,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 export const portalUploadRouter = Router();
 
@@ -110,6 +162,21 @@ portalUploadRouter.post(
       return;
     }
 
+    // Phase 24.5 server-side mirror of PORTAL_MAX_ATTACHMENTS (10) in the
+    // portal client. The client cap is advisory; an API-direct caller could
+    // post unlimited files against one message id, each one re-running
+    // ClamAV (CPU sink) and consuming attachmentLocalDir. Cap matches the
+    // "Up to 10 files per submission" claim in the client-facing docs.
+    const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+    const existingCount = (await attachmentsRepo.byMessage(meta.data.messageId)).length;
+    if (existingCount >= MAX_ATTACHMENTS_PER_MESSAGE) {
+      res.status(409).json({
+        error: 'attachment_limit_reached',
+        detail: `max ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`,
+      });
+      return;
+    }
+
     // Random suffix — see matching comment in conversations.ts. Two attachments
     // to the same message in the same millisecond are rare but possible; with
     // no random tail the second one overwrites the first.
@@ -151,6 +218,12 @@ portalUploadRouter.post(
         targetType: 'attachment',
         targetId: row!.id,
         details: { signature: scan.signature, mimeType: req.file.mimetype },
+      });
+      // Phase 24: walk back any request item that auto-submitted on the
+      // strength of this message's siblings. We don't await the publish or
+      // the audit — they're background work that mustn't block the 422.
+      void revertLinkedRequestItem(meta.data.messageId, 'infected', {
+        actorExternalIdentityId: session.external_identity_id,
       });
       res.status(422).json({ error: 'infected', signature: scan.signature });
       return;
@@ -198,6 +271,9 @@ portalUploadRouter.post(
         message: scan.message,
         clamd: clamdEnabled(),
       });
+      void revertLinkedRequestItem(meta.data.messageId, 'scan_unavailable', {
+        actorExternalIdentityId: session.external_identity_id,
+      });
       res.status(503).json({ error: 'scan_unavailable' });
       return;
     }
@@ -215,6 +291,46 @@ portalUploadRouter.post(
       targetId: row!.id,
       details: { mimeType: req.file.mimetype, size: req.file.buffer.length },
     });
+    // Phase 24: re-run the request-item auto-submit check now that an
+    // attachment has landed. Items with response_type='file' or 'both' that
+    // didn't satisfy at message-create time may now have enough payload to
+    // transition. Idempotent — already-submitted items no-op.
+    const linkedMsg = await messagesRepo.byId(meta.data.messageId);
+    if (linkedMsg) {
+      const linkedItemId = readRequestItemId(
+        linkedMsg.ciphertext_meta as Record<string, unknown>,
+      );
+      if (linkedItemId) {
+        const attachmentCount = (await attachmentsRepo.byMessage(linkedMsg.id)).length;
+        const hasTextBody = linkedMsg.ciphertext.length > 0;
+        void onMessagePosted({
+          messageId: linkedMsg.id,
+          itemId: linkedItemId,
+          conversationId: linkedMsg.conversation_id,
+          attachmentCount,
+          hasTextBody,
+          actorUserId: null,
+          actorExternalIdentityId: session.external_identity_id,
+        })
+          .then((updated) => {
+            if (updated) {
+              void publish({
+                type: 'request:changed',
+                conversationId: linkedMsg.conversation_id,
+                listId: updated.listId,
+                itemId: updated.id,
+              });
+            }
+          })
+          .catch((err) => {
+            logger.warn('portal_request_item_attachment_hook_failed', {
+              messageId: linkedMsg.id,
+              itemId: linkedItemId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          });
+      }
+    }
     res.status(201).json({ id: row!.id, scanStatus: 'clean' });
   }),
 );
