@@ -18,6 +18,10 @@ tauri-plugin-store = "2.0"
 tauri-plugin-updater = "2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# URL parsing used by main.rs for the appliance URL guards. Tauri re-exports
+# `url::Url` as `tauri::Url`, but pinning the dep directly is more robust to
+# Tauri internal-API moves.
+url = "2"
 
 [features]
 # this feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

@@ -4,14 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "echo \"desktop is a Tauri shell; frontend typechecked via @vibe-connect/web\" && exit 0",
-    "build": "echo \"run: cargo tauri build (requires Rust toolchain)\" && exit 0",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "dev": "vite",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "test": "echo \"no JS tests here; see apps/web\" && exit 0"
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.0.0"
+    "@tauri-apps/cli": "^2.0.0",
+    "vite": "^5.3.3",
+    "vitest": "^1.6.0"
   }
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/schemas/capability.schema.json",
   "identifier": "main-capability",
-  "description": "Deny-by-default capability surface. Only the plugins we need are enabled; filesystem access is restricted to the app data directory; HTTP is only allowed to the configured server.",
+  "description": "Onboarding + thin-client capabilities. The webview loads arbitrary HTTPS appliance URLs after onboarding; the IPC surface is the five custom commands defined in main.rs (get/set/clear appliance URL, navigate_to_appliance, get_desktop_version) which auto-allow without an explicit permission entry. Plugin permissions below are kept to the defaults so a future feature can pull from them without revisiting this file.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -14,12 +14,7 @@
     "autostart:default",
     "global-shortcut:default",
     "notification:default",
-    "notification:allow-request-permission",
     "store:default",
-    "updater:default",
-    {
-      "identifier": "http:default",
-      "allow": [{ "url": "https://*.vibeconnect.app/*" }]
-    }
+    "updater:default"
   ]
 }

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- CSP: this onboarding page is never allowed to fetch arbitrary remote
+         scripts; the only outbound request it makes is the bootstrap probe via
+         fetch(). connect-src is widened to https: + http: so the user can
+         enter any appliance URL — that's the entire point of this screen. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' ipc: http://ipc.localhost; connect-src https: http: ipc: http://ipc.localhost; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    />
+    <title>Vibe Connect — Set up</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="card" role="main">
+      <header>
+        <h1>Connect to your firm’s Vibe Connect appliance</h1>
+        <p class="lede">
+          Enter the URL your firm administrator gave you. We’ll verify it points
+          at a real Vibe Connect server before saving.
+        </p>
+      </header>
+
+      <form id="form" novalidate>
+        <label for="url">Server URL</label>
+        <input
+          id="url"
+          name="url"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="https://connect.yourfirm.com"
+          required
+          aria-describedby="hint"
+        />
+        <p id="hint" class="hint">
+          Example: <code>https://connect.smithcpa.com</code>
+        </p>
+
+        <button id="submit" type="submit">Continue</button>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </form>
+
+      <details class="advanced">
+        <summary>Advanced</summary>
+        <p>
+          For local development against an HTTP server (e.g.
+          <code>http://localhost:4000</code>), enable the developer override:
+        </p>
+        <label class="checkbox">
+          <input id="allowHttp" type="checkbox" />
+          <span>Allow plain HTTP (development only)</span>
+        </label>
+      </details>
+
+      <footer>
+        <small>
+          Vibe Connect Desktop · <span id="buildVersion">dev</span>
+        </small>
+      </footer>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

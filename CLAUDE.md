@@ -71,7 +71,17 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
 - `apps/server` — Express + Knex + Socket.io. Single source of truth for API contracts.
 - `apps/web` — Staff app. Tauri webview loads this same bundle.
 - `apps/portal` — Client portal. **No staff features.** Kept intentionally minimal.
-- `apps/desktop` — Tauri 2.x shell. Rust is kept thin; UI is `apps/web`.
+- `apps/desktop` — Tauri 2.x **thin client**. Ships a tiny onboarding HTML
+  (`apps/desktop/onboarding/`, built to `apps/desktop/dist/`) that asks the
+  user for their firm's appliance URL on first run, then navigates the
+  webview directly to `https://<appliance>/` for every subsequent launch.
+  The Rust shell exposes five IPC commands
+  (`get/set/clear_appliance_url`, `navigate_to_appliance`,
+  `get_desktop_version`); the URL is persisted via `tauri-plugin-store`
+  in `%APPDATA%/app.vibeconnect.desktop/settings.json` (Windows). See
+  `docs/ops/DESKTOP.md`. The web bundle (`apps/web`) is served by the
+  appliance, not the desktop — so any appliance update reaches every
+  desktop on next reload without a redeploy.
 - `packages/crypto` — Crypto primitives. Treat as frozen API; changes go through review.
 - `packages/shared-types` — Types only, zero runtime code.
 - `infra/docker` — Appliance packaging.
