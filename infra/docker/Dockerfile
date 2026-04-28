@@ -87,8 +87,19 @@ p.exports={'.':{'types':'./dist/index.d.ts','default':'./dist/index.js'}};\
 fs.writeFileSync(path,JSON.stringify(p,null,2));"
 RUN mkdir -p /var/lib/vibe/connect/uploads /var/lib/vibe/connect/tls \
  && chown -R vibe:vibe /var/lib/vibe/connect
+
+# Entrypoint runs pending migrations before starting the server. Without
+# this, a fresh install hits /install/status against an unmigrated DB and
+# the SPA shows "Can't reach the server" — the install wizard is then
+# unreachable. Strip CRs in case the build context was checked out on
+# Windows with core.autocrlf=true (otherwise the kernel's execve(2) tries
+# to find an interpreter named `/bin/sh\r` and fails with the misleading
+# "no such file or directory").
+COPY infra/docker/docker-entrypoint.sh /docker-entrypoint.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
+
 USER vibe
 EXPOSE 4000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -qO- http://127.0.0.1:4000/health || exit 1
-CMD ["node", "apps/server/dist/index.js"]
+ENTRYPOINT ["/docker-entrypoint.sh"]
