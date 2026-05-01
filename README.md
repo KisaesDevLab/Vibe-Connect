@@ -142,4 +142,4 @@ cosign verify ghcr.io/kisaesdevlab/vibe-connect-app:1.4.2 \
 
 ## License
 
-Proprietary. Internal use.
+Elastic License 2.0 (ELv2). See [LICENSE](LICENSE) for the full text.
