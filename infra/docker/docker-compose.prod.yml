@@ -40,7 +40,7 @@ services:
     cpus: 2
 
   app:
-    image: ghcr.io/kisaesdevlab/vibe-connect-app:${VERSION:-latest}
+    image: ghcr.io/kisaesdevlab/vibe-connect-server:${VERSION:-latest}
     restart: unless-stopped
     env_file:
       - /etc/vibe/connect/.env
@@ -81,7 +81,7 @@ services:
       start_period: 20s
 
   nginx:
-    image: ghcr.io/kisaesdevlab/vibe-connect-nginx:${VERSION:-latest}
+    image: ghcr.io/kisaesdevlab/vibe-connect-client:${VERSION:-latest}
     restart: unless-stopped
     depends_on:
       app:

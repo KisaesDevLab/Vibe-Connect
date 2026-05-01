@@ -55,12 +55,14 @@ scheme is `vibe-distribution-plan.md`.
 
 **Images** (multi-arch: `linux/amd64`, `linux/arm64`):
 
-- `ghcr.io/kisaesdevlab/vibe-connect-app:<version>` — Express API + bundled
-  SPA assets, runs as the `vibe` user, exposes :4000.
-- `ghcr.io/kisaesdevlab/vibe-connect-nginx:<version>` — nginx 1.27 with
+- `ghcr.io/kisaesdevlab/vibe-connect-server:<version>` — Express API +
+  bundled SPA assets, runs as the `vibe` user, exposes :4000. (Pre-v0.1.1
+  this image was published as `vibe-connect-app`.)
+- `ghcr.io/kisaesdevlab/vibe-connect-client:<version>` — nginx 1.27 with
   the staff and portal SPAs baked in, plus an envsubst-templated
   `nginx.conf` so the same image works in both single-app and multi-app
-  modes. Listens on :80, :443, :8443.
+  modes. Listens on :80, :443, :8443. (Pre-v0.1.1 this image was
+  published as `vibe-connect-nginx`.)
 
 Tag conventions: `:1.4.2` (immutable), `:1.4` (rolling minor), `:1`
 (rolling major), `:latest`. Operators pin to `:1.4` in production.
@@ -124,7 +126,7 @@ under all four tag forms, and attaches Cosign signatures + SBOMs.
 Operators verify with:
 
 ```bash
-cosign verify ghcr.io/kisaesdevlab/vibe-connect-app:1.4.2 \
+cosign verify ghcr.io/kisaesdevlab/vibe-connect-server:1.4.2 \
   --certificate-identity-regexp 'github.com/KisaesDevLab/vibe-connect' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
