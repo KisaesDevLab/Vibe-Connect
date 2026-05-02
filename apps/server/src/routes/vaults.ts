@@ -483,7 +483,15 @@ vaultsRouter.post(
     const allKeys = await db('vault_keys')
       .where({ vault_id: vault.id })
       .orderBy([{ column: 'zone' }, { column: 'rotation_version' }]);
-    const recoveryBundles = (allKeys as Array<{ id: string; vault_id: string; zone: 'shared' | 'staff_only'; rotation_version: number; wrapped_keys: Record<string, string> }>)
+    const recoveryBundles = (
+      allKeys as Array<{
+        id: string;
+        vault_id: string;
+        zone: 'shared' | 'staff_only';
+        rotation_version: number;
+        wrapped_keys: Record<string, string>;
+      }>
+    )
       .map((k) => ({
         zone: k.zone,
         rotationVersion: k.rotation_version,

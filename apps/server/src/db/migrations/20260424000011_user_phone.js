@@ -11,9 +11,7 @@ exports.up = async function up(knex) {
   await knex.schema.alterTable('users', (t) => {
     t.string('phone', 32).nullable();
   });
-  await knex.raw(
-    `CREATE INDEX idx_users_phone ON users (phone) WHERE phone IS NOT NULL`,
-  );
+  await knex.raw(`CREATE INDEX idx_users_phone ON users (phone) WHERE phone IS NOT NULL`);
 };
 
 exports.down = async function down(knex) {

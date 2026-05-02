@@ -134,7 +134,9 @@ smsBridgeRouter.post(
           last_stop_keyword_at: new Date().toISOString(),
           provider: provider.name,
         });
-      await (await getSmsProvider()).sendMessage({
+      await (
+        await getSmsProvider()
+      ).sendMessage({
         to: parsed.from,
         body: 'You have been opted out of messages from this firm. Reply START to re-enable.',
       });
@@ -162,7 +164,9 @@ smsBridgeRouter.post(
           opted_out_at: null,
           provider: provider.name,
         });
-      await (await getSmsProvider()).sendMessage({
+      await (
+        await getSmsProvider()
+      ).sendMessage({
         to: parsed.from,
         body: 'Thanks — you are re-subscribed. Reply STOP at any time to stop.',
       });

@@ -82,11 +82,7 @@ export function validateIssuerUrl(raw: string): { ok: true } | { ok: false; reas
   if (host === 'localhost' || host === 'localhost.localdomain') {
     return { ok: false, reason: 'localhost is not an allowed issuer host' };
   }
-  if (
-    host === 'metadata.google.internal' ||
-    host === 'metadata' ||
-    host === 'metadata.goog'
-  ) {
+  if (host === 'metadata.google.internal' || host === 'metadata' || host === 'metadata.goog') {
     return { ok: false, reason: 'cloud metadata hostnames are blocked' };
   }
   // IPv4 literal: block loopback, RFC1918, link-local, 0.0.0.0.
@@ -97,7 +93,10 @@ export function validateIssuerUrl(raw: string): { ok: true } | { ok: false; reas
       return { ok: false, reason: 'private / loopback IPv4 address' };
     }
     if (a === 169 && b === 254) {
-      return { ok: false, reason: 'link-local IPv4 (169.254.0.0/16) is blocked (AWS/GCP metadata)' };
+      return {
+        ok: false,
+        reason: 'link-local IPv4 (169.254.0.0/16) is blocked (AWS/GCP metadata)',
+      };
     }
     if (a === 172 && b! >= 16 && b! <= 31) {
       return { ok: false, reason: 'private IPv4 (172.16.0.0/12)' };
@@ -113,7 +112,14 @@ export function validateIssuerUrl(raw: string): { ok: true } | { ok: false; reas
       return { ok: false, reason: 'IPv6 loopback/unspecified address' };
     }
     // fc00::/7 unique local, fe80::/10 link-local — quick prefix checks.
-    if (v6.startsWith('fc') || v6.startsWith('fd') || v6.startsWith('fe8') || v6.startsWith('fe9') || v6.startsWith('fea') || v6.startsWith('feb')) {
+    if (
+      v6.startsWith('fc') ||
+      v6.startsWith('fd') ||
+      v6.startsWith('fe8') ||
+      v6.startsWith('fe9') ||
+      v6.startsWith('fea') ||
+      v6.startsWith('feb')
+    ) {
       return { ok: false, reason: 'IPv6 private / link-local address' };
     }
   }
@@ -147,7 +153,9 @@ async function getClient(): Promise<Client | null> {
           response_types: ['code'],
         });
       } catch (err) {
-        logger.warn('oidc.discovery_failed', { err: err instanceof Error ? err.message : String(err) });
+        logger.warn('oidc.discovery_failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
         // Reset so a later retry can reattempt discovery.
         clientPromise = null;
         return null;
@@ -223,7 +231,9 @@ oidcRouter.get(
         code_verifier: codeVerifier,
       });
     } catch (err) {
-      logger.warn('oidc.callback_failed', { err: err instanceof Error ? err.message : String(err) });
+      logger.warn('oidc.callback_failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
       res.status(400).send('OIDC sign-in failed. Please try again.');
       return;
     }

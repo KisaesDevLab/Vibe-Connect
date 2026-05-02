@@ -360,10 +360,7 @@ export async function reapExpiredTusUploads(): Promise<number> {
 
 function authMatches(row: VaultUploadRow, auth: TusCreateAuth): boolean {
   if (auth.userId && row.created_by_user_id === auth.userId) return true;
-  if (
-    auth.externalIdentityId &&
-    row.created_by_external_identity_id === auth.externalIdentityId
-  )
+  if (auth.externalIdentityId && row.created_by_external_identity_id === auth.externalIdentityId)
     return true;
   return false;
 }

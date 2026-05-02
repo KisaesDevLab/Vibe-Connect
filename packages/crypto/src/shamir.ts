@@ -66,11 +66,7 @@ export interface ShamirShare {
 }
 
 /** Split a raw byte secret into `total` shares, any `threshold` of which recover the secret. */
-export function splitBytes(
-  secret: Uint8Array,
-  threshold: number,
-  total: number,
-): ShamirShare[] {
+export function splitBytes(secret: Uint8Array, threshold: number, total: number): ShamirShare[] {
   if (threshold < 2) throw new Error('threshold must be at least 2');
   if (total < threshold) throw new Error('total must be >= threshold');
   if (total > 255) throw new Error('total must be <= 255');

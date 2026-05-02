@@ -49,11 +49,15 @@ beforeEach(async () => {
   await db('conversations').del();
   // Reset firm-level auto-nudge state per test so a leftover ON state from
   // an earlier test doesn't mask a later check.
-  await db('firm_settings').where({ id: 1 }).update({
-    auto_nudge_enabled: false,
-    auto_nudge_offsets_hours: [72, 24, 0],
-  });
-  const rows = await db('users').whereIn('username', ['kurt', 'alice', 'bob']).select('id', 'username');
+  await db('firm_settings')
+    .where({ id: 1 })
+    .update({
+      auto_nudge_enabled: false,
+      auto_nudge_offsets_hours: [72, 24, 0],
+    });
+  const rows = await db('users')
+    .whereIn('username', ['kurt', 'alice', 'bob'])
+    .select('id', 'username');
   userIds = Object.fromEntries(rows.map((r) => [r.username, r.id])) as SeedUserIds;
   const [conv] = await db('conversations').insert({ type: 'internal' }).returning(['id']);
   conversationId = conv.id;
@@ -83,16 +87,14 @@ function b64(s: string): string {
 async function makeListDueIn(daysFromNow: number): Promise<string> {
   const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
   const due = new Date(Date.now() + daysFromNow * 86_400_000).toISOString().slice(0, 10);
-  const created = await alice
-    .post(`/conversations/${conversationId}/request-lists`)
-    .send({
-      title: 'Test list',
-      dueDate: due,
-      items: [
-        { titleCiphertext: b64('one'), contentKeyVersion: 1, responseType: 'text' },
-        { titleCiphertext: b64('two'), contentKeyVersion: 1, responseType: 'text' },
-      ],
-    });
+  const created = await alice.post(`/conversations/${conversationId}/request-lists`).send({
+    title: 'Test list',
+    dueDate: due,
+    items: [
+      { titleCiphertext: b64('one'), contentKeyVersion: 1, responseType: 'text' },
+      { titleCiphertext: b64('two'), contentKeyVersion: 1, responseType: 'text' },
+    ],
+  });
   if (created.status !== 201) throw new Error(`create failed: ${created.status}`);
   return created.body.list.id;
 }
@@ -101,9 +103,7 @@ describe('POST /request-lists/:id/nudge (manual)', () => {
   it('enqueues a system message + audit row', async () => {
     const listId = await makeListDueIn(7);
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
-    const r = await alice
-      .post(`/request-lists/${listId}/nudge`)
-      .send({ channel: 'all' });
+    const r = await alice.post(`/request-lists/${listId}/nudge`).send({ channel: 'all' });
     expect(r.status).toBe(202);
     expect(r.body.messageId).toEqual(expect.any(String));
     const { db } = await import('../db/knex.js');
@@ -153,9 +153,7 @@ describe('scheduled-message ticker skip-on-complete', () => {
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
     // Schedule a nudge for "now + 30s".
     const sendAt = new Date(Date.now() + 30_000).toISOString();
-    const enq = await alice
-      .post(`/request-lists/${listId}/nudge`)
-      .send({ channel: 'all', sendAt });
+    const enq = await alice.post(`/request-lists/${listId}/nudge`).send({ channel: 'all', sendAt });
     expect(enq.status).toBe(202);
     const messageId: string = enq.body.messageId;
 
@@ -175,9 +173,7 @@ describe('scheduled-message ticker skip-on-complete', () => {
 
     const after = await db('messages').where({ id: messageId }).first();
     expect(after?.deleted_at).not.toBeNull();
-    const audits = await db('audit_log')
-      .where({ target_id: listId })
-      .select('action');
+    const audits = await db('audit_log').where({ target_id: listId }).select('action');
     const actions = audits.map((a) => a.action);
     expect(actions).toContain('request.nudge_skipped');
     expect(actions).not.toContain('request.nudge_sent');
@@ -187,9 +183,7 @@ describe('scheduled-message ticker skip-on-complete', () => {
     const listId = await makeListDueIn(7);
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
     const sendAt = new Date(Date.now() - 1000).toISOString();
-    const enq = await alice
-      .post(`/request-lists/${listId}/nudge`)
-      .send({ channel: 'all', sendAt });
+    const enq = await alice.post(`/request-lists/${listId}/nudge`).send({ channel: 'all', sendAt });
     expect(enq.status).toBe(202);
 
     const sched = await import('../services/scheduledMessages.js');
@@ -203,9 +197,7 @@ describe('scheduled-message ticker skip-on-complete', () => {
     expect(broadcastCount).toBeGreaterThan(0);
 
     const { db } = await import('../db/knex.js');
-    const audits = await db('audit_log')
-      .where({ target_id: listId })
-      .select('action');
+    const audits = await db('audit_log').where({ target_id: listId }).select('action');
     const actions = audits.map((a) => a.action);
     expect(actions).toContain('request.nudge_scheduled');
     expect(actions).toContain('request.nudge_sent');
@@ -224,10 +216,12 @@ describe('auto-nudge sweeper', () => {
 
   it('enqueues one nudge per active list per matching offset, idempotently', async () => {
     const { db } = await import('../db/knex.js');
-    await db('firm_settings').where({ id: 1 }).update({
-      auto_nudge_enabled: true,
-      auto_nudge_offsets_hours: [72],
-    });
+    await db('firm_settings')
+      .where({ id: 1 })
+      .update({
+        auto_nudge_enabled: true,
+        auto_nudge_offsets_hours: [72],
+      });
     const listId = await makeListDueIn(3);
     // Pin the sweeper's "now" to 72h before due, on the hour boundary.
     const dueRow = await db('request_lists').where({ id: listId }).first('due_date');
@@ -250,8 +244,7 @@ describe('auto-nudge sweeper', () => {
       .where({ conversation_id: conversationId, source: 'system' })
       .select('ciphertext_meta');
     const found = msgs.find(
-      (m) =>
-        (m.ciphertext_meta as { autoOffsetHours?: number }).autoOffsetHours === 72,
+      (m) => (m.ciphertext_meta as { autoOffsetHours?: number }).autoOffsetHours === 72,
     );
     expect(found).toBeTruthy();
   });
@@ -352,10 +345,12 @@ describe('auto-nudge sweeper', () => {
 
   it('skips lists that aren’t active', async () => {
     const { db } = await import('../db/knex.js');
-    await db('firm_settings').where({ id: 1 }).update({
-      auto_nudge_enabled: true,
-      auto_nudge_offsets_hours: [72],
-    });
+    await db('firm_settings')
+      .where({ id: 1 })
+      .update({
+        auto_nudge_enabled: true,
+        auto_nudge_offsets_hours: [72],
+      });
     const listId = await makeListDueIn(3);
     await db('request_lists').where({ id: listId }).update({ status: 'cancelled' });
     const auto = await import('../services/autoNudge.js');

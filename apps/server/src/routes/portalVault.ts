@@ -18,10 +18,7 @@ import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
 import { auditRepo } from '../repositories/audit.js';
 import { ensureBackupFresh } from '../services/backupGate.js';
-import {
-  clientVaultsRepo,
-  vaultFilesRepo,
-} from '../repositories/vaults.js';
+import { clientVaultsRepo, vaultFilesRepo } from '../repositories/vaults.js';
 import {
   deleteFile,
   ensureVaultForExternalIdentity,
@@ -71,7 +68,10 @@ function isVaultDisabled(req: Request): boolean {
   return Boolean((req as Request & PortalSessionAttached).vaultDisabled);
 }
 
-async function checkStepup(externalIdentityId: string, verifiedUntil: string | null): Promise<{
+async function checkStepup(
+  externalIdentityId: string,
+  verifiedUntil: string | null,
+): Promise<{
   stepupRequired: boolean;
   hasLast4Hash: boolean;
   verificationRequired: boolean;

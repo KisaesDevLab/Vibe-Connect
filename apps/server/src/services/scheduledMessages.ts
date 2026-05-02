@@ -120,10 +120,7 @@ export async function runOnce(): Promise<number> {
     const meta = r.ciphertext_meta ?? {};
     const systemEventType = (meta as { systemEventType?: unknown }).systemEventType;
     const requestListId = (meta as { requestListId?: unknown }).requestListId;
-    if (
-      systemEventType === 'request_nudge_sent' &&
-      typeof requestListId === 'string'
-    ) {
+    if (systemEventType === 'request_nudge_sent' && typeof requestListId === 'string') {
       const skip = await shouldSkipNudge(requestListId);
       if (skip !== null) {
         await db('messages').where({ id: r.id }).update({ deleted_at: db.fn.now() });
@@ -162,8 +159,7 @@ export async function runOnce(): Promise<number> {
           typeof (meta as { customBody?: unknown }).customBody === 'string'
             ? String((meta as { customBody?: string }).customBody)
             : null;
-        const shortBody =
-          customBody ?? `Reminder: items still needed for ${listTitle}.`;
+        const shortBody = customBody ?? `Reminder: items still needed for ${listTitle}.`;
         void notifyExternalRecipients({
           conversationId: r.conversation_id,
           subject: `Reminder from your firm — ${listTitle}`,
@@ -188,9 +184,7 @@ export async function runOnce(): Promise<number> {
     // if this UPDATE also fails the rows stay stamped and we rely on the
     // log above for visibility.
     try {
-      await db('messages')
-        .whereIn('id', failed)
-        .update({ scheduled_broadcast_at: null });
+      await db('messages').whereIn('id', failed).update({ scheduled_broadcast_at: null });
     } catch (err) {
       logger.error('scheduled_broadcast_rollback_failed', {
         count: failed.length,

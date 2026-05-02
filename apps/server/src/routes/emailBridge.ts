@@ -158,10 +158,7 @@ emailBridgeRouter.post(
     let ok = false;
     if (got) {
       try {
-        ok = crypto.timingSafeEqual(
-          Buffer.from(got, 'utf8'),
-          Buffer.from(rawBridgeSecret, 'utf8'),
-        );
+        ok = crypto.timingSafeEqual(Buffer.from(got, 'utf8'), Buffer.from(rawBridgeSecret, 'utf8'));
       } catch {
         ok = false;
       }
@@ -219,8 +216,10 @@ async function processInbound(email: InboundEmail): Promise<void> {
   // never match the store (sanitised value) for any MessageID with control
   // chars, and a hostile sender could bypass dedup by inserting a stray
   // newline.
-  // eslint-disable-next-line no-control-regex
-  const providerMessageId = (email.messageId ?? '').replace(/[\u0000-\u001F\u007F]+/g, '?').slice(0, 255);
+  const providerMessageId = (email.messageId ?? '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F]+/g, '?')
+    .slice(0, 255);
   // Anti-replay first. Providers retry webhooks on receiver timeouts, and a
   // duplicate delivery at this layer would otherwise cost us an extra bounce
   // (for sendBounce branches below), an extra audit row, or — worst case — a

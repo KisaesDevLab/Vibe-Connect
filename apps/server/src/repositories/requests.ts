@@ -97,10 +97,7 @@ export const requestListsRepo = {
   async updatePartial(
     id: string,
     patch: Partial<
-      Pick<
-        RequestListRow,
-        'title' | 'description' | 'due_date' | 'status' | 'completed_at'
-      >
+      Pick<RequestListRow, 'title' | 'description' | 'due_date' | 'status' | 'completed_at'>
     >,
     trx?: Knex.Transaction,
   ): Promise<RequestListRow | undefined> {
@@ -194,9 +191,7 @@ export const requestItemsRepo = {
     return row;
   },
   async deleteIfPending(id: string, trx?: Knex.Transaction): Promise<number> {
-    return (trx ?? db)<RequestItemRow>('request_items')
-      .where({ id, status: 'pending' })
-      .del();
+    return (trx ?? db)<RequestItemRow>('request_items').where({ id, status: 'pending' }).del();
   },
   /**
    * Concurrency-safe state transition. Returns the updated row when the
@@ -240,10 +235,7 @@ export const requestTemplatesRepo = {
       .orderBy('name');
   },
   async insert(
-    row: Pick<
-      RequestTemplateRow,
-      'name' | 'description' | 'item_specs' | 'created_by'
-    >,
+    row: Pick<RequestTemplateRow, 'name' | 'description' | 'item_specs' | 'created_by'>,
     trx?: Knex.Transaction,
   ): Promise<RequestTemplateRow> {
     // Codebase convention for jsonb columns: pre-stringify on the way in. See

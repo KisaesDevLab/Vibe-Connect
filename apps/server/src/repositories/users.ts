@@ -94,9 +94,7 @@ export const usersRepo = {
     });
   },
   findDeviceKey(userId: string, deviceId: string) {
-    return db<DeviceKeyRow>('user_keys')
-      .where({ user_id: userId, device_id: deviceId })
-      .first();
+    return db<DeviceKeyRow>('user_keys').where({ user_id: userId, device_id: deviceId }).first();
   },
   listDeviceKeys(userId: string) {
     return db<DeviceKeyRow>('user_keys').where({ user_id: userId }).orderBy('created_at', 'desc');
@@ -109,16 +107,23 @@ export const usersRepo = {
       .orderBy('created_at');
   },
   async insertDeviceKey(
-    row: Omit<DeviceKeyRow, 'id' | 'key_version' | 'last_heartbeat_at' | 'created_at' | 'revoked_at'>,
+    row: Omit<
+      DeviceKeyRow,
+      'id' | 'key_version' | 'last_heartbeat_at' | 'created_at' | 'revoked_at'
+    >,
   ): Promise<DeviceKeyRow> {
-    const [created] = await db<DeviceKeyRow>('user_keys').insert(row as never).returning('*');
+    const [created] = await db<DeviceKeyRow>('user_keys')
+      .insert(row as never)
+      .returning('*');
     return created!;
   },
   async updateDeviceKey(
     id: string,
     patch: Partial<Omit<DeviceKeyRow, 'id' | 'user_id' | 'device_id' | 'created_at'>>,
   ) {
-    await db('user_keys').where({ id }).update(patch as never);
+    await db('user_keys')
+      .where({ id })
+      .update(patch as never);
   },
 };
 

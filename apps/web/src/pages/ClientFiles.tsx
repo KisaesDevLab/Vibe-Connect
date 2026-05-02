@@ -110,12 +110,7 @@ export function ClientFilesPage(): JSX.Element {
       for (const bundle of keys) {
         if (!bundle.wrappedKeys) continue;
         try {
-          const k = await unwrapZoneKey(
-            bundle.wrappedKeys,
-            myRecipient,
-            device.publicKey,
-            secret,
-          );
+          const k = await unwrapZoneKey(bundle.wrappedKeys, myRecipient, device.publicKey, secret);
           // Keep the highest rotation_version per zone — that's the active key.
           const cur = next[bundle.zone];
           if (!cur.rotationVersion || bundle.rotationVersion > cur.rotationVersion) {
@@ -430,7 +425,11 @@ export function ClientFilesPage(): JSX.Element {
         created += 1;
       }
       await refresh();
-      setError(created > 0 ? `Created ${created} folder(s), skipped ${skipped}.` : `Skipped ${skipped} (already exist).`);
+      setError(
+        created > 0
+          ? `Created ${created} folder(s), skipped ${skipped}.`
+          : `Skipped ${skipped} (already exist).`,
+      );
     } catch (err) {
       setError(`Apply template failed: ${(err as Error).message}`);
     } finally {

@@ -1,0 +1,30 @@
+# Force LF in the git index for every text file regardless of the
+# committer's platform. Prettier is configured with endOfLine: lf, so
+# without this our Windows committers' files round-trip as CRLF, the
+# Linux CI prettier run flags every line, and `yarn format:check` fails
+# on every push. Setting eol=lf here means git checks out LF on Linux
+# and CRLF on Windows (working tree), but the index is canonical LF.
+
+* text=auto eol=lf
+
+# Binary types — never normalize. Listing the ones we actually ship so a
+# new file extension doesn't accidentally get text-converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.otf binary
+*.msi binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so binary

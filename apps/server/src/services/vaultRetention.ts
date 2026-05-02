@@ -16,11 +16,7 @@
 import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
 import { auditRepo } from '../repositories/audit.js';
-import {
-  vaultFilesRepo,
-  vaultKeysRepo,
-  type VaultFileRow,
-} from '../repositories/vaults.js';
+import { vaultFilesRepo, vaultKeysRepo, type VaultFileRow } from '../repositories/vaults.js';
 import { reapExpiredTusUploads } from './tusServer.js';
 import { VAULT_AUDIT_ACTIONS } from './vaultService.js';
 

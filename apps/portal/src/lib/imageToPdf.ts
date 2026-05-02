@@ -44,9 +44,7 @@ async function imageToPngBytes(bytes: Uint8Array, mimeType: string): Promise<Uin
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('canvas_2d_unsupported');
     ctx.drawImage(img, 0, 0);
-    const out = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/png'),
-    );
+    const out = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
     if (!out) throw new Error('canvas_toBlob_failed');
     const buf = await out.arrayBuffer();
     return new Uint8Array(buf);
@@ -59,7 +57,9 @@ async function heicToJpegBytes(bytes: Uint8Array): Promise<Uint8Array> {
   // /* @vite-ignore */ + dynamic string keeps Rollup from trying to
   // statically resolve the optional dep at bundle time. Runtime catch
   // surfaces the install hint when the dep is genuinely missing.
-  let mod: { default?: (opts: { blob: Blob; toType: string; quality?: number }) => Promise<Blob | Blob[]> };
+  let mod: {
+    default?: (opts: { blob: Blob; toType: string; quality?: number }) => Promise<Blob | Blob[]>;
+  };
   try {
     const heicModuleName = 'heic2any';
     mod = (await import(/* @vite-ignore */ heicModuleName)) as typeof mod;

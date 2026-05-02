@@ -56,10 +56,7 @@ import { messagesRepo } from '../repositories/messages.js';
 import { db } from '../db/knex.js';
 import { auditRepo } from '../repositories/audit.js';
 import { conversationsRepo } from '../repositories/conversations.js';
-import {
-  notifyExternalRecipients,
-  notifyForNewMessage,
-} from '../services/offlineNotify.js';
+import { notifyExternalRecipients, notifyForNewMessage } from '../services/offlineNotify.js';
 
 // ---------- Error translation ----------
 
@@ -469,7 +466,11 @@ requestsRouter.post(
       });
       res.status(202).json({ messageId: result.messageId });
     } catch (err) {
-      if (err instanceof RequestsServiceError && err.code === 'bad_state' && err.message === 'nudge_rate_limited') {
+      if (
+        err instanceof RequestsServiceError &&
+        err.code === 'bad_state' &&
+        err.message === 'nudge_rate_limited'
+      ) {
         res.status(429).json({
           error: 'rate_limited',
           detail: err.message,
@@ -525,11 +526,7 @@ requestsRouter.patch(
       return;
     }
     try {
-      const template = await updateTemplate(
-        req.params.id!,
-        parsed.data,
-        req.session.userId!,
-      );
+      const template = await updateTemplate(req.params.id!, parsed.data, req.session.userId!);
       res.json({ template });
     } catch (err) {
       sendServiceError(res, err);

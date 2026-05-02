@@ -26,7 +26,9 @@ export function InstallPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<InstallResult | null>(null);
   const [confirmed, setConfirmed] = useState(false);
-  const [createdCreds, setCreatedCreds] = useState<{ username: string; password: string } | null>(null);
+  const [createdCreds, setCreatedCreds] = useState<{ username: string; password: string } | null>(
+    null,
+  );
 
   async function onSubmit(e: FormEvent): Promise<void> {
     e.preventDefault();
@@ -92,13 +94,20 @@ export function InstallPage(): JSX.Element {
 
   return (
     <div className="min-h-screen grid place-items-center bg-slate-50 px-4 py-12">
-      <form onSubmit={onSubmit} className="w-full max-w-lg bg-white shadow-card rounded-xl p-8 space-y-4">
+      <form
+        onSubmit={onSubmit}
+        className="w-full max-w-lg bg-white shadow-card rounded-xl p-8 space-y-4"
+      >
         <div className="mb-2">
-          <div className="mx-auto w-12 h-12 rounded-lg bg-brand-600 text-white grid place-items-center font-bold text-xl">VC</div>
-          <h1 className="mt-3 text-center text-lg font-semibold text-slate-900">Set up Vibe Connect</h1>
+          <div className="mx-auto w-12 h-12 rounded-lg bg-brand-600 text-white grid place-items-center font-bold text-xl">
+            VC
+          </div>
+          <h1 className="mt-3 text-center text-lg font-semibold text-slate-900">
+            Set up Vibe Connect
+          </h1>
           <p className="text-sm text-center text-slate-500">
-            Create the firm crypto key and your first administrator. You will see the
-            24-word recovery phrase exactly once.
+            Create the firm crypto key and your first administrator. You will see the 24-word
+            recovery phrase exactly once.
           </p>
         </div>
 
@@ -190,7 +199,11 @@ export function InstallPage(): JSX.Element {
 
         <p className="text-xs text-slate-500">Passwords must be at least 12 characters.</p>
 
-        {error && <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">{error}</div>}
+        {error && (
+          <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+            {error}
+          </div>
+        )}
 
         <button
           type="submit"
@@ -254,14 +267,14 @@ function RecoveryPhraseStep({
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Firm recovery phrase</h1>
           <p className="mt-2 text-sm text-slate-600">
-            Write these 24 words down <em>now</em> and store them somewhere physically secure.
-            This phrase is the only way to recover firm-wide conversations if an admin loses
-            their device, and to rotate the firm key. It will never be shown again and is not
-            stored on the server.
+            Write these 24 words down <em>now</em> and store them somewhere physically secure. This
+            phrase is the only way to recover firm-wide conversations if an admin loses their
+            device, and to rotate the firm key. It will never be shown again and is not stored on
+            the server.
           </p>
           <p className="mt-2 text-sm text-rose-700 font-semibold">
-            Losing this phrase means permanently losing the ability to decrypt all conversations
-            if the last enrolled device is wiped.
+            Losing this phrase means permanently losing the ability to decrypt all conversations if
+            the last enrolled device is wiped.
           </p>
         </div>
 
@@ -277,8 +290,8 @@ function RecoveryPhraseStep({
           </div>
         ) : (
           <div className="rounded-lg border border-emerald-300 bg-emerald-50 p-4 text-sm text-emerald-900">
-            Recovery phrase confirmed and cleared from this page. Keep your written
-            copy somewhere safe — it will never be shown again.
+            Recovery phrase confirmed and cleared from this page. Keep your written copy somewhere
+            safe — it will never be shown again.
           </div>
         )}
 
@@ -318,8 +331,8 @@ function RecoveryPhraseStep({
             className="mt-1"
           />
           <span>
-            I have saved the 24-word recovery phrase in a place I control. I understand that
-            Vibe Connect cannot recover it for me.
+            I have saved the 24-word recovery phrase in a place I control. I understand that Vibe
+            Connect cannot recover it for me.
           </span>
         </label>
 

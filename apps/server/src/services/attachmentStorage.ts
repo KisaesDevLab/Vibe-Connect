@@ -102,9 +102,7 @@ class S3Storage implements AttachmentStorage {
 
   async get(key: string): Promise<Buffer> {
     const safe = sanitizeKey(key);
-    const out = await this.client.send(
-      new GetObjectCommand({ Bucket: this.bucket, Key: safe }),
-    );
+    const out = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: safe }));
     const stream = out.Body as Readable | undefined;
     if (!stream) throw new Error('empty_body');
     const chunks: Buffer[] = [];

@@ -79,38 +79,29 @@ describe('batch 3 regressions', () => {
       .insert({
         conversation_id: convId,
         sender_id: userId,
-        ciphertext: Buffer.from(
-          JSON.stringify({ n: 'aaa', c: 'bbb', v: 1 }),
-          'utf8',
-        ),
+        ciphertext: Buffer.from(JSON.stringify({ n: 'aaa', c: 'bbb', v: 1 }), 'utf8'),
         content_key_version: 1,
       })
       .returning(['id']);
     const messageId = msg.id as string;
 
     // Default: 15-minute window → edit succeeds.
-    const okEdit = await agent
-      .patch(`/conversations/messages/${messageId}`)
-      .send({
-        ciphertext: Buffer.from(
-          JSON.stringify({ n: 'aaa', c: 'ccc', v: 1 }),
-          'utf8',
-        ).toString('base64'),
-        ciphertextMeta: {},
-      });
+    const okEdit = await agent.patch(`/conversations/messages/${messageId}`).send({
+      ciphertext: Buffer.from(JSON.stringify({ n: 'aaa', c: 'ccc', v: 1 }), 'utf8').toString(
+        'base64',
+      ),
+      ciphertextMeta: {},
+    });
     expect(okEdit.status).toBe(200);
 
     // Flip the firm setting to 0 (edits disabled) and retry.
     await db('firm_settings').where({ id: 1 }).update({ message_edit_window_minutes: 0 });
-    const blocked = await agent
-      .patch(`/conversations/messages/${messageId}`)
-      .send({
-        ciphertext: Buffer.from(
-          JSON.stringify({ n: 'aaa', c: 'ddd', v: 1 }),
-          'utf8',
-        ).toString('base64'),
-        ciphertextMeta: {},
-      });
+    const blocked = await agent.patch(`/conversations/messages/${messageId}`).send({
+      ciphertext: Buffer.from(JSON.stringify({ n: 'aaa', c: 'ddd', v: 1 }), 'utf8').toString(
+        'base64',
+      ),
+      ciphertextMeta: {},
+    });
     expect(blocked.status).toBe(400);
     expect(blocked.body.error).toBe('edits_disabled');
     // Restore for other tests sharing the DB.

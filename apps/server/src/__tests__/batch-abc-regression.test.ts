@@ -138,7 +138,10 @@ describe('Batch A#2: portal conversations list excludes internal_thread', () => 
 });
 
 describe('Batch A#3/#4: email-bridge attachment scan policy', () => {
-  async function seedBridgeConv(): Promise<{ token: string; identity: { id: string; email: string } }> {
+  async function seedBridgeConv(): Promise<{
+    token: string;
+    identity: { id: string; email: string };
+  }> {
     const { db } = await import('../db/knex.js');
     const { ensureConversationToken } = await import('../routes/emailBridge.js');
     const uniq = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -299,7 +302,9 @@ describe('Batch B#6: scheduled broadcast retries on failure', () => {
       },
     });
     await runOnce();
-    const afterFail = await db('messages').where({ id: (msg as { id: string }).id }).first();
+    const afterFail = await db('messages')
+      .where({ id: (msg as { id: string }).id })
+      .first();
     expect(afterFail.scheduled_broadcast_at).toBeNull();
 
     // Second tick: broadcaster succeeds → row is stamped.
@@ -312,7 +317,9 @@ describe('Batch B#6: scheduled broadcast retries on failure', () => {
     });
     await runOnce();
     expect(seenId).toBe((msg as { id: string }).id);
-    const afterOk = await db('messages').where({ id: (msg as { id: string }).id }).first();
+    const afterOk = await db('messages')
+      .where({ id: (msg as { id: string }).id })
+      .first();
     expect(afterOk.scheduled_broadcast_at).not.toBeNull();
   });
 });

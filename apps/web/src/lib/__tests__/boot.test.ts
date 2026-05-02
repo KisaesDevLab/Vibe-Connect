@@ -78,9 +78,7 @@ describe('url() — multi-app mode (basePath="/connect")', () => {
 
   it('handles paths that include encoded characters', () => {
     setBoot({ basePath: '/connect' });
-    expect(url('/clients/abc%2F123/vault/files')).toBe(
-      '/connect/clients/abc%2F123/vault/files',
-    );
+    expect(url('/clients/abc%2F123/vault/files')).toBe('/connect/clients/abc%2F123/vault/files');
   });
 });
 
@@ -88,9 +86,7 @@ describe('url() — absolute URL passthrough (any mode)', () => {
   it('leaves http(s):// URLs alone', () => {
     setBoot({ basePath: '/connect' });
     expect(url('http://example.com/foo')).toBe('http://example.com/foo');
-    expect(url('https://idp.example.com/oauth/token')).toBe(
-      'https://idp.example.com/oauth/token',
-    );
+    expect(url('https://idp.example.com/oauth/token')).toBe('https://idp.example.com/oauth/token');
   });
 
   it('leaves protocol-relative URLs alone', () => {

@@ -88,7 +88,9 @@ describe('Obs #4: retention sweep paginates', () => {
       // count assertions. Retention policy goes back to null too.
       await db('messages').where({ conversation_id: convId }).del();
       await db('conversations').where({ id: convId }).del();
-      await db('users').where({ id: (staff as { id: string }).id }).del();
+      await db('users')
+        .where({ id: (staff as { id: string }).id })
+        .del();
       await db('firm_settings').where({ id: 1 }).update({ retention_days: null });
     }
   });

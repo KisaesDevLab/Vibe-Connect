@@ -28,11 +28,7 @@ async function seedIdentity(): Promise<{ id: string }> {
   return { id: row.id as string };
 }
 
-async function insertAccessCode(
-  identityId: string,
-  code: string,
-  attempts = 0,
-): Promise<string> {
+async function insertAccessCode(identityId: string, code: string, attempts = 0): Promise<string> {
   const { db } = await import('../db/knex.js');
   const [row] = await db('access_codes')
     .insert({

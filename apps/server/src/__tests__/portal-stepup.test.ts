@@ -145,9 +145,7 @@ describe('portal step-up attempt counter', () => {
     });
 
     // Pre-verification: the portal MUST NOT surface wrapped keys.
-    const before = await request(app)
-      .get(`/portal/conversations/${convId}`)
-      .set('Cookie', cookie);
+    const before = await request(app).get(`/portal/conversations/${convId}`).set('Cookie', cookie);
     expect(before.status).toBe(200);
     expect(before.body.stepupRequired).toBe(true);
     expect(before.body.wrappedKeys).toBeNull();

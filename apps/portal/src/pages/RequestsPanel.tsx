@@ -38,11 +38,7 @@ interface Props {
   onClose: () => void;
   /** Fired when the user picks an action on an item. The host handles the
    *  outbound message + attachment flow with the linked itemId. */
-  onPick: (
-    item: PickedItem,
-    path: ResponsePath,
-    file: File | null,
-  ) => void | Promise<void>;
+  onPick: (item: PickedItem, path: ResponsePath, file: File | null) => void | Promise<void>;
 }
 
 const STATUS_PILL: Record<RequestItemStatus, string> = {
@@ -73,10 +69,7 @@ interface DecryptedListView {
   items: DecryptedItem[];
 }
 
-async function decryptText(
-  ciphertextBase64: string,
-  convKey: Uint8Array,
-): Promise<string> {
+async function decryptText(ciphertextBase64: string, convKey: Uint8Array): Promise<string> {
   try {
     const c = await loadCrypto();
     const env = JSON.parse(atob(ciphertextBase64)) as CryptoModule.SymmetricEnvelope;
@@ -209,9 +202,7 @@ export function RequestsPanel({
         <header className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
           <div>
             <h3 className="font-semibold text-slate-900">Requests</h3>
-            <p className="text-[11px] text-slate-500">
-              What your firm has asked from you
-            </p>
+            <p className="text-[11px] text-slate-500">What your firm has asked from you</p>
           </div>
           <button
             type="button"
@@ -297,12 +288,8 @@ function ListBody({
     <div className="space-y-3">
       <div>
         <h4 className="text-base font-semibold text-slate-900">{list.title}</h4>
-        {list.description && (
-          <p className="text-xs text-slate-600 mt-0.5">{list.description}</p>
-        )}
-        {list.dueDate && (
-          <p className="text-xs text-slate-500 mt-0.5">Due {list.dueDate}</p>
-        )}
+        {list.description && <p className="text-xs text-slate-600 mt-0.5">{list.description}</p>}
+        {list.dueDate && <p className="text-xs text-slate-500 mt-0.5">Due {list.dueDate}</p>}
       </div>
       <div>
         <div className="flex items-center justify-between text-[11px] text-slate-600 mb-1">
@@ -336,18 +323,12 @@ function ListBody({
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-900">
-                      {item.decryptedTitle}
-                    </div>
+                    <div className="text-sm font-medium text-slate-900">{item.decryptedTitle}</div>
                     {item.decryptedDescription && (
-                      <p className="text-xs text-slate-600 mt-0.5">
-                        {item.decryptedDescription}
-                      </p>
+                      <p className="text-xs text-slate-600 mt-0.5">{item.decryptedDescription}</p>
                     )}
                     {item.dueDate && (
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        Due {item.dueDate}
-                      </p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Due {item.dueDate}</p>
                     )}
                     {item.decryptedRevisionNote ? (
                       <p className="text-xs text-rose-700 mt-1 bg-rose-50 border border-rose-100 rounded px-2 py-1">
@@ -361,8 +342,8 @@ function ListBody({
                       // server has no conversation key to encrypt a note under.
                       // Render a cleartext fallback so the client knows what to do.
                       <p className="text-xs text-rose-700 mt-1 bg-rose-50 border border-rose-100 rounded px-2 py-1">
-                        Your last submission couldn&apos;t be accepted (possibly an
-                        attachment failed virus scan). Please try again.
+                        Your last submission couldn&apos;t be accepted (possibly an attachment
+                        failed virus scan). Please try again.
                       </p>
                     ) : null}
                   </div>
@@ -469,8 +450,8 @@ function ActionSheet({
         </div>
         <footer className="px-4 py-2 border-t border-slate-200 text-[11px] text-slate-500 flex items-center gap-1.5">
           <span aria-hidden>🔒</span>
-          End-to-end encrypted — your firm sees the file content only after their device
-          unlocks the key.
+          End-to-end encrypted — your firm sees the file content only after their device unlocks the
+          key.
         </footer>
         <button
           type="button"

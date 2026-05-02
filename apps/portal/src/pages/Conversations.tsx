@@ -89,12 +89,9 @@ function renderSystemMessageBody(m: Msg): string {
     return '🔁 Your firm asked for a revision. See the Requests panel for the note.';
   }
   if (eventType === 'request_nudge_sent') {
-    const listTitle =
-      typeof meta.listTitle === 'string' ? meta.listTitle : 'pending items';
+    const listTitle = typeof meta.listTitle === 'string' ? meta.listTitle : 'pending items';
     const custom = typeof meta.customBody === 'string' ? meta.customBody : null;
-    return custom
-      ? `🔔 Reminder: ${custom}`
-      : `🔔 Reminder — items still needed for ${listTitle}.`;
+    return custom ? `🔔 Reminder: ${custom}` : `🔔 Reminder — items still needed for ${listTitle}.`;
   }
   if (eventType === 'request_item_done') return '✅ Item marked done.';
   if (eventType === 'request_list_created') return '📝 New request list created.';
@@ -239,7 +236,10 @@ export function ConversationsPage(): JSX.Element {
         {/* relativeTick is read here so the render depends on it; a bare read
             in the map() below would also work but keeping the acknowledgement
             up-front makes the intent obvious. */}
-        <ul className="bg-white rounded shadow divide-y divide-slate-100" data-rel-tick={relativeTick}>
+        <ul
+          className="bg-white rounded shadow divide-y divide-slate-100"
+          data-rel-tick={relativeTick}
+        >
           {convs.map((c) => (
             <li key={c.id}>
               <button
@@ -253,17 +253,19 @@ export function ConversationsPage(): JSX.Element {
                   <span className="font-medium flex-1 truncate">
                     {c.displayName ?? '(conversation)'}
                   </span>
-                  {c.lastMessageSource && c.lastMessageSource !== 'app' && c.lastMessageSource !== 'system' && (
-                    <span
-                      className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 px-2 py-0.5 text-[10px] font-semibold"
-                      title={`Latest reply arrived via ${c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}`}
-                    >
-                      <span aria-hidden="true">
-                        {c.lastMessageSource === 'email-in' ? '✉' : '💬'}
+                  {c.lastMessageSource &&
+                    c.lastMessageSource !== 'app' &&
+                    c.lastMessageSource !== 'system' && (
+                      <span
+                        className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 px-2 py-0.5 text-[10px] font-semibold"
+                        title={`Latest reply arrived via ${c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}`}
+                      >
+                        <span aria-hidden="true">
+                          {c.lastMessageSource === 'email-in' ? '✉' : '💬'}
+                        </span>
+                        {c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}
                       </span>
-                      {c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}
-                    </span>
-                  )}
+                    )}
                 </div>
                 <div className="text-xs text-slate-500">
                   {formatRelative(c.lastMessageAt ?? c.updatedAt)}
@@ -412,7 +414,14 @@ function ActiveConversation({
   // so the retry preserves the user's intent.
   const [sendError, setSendError] = useState<string | null>(null);
   const [uploadState, setUploadState] = useState<
-    'idle' | 'encrypting' | 'uploading' | 'scanning' | 'done' | 'blocked' | 'infected' | 'scanUnavailable'
+    | 'idle'
+    | 'encrypting'
+    | 'uploading'
+    | 'scanning'
+    | 'done'
+    | 'blocked'
+    | 'infected'
+    | 'scanUnavailable'
   >('idle');
   const [uploadDetail, setUploadDetail] = useState<string | null>(null);
   const session = useMemo(() => getSessionKeys(), []);
@@ -602,9 +611,7 @@ function ActiveConversation({
    * Fetch + decrypt an attachment to plaintext bytes. Re-usable by both the
    * download-to-disk path and the inline image preview.
    */
-  async function decryptAttachmentBytes(
-    att: MsgAttachment,
-  ): Promise<Uint8Array | null> {
+  async function decryptAttachmentBytes(att: MsgAttachment): Promise<Uint8Array | null> {
     if (!convKey) return null;
     const crypto = await loadCrypto();
     // File key was wrapped to the CONVERSATION key (secretbox), same as on
@@ -684,10 +691,7 @@ function ActiveConversation({
     if (images.length === 0) return;
     const pdfBytes = await imagesToPdf(images);
     const datePart = new Date(msg.createdAt).toISOString().slice(0, 10);
-    portalTriggerDownload(
-      bytesToBlob(pdfBytes, 'application/pdf'),
-      `attachments-${datePart}.pdf`,
-    );
+    portalTriggerDownload(bytesToBlob(pdfBytes, 'application/pdf'), `attachments-${datePart}.pdf`);
   }
 
   /**
@@ -788,10 +792,7 @@ function ActiveConversation({
     // the file if both sides use the same wrapping. Filename is encrypted the
     // same way so the download UI can render a meaningful name.
     const wrappedFileKey = await crypto.secretboxEncrypt(fileKey, convKey);
-    const filenameCiphertext = await crypto.secretboxEncrypt(
-      crypto.utf8Encode(file.name),
-      convKey,
-    );
+    const filenameCiphertext = await crypto.secretboxEncrypt(crypto.utf8Encode(file.name), convKey);
     setUploadState('uploading');
     const form = new FormData();
     form.set('file', new Blob([JSON.stringify(env)], { type: file.type }), file.name);
@@ -921,7 +922,9 @@ function ActiveConversation({
                 renderedBody
               )}
               {!isBridgePending && !m.deletedAt && m.attachments && m.attachments.length > 0 && (
-                <div className={`mt-1 space-y-1 ${renderedBody && renderedBody !== '__decrypting__' ? 'pt-2 border-t border-white/20' : ''}`}>
+                <div
+                  className={`mt-1 space-y-1 ${renderedBody && renderedBody !== '__decrypting__' ? 'pt-2 border-t border-white/20' : ''}`}
+                >
                   {m.attachments.map((att) => (
                     <PortalAttachmentView
                       key={att.id}
@@ -985,14 +988,10 @@ function ActiveConversation({
             >
               <span aria-hidden>📎</span>
               <span className="max-w-[120px] truncate">{staged.file.name}</span>
-              <span className="text-slate-400">
-                {(staged.file.size / 1024).toFixed(0)} KB
-              </span>
+              <span className="text-slate-400">{(staged.file.size / 1024).toFixed(0)} KB</span>
               <button
                 type="button"
-                onClick={() =>
-                  setPendingFiles((prev) => prev.filter((s) => s.id !== staged.id))
-                }
+                onClick={() => setPendingFiles((prev) => prev.filter((s) => s.id !== staged.id))}
                 className="text-slate-400 hover:text-rose-700 leading-none"
                 aria-label={`Remove ${staged.file.name}`}
               >
@@ -1116,8 +1115,8 @@ function ActiveConversation({
             <span className="font-medium">Couldn&apos;t send:</span> {sendError}
             {linkedItem && (
               <span className="block text-[11px] text-rose-700/80 mt-0.5">
-                Your pin to <strong>{linkedItem.title}</strong> is preserved — click
-                Send again to retry.
+                Your pin to <strong>{linkedItem.title}</strong> is preserved — click Send again to
+                retry.
               </span>
             )}
           </span>
@@ -1158,9 +1157,7 @@ function ActiveConversation({
           // shipping.
           setLinkedItem(item);
           if ((path === 'photo' || path === 'file') && file) {
-            setPendingFiles((prev) =>
-              [...prev, stageFile(file)].slice(0, PORTAL_MAX_ATTACHMENTS),
-            );
+            setPendingFiles((prev) => [...prev, stageFile(file)].slice(0, PORTAL_MAX_ATTACHMENTS));
           }
         }}
       />
@@ -1273,12 +1270,7 @@ function PortalAttachmentImagePreview({
   }
   return (
     <figure className={`rounded-md overflow-hidden ${mine ? 'bg-brand-500/40' : 'bg-slate-200'}`}>
-      <button
-        type="button"
-        onClick={onDownload}
-        className="block w-full"
-        title="Download image"
-      >
+      <button type="button" onClick={onDownload} className="block w-full" title="Download image">
         {state === 'loading' || !url ? (
           <div className="aspect-[4/3] max-h-64 grid place-items-center text-xs opacity-70">
             Decrypting…
@@ -1337,7 +1329,9 @@ function PortalAttachmentChip({
       onClick={infected || pending ? undefined : onDownload}
       disabled={infected || pending}
       className={`flex items-center gap-2 text-xs rounded-md px-2 py-1 w-full text-left ${
-        mine ? 'bg-brand-500/40 hover:bg-brand-500/60 text-brand-50' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+        mine
+          ? 'bg-brand-500/40 hover:bg-brand-500/60 text-brand-50'
+          : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
       } ${infected ? 'bg-rose-100 text-rose-800 cursor-not-allowed' : ''} ${
         pending ? 'opacity-60 cursor-progress' : ''
       }`}

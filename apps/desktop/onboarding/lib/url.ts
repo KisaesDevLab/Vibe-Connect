@@ -183,7 +183,11 @@ export function validateBootScript(body: string): ProbeResult {
   try {
     obj = JSON.parse(jsonRegion);
   } catch (err) {
-    return { ok: false, error: 'invalid_json', detail: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: 'invalid_json',
+      detail: err instanceof Error ? err.message : String(err),
+    };
   }
 
   if (!obj || typeof obj !== 'object') {

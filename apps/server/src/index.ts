@@ -18,10 +18,7 @@ import {
 } from './services/destructMessages.js';
 import { startAutoNudgeJob, stopAutoNudgeJob } from './services/autoNudge.js';
 import { startRetentionTicker, stopRetentionTicker } from './services/retention.js';
-import {
-  startVaultRetentionTicker,
-  stopVaultRetentionTicker,
-} from './services/vaultRetention.js';
+import { startVaultRetentionTicker, stopVaultRetentionTicker } from './services/vaultRetention.js';
 import { startBackupWatcher, stopBackupWatcher } from './services/backupWatcher.js';
 import { startTlsRenewalTicker, stopTlsRenewalTicker } from './services/tlsAcme.js';
 
@@ -81,7 +78,10 @@ async function main(): Promise<void> {
       | { public_key: string; rotation_version: number }
       | undefined;
     if (row) {
-      const fingerprint = createHash('sha256').update(row.public_key, 'utf8').digest('hex').slice(0, 16);
+      const fingerprint = createHash('sha256')
+        .update(row.public_key, 'utf8')
+        .digest('hex')
+        .slice(0, 16);
       logger.info('crypto.firm_key_loaded', {
         fingerprint,
         rotation: row.rotation_version,

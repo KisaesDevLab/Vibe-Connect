@@ -171,7 +171,9 @@ export function QuickSwitcher({
     if (!q) return true;
     // Match against the resolved label so ad-hoc "Alice, Bob, Carol" threads
     // surface on typing a member name, not only on the missing displayName.
-    return threadLabel(c, usersById, me?.id ?? null).toLowerCase().includes(qLower);
+    return threadLabel(c, usersById, me?.id ?? null)
+      .toLowerCase()
+      .includes(qLower);
   });
   return (
     <div className="fixed inset-0 bg-slate-900/30 z-50 grid place-items-start pt-24">

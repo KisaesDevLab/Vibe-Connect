@@ -42,11 +42,9 @@ interface ActiveListRow {
 export async function runAutoNudgeOnce(now: Date = new Date()): Promise<number> {
   // Pull the firm config first; bail without a query if disabled, so the
   // hot path in production (auto-nudge OFF) is one row read per hour.
-  const settings = await db('firm_settings').where({ id: 1 }).first(
-    'auto_nudge_enabled',
-    'auto_nudge_offsets_hours',
-    'requests_enabled',
-  );
+  const settings = await db('firm_settings')
+    .where({ id: 1 })
+    .first('auto_nudge_enabled', 'auto_nudge_offsets_hours', 'requests_enabled');
   if (!settings || !settings.auto_nudge_enabled) return 0;
   // Phase 24 kill switch: when an admin disables Requests firm-wide, the
   // auto-nudge sweeper stops queueing reminders. Existing queued nudges

@@ -566,9 +566,7 @@ describe('Phase 24 kill switch (firm_settings.requests_enabled)', () => {
   it('PATCH /admin/settings { requestsEnabled } persists the flag', async () => {
     const { db } = await import('../db/knex.js');
     const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
-    const off = await kurt
-      .patch('/admin/settings')
-      .send({ requestsEnabled: false });
+    const off = await kurt.patch('/admin/settings').send({ requestsEnabled: false });
     expect(off.status).toBe(200);
     const row = await db('firm_settings').where({ id: 1 }).first('requests_enabled');
     expect(row.requests_enabled).toBe(false);
@@ -580,9 +578,7 @@ describe('Phase 24 kill switch (firm_settings.requests_enabled)', () => {
     // Build a session up front while the feature is still enabled (so list
     // creation succeeds) — then flip the kill switch and re-fetch.
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
-    const [extConv] = await db('conversations')
-      .insert({ type: 'external' })
-      .returning(['id']);
+    const [extConv] = await db('conversations').insert({ type: 'external' }).returning(['id']);
     const [identity] = await db('external_identities')
       .insert({
         email: `kill-${Date.now()}@example.test`,
@@ -629,9 +625,7 @@ describe('GET /portal/request-lists', () => {
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
     const { db } = await import('../db/knex.js');
     // Make an external conversation with Bob and an external identity.
-    const [extConv] = await db('conversations')
-      .insert({ type: 'external' })
-      .returning(['id']);
+    const [extConv] = await db('conversations').insert({ type: 'external' }).returning(['id']);
     const [identity] = await db('external_identities')
       .insert({
         email: `client-${Date.now()}@example.test`,

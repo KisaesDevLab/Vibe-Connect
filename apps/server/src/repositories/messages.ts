@@ -171,9 +171,7 @@ export const messagesRepo = {
     if (readerUserId !== null) {
       // sender_id IS NULL OR sender_id <> readerUserId — i.e. anyone except
       // the message's own sender starts the timer.
-      q = q.andWhere((b) =>
-        b.whereNull('sender_id').orWhere('sender_id', '<>', readerUserId),
-      );
+      q = q.andWhere((b) => b.whereNull('sender_id').orWhere('sender_id', '<>', readerUserId));
     }
     return q.update({ destruct_at: fireAt.toISOString() });
   },

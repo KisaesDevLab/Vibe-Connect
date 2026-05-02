@@ -37,7 +37,9 @@ export async function runRetentionSweep(dbOverride?: Knex): Promise<RetentionRes
   try {
     // 24-hour hard expiry regardless of retention policy — the table
     // shouldn't grow forever even with retention off.
-    await db('idempotency_keys').where('created_at', '<', db.raw(`NOW() - INTERVAL '24 hours'`)).del();
+    await db('idempotency_keys')
+      .where('created_at', '<', db.raw(`NOW() - INTERVAL '24 hours'`))
+      .del();
     // Stuck placeholder rows: the claim INSERT writes `{}` into `response`
     // and the follow-up UPDATE replaces it with the real response body. If
     // the owning request crashes between those two statements, the slot
@@ -193,12 +195,9 @@ export function startRetentionTicker(): void {
       });
     }
   };
-  timer = setInterval(
-    () => {
-      void tick();
-    },
-    SWEEP_INTERVAL_MS,
-  );
+  timer = setInterval(() => {
+    void tick();
+  }, SWEEP_INTERVAL_MS);
   // Lazy first run. Unref so the timer never blocks process shutdown in tests.
   if (timer.unref) timer.unref();
   setTimeout(() => {

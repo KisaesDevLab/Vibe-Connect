@@ -45,7 +45,9 @@ export function AdminPage(): JSX.Element {
     staleTime: 60_000,
   });
   const requestsEnabled = policyQ.data?.requestsEnabled !== false;
-  const visibleTabs = tabs.filter((t) => !('requiresRequests' in t && t.requiresRequests) || requestsEnabled);
+  const visibleTabs = tabs.filter(
+    (t) => !('requiresRequests' in t && t.requiresRequests) || requestsEnabled,
+  );
   return (
     <div className="h-full flex flex-col">
       <div className="border-b border-slate-200 bg-white px-4">
@@ -137,11 +139,7 @@ function AdminUsers(): JSX.Element {
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-semibold text-slate-900">Users</h2>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            className="btn-ghost"
-          >
+          <button type="button" onClick={() => setImportOpen(true)} className="btn-ghost">
             Import CSV
           </button>
           <button
@@ -153,9 +151,7 @@ function AdminUsers(): JSX.Element {
           </button>
         </div>
       </div>
-      {q.isLoading && (
-        <div className="text-xs text-slate-500 py-3">Loading users…</div>
-      )}
+      {q.isLoading && <div className="text-xs text-slate-500 py-3">Loading users…</div>}
       {q.error && (
         <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded p-2 mb-2">
           Failed to load users: {(q.error as Error).message}
@@ -348,7 +344,13 @@ function EditUserDialog({
   onClose,
   onSaved,
 }: {
-  user: { id: string; displayName: string; email: string | null; isAdmin: boolean; isActive: boolean };
+  user: {
+    id: string;
+    displayName: string;
+    email: string | null;
+    isAdmin: boolean;
+    isActive: boolean;
+  };
   onClose: () => void;
   onSaved: () => void;
 }): JSX.Element {
@@ -401,7 +403,11 @@ function EditUserDialog({
           Firm administrator
         </label>
         <label className="flex items-center gap-2 text-sm text-slate-700">
-          <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={isActive}
+            onChange={(e) => setIsActive(e.target.checked)}
+          />
           Active (can sign in)
         </label>
         {error && <div className="text-sm text-rose-600">{error}</div>}
@@ -610,11 +616,7 @@ function AdminGroups(): JSX.Element {
                   <button type="submit" className="btn-primary">
                     Save
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setRenamingId(null)}
-                    className="btn-ghost"
-                  >
+                  <button type="button" onClick={() => setRenamingId(null)} className="btn-ghost">
                     Cancel
                   </button>
                 </form>
@@ -729,11 +731,7 @@ function GroupMembersDialog({
             className="flex gap-2 items-end"
           >
             <Field label="Add member">
-              <select
-                value={toAdd}
-                onChange={(e) => setToAdd(e.target.value)}
-                className="input"
-              >
+              <select value={toAdd} onChange={(e) => setToAdd(e.target.value)} className="input">
                 <option value="">Select a user…</option>
                 {candidates.map((u) => (
                   <option key={u.id} value={u.id}>
@@ -857,9 +855,9 @@ function AdminSettings(): JSX.Element {
       <h2 className="font-semibold text-slate-900">Firm settings</h2>
       {!s.client_messaging_enabled && (
         <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 text-xs px-3 py-2">
-          Client messaging is <strong>disabled</strong>. The portal refuses new sign-ins,
-          inbound email/SMS are bounced, and staff cannot create new external conversations.
-          Internal staff messaging is unaffected.
+          Client messaging is <strong>disabled</strong>. The portal refuses new sign-ins, inbound
+          email/SMS are bounced, and staff cannot create new external conversations. Internal staff
+          messaging is unaffected.
         </div>
       )}
       <label className="block">
@@ -873,7 +871,11 @@ function AdminSettings(): JSX.Element {
       </label>
       <label className="block">
         <span className="text-sm text-slate-700">
-          App display name <span className="text-slate-400">(optional — replaces &quot;Vibe Connect&quot; in the staff app header and browser tab title)</span>
+          App display name{' '}
+          <span className="text-slate-400">
+            (optional — replaces &quot;Vibe Connect&quot; in the staff app header and browser tab
+            title)
+          </span>
         </span>
         <input
           type="text"
@@ -927,9 +929,9 @@ function AdminSettings(): JSX.Element {
           <span className="block text-[11px] text-slate-500 mt-0.5">
             When off: the client portal refuses new sign-ins, inbound bridge email + SMS are
             bounced, and staff cannot create new external conversations. Existing external
-            conversations remain readable for audit. Internal staff-only messaging is
-            unaffected. Useful during incidents, firm onboarding, or before you&apos;ve tested
-            your bridge provider in production.
+            conversations remain readable for audit. Internal staff-only messaging is unaffected.
+            Useful during incidents, firm onboarding, or before you&apos;ve tested your bridge
+            provider in production.
           </span>
         </span>
       </label>
@@ -943,10 +945,10 @@ function AdminSettings(): JSX.Element {
         <span>
           <strong>Enable client requests</strong>
           <span className="block text-[11px] text-slate-500 mt-0.5">
-            When off: the staff Requests panel + dashboard are hidden, the portal Requests
-            tab is empty, the Requests API returns <code>403 requests_disabled</code>, and
-            queued auto-nudges are dropped. Existing lists + items remain in the database
-            and reappear when re-enabled. Internal messaging is unaffected.
+            When off: the staff Requests panel + dashboard are hidden, the portal Requests tab is
+            empty, the Requests API returns <code>403 requests_disabled</code>, and queued
+            auto-nudges are dropped. Existing lists + items remain in the database and reappear when
+            re-enabled. Internal messaging is unaffected.
           </span>
         </span>
       </label>
@@ -960,11 +962,11 @@ function AdminSettings(): JSX.Element {
         <span>
           <strong>Enable client files (Vault)</strong>
           <span className="block text-[11px] text-slate-500 mt-0.5">
-            When off: the staff Files tab is hidden, the portal Files page shows a
-            firm-disabled notice, and the Vault API returns <code>403 vault_disabled</code>.
-            Existing files + folders + zone keys remain in the database and reappear when
-            re-enabled. ClamAV scans, retention sweeps, and crypto-shred actions still run
-            on existing rows. Internal messaging and client messaging are unaffected.
+            When off: the staff Files tab is hidden, the portal Files page shows a firm-disabled
+            notice, and the Vault API returns <code>403 vault_disabled</code>. Existing files +
+            folders + zone keys remain in the database and reappear when re-enabled. ClamAV scans,
+            retention sweeps, and crypto-shred actions still run on existing rows. Internal
+            messaging and client messaging are unaffected.
           </span>
         </span>
       </label>
@@ -982,8 +984,8 @@ function AdminSettings(): JSX.Element {
         </legend>
         {!s.requests_enabled && (
           <p className="text-[11px] text-slate-500">
-            Requests are currently disabled — auto-nudge settings have no effect until you
-            re-enable them above.
+            Requests are currently disabled — auto-nudge settings have no effect until you re-enable
+            them above.
           </p>
         )}
         <label className="flex items-center gap-2 text-sm">
@@ -1011,17 +1013,15 @@ function AdminSettings(): JSX.Element {
             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
           />
           <p className="text-[11px] text-slate-500 mt-1">
-            Each list with a due date enqueues one nudge per offset, capped at 3 nudges per
-            list per 24 hours (manual + auto combined). Nudges that arrive after a list is
-            already complete are silently dropped.
+            Each list with a due date enqueues one nudge per offset, capped at 3 nudges per list per
+            24 hours (manual + auto combined). Nudges that arrive after a list is already complete
+            are silently dropped.
           </p>
         </label>
       </fieldset>
 
       <fieldset className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
-        <legend className="text-sm font-medium text-slate-800 px-1">
-          Message lifecycle
-        </legend>
+        <legend className="text-sm font-medium text-slate-800 px-1">Message lifecycle</legend>
         <label className="block">
           <span className="text-sm text-slate-700">Edit window (minutes)</span>
           <input
@@ -1038,9 +1038,9 @@ function AdminSettings(): JSX.Element {
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
           <p className="text-[11px] text-slate-500 mt-1">
-            How long after sending a staffer can edit a message. Each edit snapshots the
-            prior ciphertext into the admin-recoverable history. <strong>0 = edits
-            disabled</strong> (send-only). Max 1440 (24 h).
+            How long after sending a staffer can edit a message. Each edit snapshots the prior
+            ciphertext into the admin-recoverable history. <strong>0 = edits disabled</strong>{' '}
+            (send-only). Max 1440 (24 h).
           </p>
         </label>
         <label className="flex items-start gap-2 text-sm text-slate-700">
@@ -1053,12 +1053,12 @@ function AdminSettings(): JSX.Element {
           <span>
             <strong>Allow self-destruct timer on outbound messages</strong>
             <span className="block text-[11px] text-slate-500 mt-0.5">
-              When on, the staff compose box gets a &quot;Self-destruct&quot; dropdown.
-              The timer starts when the first non-sender recipient marks the message
-              read; the server soft-deletes the row on fire (recipients see a
-              &quot;Message deleted&quot; placeholder). Ciphertext is preserved for
-              admin recovery via Message history. Best-effort: recipient devices may
-              have cached plaintext (search index, scrollback) before the purge.
+              When on, the staff compose box gets a &quot;Self-destruct&quot; dropdown. The timer
+              starts when the first non-sender recipient marks the message read; the server
+              soft-deletes the row on fire (recipients see a &quot;Message deleted&quot;
+              placeholder). Ciphertext is preserved for admin recovery via Message history.
+              Best-effort: recipient devices may have cached plaintext (search index, scrollback)
+              before the purge.
             </span>
           </span>
         </label>
@@ -1078,8 +1078,8 @@ function AdminSettings(): JSX.Element {
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
           <p className="text-[11px] text-slate-500 mt-1">
-            Caps the compose dropdown so a staffer can&apos;t pick a value beyond this.
-            7 days (604800) is the install default; 30 days (2592000) is the ceiling.
+            Caps the compose dropdown so a staffer can&apos;t pick a value beyond this. 7 days
+            (604800) is the install default; 30 days (2592000) is the ceiling.
           </p>
         </label>
       </fieldset>
@@ -1094,16 +1094,15 @@ function AdminSettings(): JSX.Element {
           defaultValue={s.idle_lock_minutes}
           onBlur={(e) => {
             const v = Number(e.target.value);
-            if (Number.isFinite(v) && v >= 0 && v <= 1440)
-              mut.mutate({ idleLockMinutes: v });
+            if (Number.isFinite(v) && v >= 0 && v <= 1440) mut.mutate({ idleLockMinutes: v });
           }}
           className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
         />
         <p className="text-[11px] text-slate-500 mt-1">
-          After this many minutes with no keyboard or mouse input, the staff app clears
-          the in-memory device key and asks for the device passphrase to resume.{' '}
-          <strong>0 = never auto-lock</strong> (users can still click the 🔒 button).
-          Max 1440 (24 hours).
+          After this many minutes with no keyboard or mouse input, the staff app clears the
+          in-memory device key and asks for the device passphrase to resume.{' '}
+          <strong>0 = never auto-lock</strong> (users can still click the 🔒 button). Max 1440 (24
+          hours).
         </p>
       </label>
       <label className="block">
@@ -1473,11 +1472,14 @@ function VaultTemplateEditor({
   }
 
   return (
-    <fieldset className="rounded-md border border-slate-200 bg-white p-3 space-y-2" disabled={disabled}>
+    <fieldset
+      className="rounded-md border border-slate-200 bg-white p-3 space-y-2"
+      disabled={disabled}
+    >
       <legend className="text-sm font-medium text-slate-800 px-1">Folder template</legend>
       <p className="text-[11px] text-slate-500">
-        Default folders the staff app offers when applying a template to a client&apos;s vault.
-        Use <code>{'{YYYY}'}</code> in a name to insert the current year at apply time.
+        Default folders the staff app offers when applying a template to a client&apos;s vault. Use{' '}
+        <code>{'{YYYY}'}</code> in a name to insert the current year at apply time.
       </p>
       {rows.length === 0 ? (
         <p className="text-[11px] text-slate-400">No template entries.</p>
@@ -1574,13 +1576,11 @@ function VaultTemplateEditor({
 }
 
 function RetentionRunButton(): JSX.Element {
-  const [result, setResult] = useState<
-    null | {
-      retentionDays: number | null;
-      messagesShredded: number;
-      attachmentsDeleted: number;
-    }
-  >(null);
+  const [result, setResult] = useState<null | {
+    retentionDays: number | null;
+    messagesShredded: number;
+    attachmentsDeleted: number;
+  }>(null);
   const [error, setError] = useState<string | null>(null);
   const mut = useMutation({
     mutationFn: () =>
@@ -1598,8 +1598,8 @@ function RetentionRunButton(): JSX.Element {
   return (
     <div className="mt-2 text-xs text-slate-500 space-y-1">
       <p>
-        The retention sweep runs once every 24 hours automatically. Click below to run it now —
-        the first run after changing retention_days is the destructive one.
+        The retention sweep runs once every 24 hours automatically. Click below to run it now — the
+        first run after changing retention_days is the destructive one.
       </p>
       <button
         type="button"
@@ -1693,8 +1693,7 @@ function AdminClients(): JSX.Element {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'clients'] }),
   });
   const reinvite = useMutation({
-    mutationFn: ({ id, via }: { id: string; via?: 'email' | 'sms' }) =>
-      api.reinviteClient(id, via),
+    mutationFn: ({ id, via }: { id: string; via?: 'email' | 'sms' }) => api.reinviteClient(id, via),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'clients'] }),
   });
   const clients = q.data?.clients ?? [];
@@ -1771,8 +1770,8 @@ function AdminClients(): JSX.Element {
         </div>
       )}
       <p className="text-xs text-slate-500 mb-2">
-        Clients (external identities) who can sign in to the portal or receive bridged email /
-        SMS. Deactivating blocks all future portal access and revokes any live sessions; their
+        Clients (external identities) who can sign in to the portal or receive bridged email / SMS.
+        Deactivating blocks all future portal access and revokes any live sessions; their
         conversation membership is preserved for audit.
       </p>
       <table className="w-full text-xs bg-white rounded shadow-card">
@@ -1842,7 +1841,11 @@ function AdminClients(): JSX.Element {
                   <button
                     type="button"
                     onClick={() => {
-                      if (confirm(`Deactivate ${c.displayName}? Revokes ${c.activeSessions} active session(s) immediately.`))
+                      if (
+                        confirm(
+                          `Deactivate ${c.displayName}? Revokes ${c.activeSessions} active session(s) immediately.`,
+                        )
+                      )
                         deactivate.mutate(c.id);
                     }}
                     className="text-rose-600 hover:underline"
@@ -1916,8 +1919,8 @@ function AdminClientSessions(): JSX.Element {
     <div className="p-4">
       <h2 className="font-semibold text-slate-900 mb-3">Active client portal sessions</h2>
       <p className="text-xs text-slate-500 mb-2">
-        Everyone currently signed into the client portal. Revoke to force sign-out.
-        Refreshes every 30 s.
+        Everyone currently signed into the client portal. Revoke to force sign-out. Refreshes every
+        30 s.
       </p>
       <table className="w-full text-xs bg-white rounded shadow-card">
         <thead>
@@ -2043,7 +2046,9 @@ function AdminSms(): JSX.Element {
               </div>
             </div>
             {s.capAlerts.hundred && (
-              <div className="text-rose-700 text-xs">Monthly SMS cap reached — outbound blocked.</div>
+              <div className="text-rose-700 text-xs">
+                Monthly SMS cap reached — outbound blocked.
+              </div>
             )}
             {!s.capAlerts.hundred && s.capAlerts.eighty && (
               <div className="text-amber-700 text-xs">≥80% of cap; consider raising it.</div>
@@ -2072,9 +2077,7 @@ function AdminSms(): JSX.Element {
               <tr key={r.externalIdentityId} className="border-b border-slate-100">
                 <td className="p-2">{r.displayName ?? '—'}</td>
                 <td className="p-2 font-mono">{r.phone ?? '—'}</td>
-                <td className="p-2 whitespace-nowrap">
-                  {new Date(r.optedInAt).toLocaleString()}
-                </td>
+                <td className="p-2 whitespace-nowrap">{new Date(r.optedInAt).toLocaleString()}</td>
                 <td className="p-2 whitespace-nowrap">
                   {r.optedOutAt ? new Date(r.optedOutAt).toLocaleString() : '—'}
                 </td>
@@ -2173,8 +2176,8 @@ function AdminExport(): JSX.Element {
         </label>
       </div>
       <p className="text-xs text-slate-500 mb-2">
-        Export returns the raw ciphertext + wrapped keys. Decrypt locally with an enrolled
-        device key or the firm recovery phrase. Every export writes an audit row.
+        Export returns the raw ciphertext + wrapped keys. Decrypt locally with an enrolled device
+        key or the firm recovery phrase. Every export writes an audit row.
       </p>
       <table className="w-full text-xs bg-white rounded shadow-card">
         <thead>
@@ -2217,12 +2220,7 @@ function AdminExport(): JSX.Element {
           )}
         </tbody>
       </table>
-      {exporting && (
-        <ExportDialog
-          conversation={exporting}
-          onClose={() => setExporting(null)}
-        />
-      )}
+      {exporting && <ExportDialog conversation={exporting} onClose={() => setExporting(null)} />}
     </div>
   );
 }
@@ -2291,9 +2289,9 @@ function ExportDialog({
           </div>
         </div>
         <p className="text-xs text-slate-500">
-          This returns raw ciphertext + the per-conversation wrapped key bundle.
-          Decryption happens locally on your device (or offline with the recovery phrase) — the
-          server never sees plaintext.
+          This returns raw ciphertext + the per-conversation wrapped key bundle. Decryption happens
+          locally on your device (or offline with the recovery phrase) — the server never sees
+          plaintext.
         </p>
         {conversation.type === 'external' && (
           <label className="block">
@@ -2308,8 +2306,8 @@ function ExportDialog({
               className="input font-mono text-xs"
             />
             <p className="text-[10px] text-slate-500 mt-1">
-              Not sent anywhere — only forwarded to this server for the single export call.
-              Never stored.
+              Not sent anywhere — only forwarded to this server for the single export call. Never
+              stored.
             </p>
           </label>
         )}
@@ -2417,9 +2415,9 @@ function AdminMessageHistory(): JSX.Element {
     <div className="p-4 space-y-4">
       <h2 className="font-semibold text-slate-900">Message history</h2>
       <p className="text-xs text-slate-500 max-w-prose">
-        Returns the live message + every prior ciphertext snapshot from before each edit, plus
-        the conversation&apos;s wrapped-key bundle. Decrypt locally with an enrolled device key or
-        the firm recovery phrase. Every lookup writes an audit row.
+        Returns the live message + every prior ciphertext snapshot from before each edit, plus the
+        conversation&apos;s wrapped-key bundle. Decrypt locally with an enrolled device key or the
+        firm recovery phrase. Every lookup writes an audit row.
       </p>
       <div className="flex items-end gap-2">
         <label className="block flex-1 max-w-md">
@@ -2463,14 +2461,12 @@ function AdminMessageHistory(): JSX.Element {
             </div>
             {bundle.message.editedAt && (
               <div>
-                <strong>Last edited:</strong>{' '}
-                {new Date(bundle.message.editedAt).toLocaleString()}
+                <strong>Last edited:</strong> {new Date(bundle.message.editedAt).toLocaleString()}
               </div>
             )}
             {bundle.message.deletedAt && (
               <div className="text-amber-700">
-                <strong>Deleted:</strong>{' '}
-                {new Date(bundle.message.deletedAt).toLocaleString()}
+                <strong>Deleted:</strong> {new Date(bundle.message.deletedAt).toLocaleString()}
               </div>
             )}
             {bundle.message.destructAt && (
@@ -2485,22 +2481,16 @@ function AdminMessageHistory(): JSX.Element {
             </div>
             <div>
               <strong>Sender (external):</strong>{' '}
-              <span className="font-mono">
-                {bundle.message.senderExternalIdentityId ?? '—'}
-              </span>
+              <span className="font-mono">{bundle.message.senderExternalIdentityId ?? '—'}</span>
             </div>
           </div>
           <div className="space-y-2">
             <h3 className="font-semibold text-slate-800">Timeline</h3>
             <ol className="space-y-2">
               {bundle.edits.map((e, i) => (
-                <li
-                  key={e.id}
-                  className="bg-white border border-slate-200 rounded p-2 space-y-1"
-                >
+                <li key={e.id} className="bg-white border border-slate-200 rounded p-2 space-y-1">
                   <div className="text-slate-500">
-                    Version {i + 1} (replaced{' '}
-                    {new Date(e.replacedAt).toLocaleString()}{' '}
+                    Version {i + 1} (replaced {new Date(e.replacedAt).toLocaleString()}{' '}
                     {e.replacedByUserId ? `by ${e.replacedByUserId.slice(0, 8)}` : ''})
                   </div>
                   <div className="font-mono break-all text-[10px] text-slate-700">
@@ -2521,8 +2511,7 @@ function AdminMessageHistory(): JSX.Element {
                   {bundle.message.ciphertext.length > 80 && '…'}
                 </div>
                 <div className="text-slate-400">
-                  {bundle.message.ciphertext.length} bytes · key v
-                  {bundle.message.contentKeyVersion}
+                  {bundle.message.ciphertext.length} bytes · key v{bundle.message.contentKeyVersion}
                 </div>
               </li>
             </ol>
@@ -2544,14 +2533,13 @@ function AdminRecovery(): JSX.Element {
       <div>
         <h2 className="font-semibold text-slate-900 mb-2">Firm recovery phrase</h2>
         <p className="text-sm text-slate-600">
-          The 24-word firm recovery phrase you wrote down at install time is the only way to
-          decrypt firm-wide conversations without any enrolled device. This tool helps you split
-          it across multiple partners using Shamir Secret Sharing so no single partner can act
-          alone.
+          The 24-word firm recovery phrase you wrote down at install time is the only way to decrypt
+          firm-wide conversations without any enrolled device. This tool helps you split it across
+          multiple partners using Shamir Secret Sharing so no single partner can act alone.
         </p>
         <p className="text-sm text-rose-700 mt-2">
-          Everything here is client-side. Nothing you type or see is sent to the server. Close
-          the tab when done and never paste these values anywhere searchable.
+          Everything here is client-side. Nothing you type or see is sent to the server. Close the
+          tab when done and never paste these values anywhere searchable.
         </p>
       </div>
       <RecoverConversationsForm />
@@ -2575,12 +2563,7 @@ function RecoverConversationsForm(): JSX.Element {
     setError(null);
     setResult(null);
     try {
-      const words = phraseText
-        .toLowerCase()
-        .replace(/\s+/g, ' ')
-        .trim()
-        .split(' ')
-        .filter(Boolean);
+      const words = phraseText.toLowerCase().replace(/\s+/g, ' ').trim().split(' ').filter(Boolean);
       if (words.length !== 24) {
         throw new Error(`Expected 24 words, got ${words.length}.`);
       }
@@ -2620,8 +2603,8 @@ function RecoverConversationsForm(): JSX.Element {
       <h3 className="font-medium text-slate-900">Recover conversations on this device</h3>
       <p className="text-xs text-slate-600">
         Use this when every one of your other devices has been revoked or is offline. Paste the
-        24-word recovery phrase; this browser will derive the firm private key locally, unwrap
-        every conversation that was wrapped to the firm key, and re-seal a copy to{' '}
+        24-word recovery phrase; this browser will derive the firm private key locally, unwrap every
+        conversation that was wrapped to the firm key, and re-seal a copy to{' '}
         <strong>this device</strong> so you can read history again. The phrase never leaves your
         browser.
       </p>
@@ -2709,8 +2692,8 @@ function SplitPhraseForm(): JSX.Element {
         </label>
       </div>
       <p className="text-xs text-slate-500">
-        Any <strong>{threshold}</strong> of the <strong>{total}</strong> shares together
-        reconstruct the phrase. Fewer than {threshold} reveal nothing.
+        Any <strong>{threshold}</strong> of the <strong>{total}</strong> shares together reconstruct
+        the phrase. Fewer than {threshold} reveal nothing.
       </p>
       {error && <div className="text-sm text-rose-600">{error}</div>}
       <button type="button" onClick={onSubmit} className="btn-primary">
@@ -2895,10 +2878,8 @@ function BulkImportDialog({
           errors.push('username must be 2-64 chars [A-Za-z0-9_.-]');
         if (!displayName || displayName.length > 128)
           errors.push('displayName must be 1-128 chars');
-        if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
-          errors.push('email invalid');
-        if (initialPassword.length < 12)
-          errors.push('initialPassword must be ≥12 chars');
+        if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) errors.push('email invalid');
+        if (initialPassword.length < 12) errors.push('initialPassword must be ≥12 chars');
         out.push({
           line: i + 1,
           username,
@@ -2931,12 +2912,12 @@ function BulkImportDialog({
       {!result ? (
         <div className="space-y-3">
           <p className="text-xs text-slate-600">
-            CSV with header row. Required columns: <code>username</code>,{' '}
-            <code>displayName</code>, <code>initialPassword</code>. Optional: <code>email</code>
-            , <code>isAdmin</code> (1/true/yes = admin).
+            CSV with header row. Required columns: <code>username</code>, <code>displayName</code>,{' '}
+            <code>initialPassword</code>. Optional: <code>email</code>, <code>isAdmin</code>{' '}
+            (1/true/yes = admin).
           </p>
           <pre className="text-[10px] bg-slate-50 border border-slate-200 rounded p-2 overflow-x-auto">
-{`username,displayName,email,initialPassword,isAdmin
+            {`username,displayName,email,initialPassword,isAdmin
 alice.smith,Alice Smith,alice@firm.com,initial-pw-change-me-1234,false
 bob.jones,Bob Jones,bob@firm.com,initial-pw-change-me-5678,false`}
           </pre>
@@ -2966,7 +2947,8 @@ bob.jones,Bob Jones,bob@firm.com,initial-pw-change-me-5678,false`}
             </button>
             {parsed.length > 0 && (
               <span className="text-xs text-slate-600">
-                {validCount} valid · {invalidCount > 0 && (
+                {validCount} valid ·{' '}
+                {invalidCount > 0 && (
                   <span className="text-rose-600">{invalidCount} with errors</span>
                 )}
               </span>
@@ -3007,8 +2989,8 @@ bob.jones,Bob Jones,bob@firm.com,initial-pw-change-me-5678,false`}
             </div>
           )}
           <p className="text-xs text-slate-500">
-            Users get the <em>initialPassword</em> from the CSV — tell each user to change
-            it on first login. Existing usernames are skipped (not overwritten).
+            Users get the <em>initialPassword</em> from the CSV — tell each user to change it on
+            first login. Existing usernames are skipped (not overwritten).
           </p>
           <ModalFooter>
             <button type="button" onClick={onClose} className="btn-ghost">
@@ -3027,7 +3009,9 @@ bob.jones,Bob Jones,bob@firm.com,initial-pw-change-me-5678,false`}
               disabled={validCount === 0 || mut.isPending}
               className="btn-primary"
             >
-              {mut.isPending ? 'Importing…' : `Import ${validCount} user${validCount === 1 ? '' : 's'}`}
+              {mut.isPending
+                ? 'Importing…'
+                : `Import ${validCount} user${validCount === 1 ? '' : 's'}`}
             </button>
           </ModalFooter>
         </div>
@@ -3137,7 +3121,8 @@ const PROVIDER_GROUPS: {
 }[] = [
   {
     title: 'Email — Postmark',
-    blurb: 'Used when EMAIL_PROVIDER=postmark. Transactional email for client invites + notifications.',
+    blurb:
+      'Used when EMAIL_PROVIDER=postmark. Transactional email for client invites + notifications.',
     keys: [
       {
         key: 'email.postmark.server_token',
@@ -3153,8 +3138,7 @@ const PROVIDER_GROUPS: {
   },
   {
     title: 'Email — SMTP (Postfix compatible)',
-    blurb:
-      'Used when EMAIL_PROVIDER=postfix. Direct SMTP (self-hosted relay or third-party).',
+    blurb: 'Used when EMAIL_PROVIDER=postfix. Direct SMTP (self-hosted relay or third-party).',
     keys: [
       { key: 'email.smtp.host', label: 'Host', placeholder: 'smtp.example.com', inputType: 'text' },
       { key: 'email.smtp.port', label: 'Port', placeholder: '587', inputType: 'text' },
@@ -3234,11 +3218,10 @@ function AdminProviders(): JSX.Element {
     <div className="p-4 max-w-3xl">
       <h2 className="font-semibold text-slate-900 mb-1">Provider credentials</h2>
       <p className="text-xs text-slate-600 mb-4">
-        API keys + SMTP credentials for the outbound SMS and email bridges. Values are
-        encrypted at rest (XSalsa20-Poly1305, key derived from <code>SESSION_SECRET</code>)
-        and never shown after they&apos;re saved — rotating a value replaces it. If you
-        haven&apos;t set a value here, the bridge falls back to the matching env var. Every
-        save and clear writes an audit row.
+        API keys + SMTP credentials for the outbound SMS and email bridges. Values are encrypted at
+        rest (XSalsa20-Poly1305, key derived from <code>SESSION_SECRET</code>) and never shown after
+        they&apos;re saved — rotating a value replaces it. If you haven&apos;t set a value here, the
+        bridge falls back to the matching env var. Every save and clear writes an audit row.
       </p>
       {error && (
         <div className="mb-4 text-sm rounded-md border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2">
@@ -3274,7 +3257,11 @@ function AdminProviders(): JSX.Element {
                     }}
                     onClear={() => {
                       setError(null);
-                      if (confirm(`Clear "${k.label}"? The bridge will fall back to the env var if set.`))
+                      if (
+                        confirm(
+                          `Clear "${k.label}"? The bridge will fall back to the env var if set.`,
+                        )
+                      )
                         clearMut.mutate(k.key);
                     }}
                     pending={setMut.isPending || clearMut.isPending}
@@ -3321,9 +3308,7 @@ function ProviderSecretRow({
           <div className="text-sm font-medium text-slate-800">{registry.label}</div>
           {configured && !editing && (
             <div className="text-[11px] text-slate-500 mt-0.5">
-              {meta?.masked
-                ? `Configured · ends in ${meta?.last4 ?? '····'}`
-                : 'Configured'}
+              {meta?.masked ? `Configured · ends in ${meta?.last4 ?? '····'}` : 'Configured'}
               {meta?.updatedAt && (
                 <>
                   {' · '}
@@ -3449,14 +3434,12 @@ function AdminTls(): JSX.Element {
   const requestMut = useMutation({
     mutationFn: () => api.requestTls(),
     onError: (e: Error) => setError(e.message),
-    onSuccess: () =>
-      void qc.invalidateQueries({ queryKey: ['admin', 'tls', 'status'] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'tls', 'status'] }),
   });
   const renewMut = useMutation({
     mutationFn: () => api.renewTls(),
     onError: (e: Error) => setError(e.message),
-    onSuccess: () =>
-      void qc.invalidateQueries({ queryKey: ['admin', 'tls', 'status'] }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'tls', 'status'] }),
   });
   const clearMut = useMutation({
     mutationFn: () => api.clearTls(),
@@ -3488,17 +3471,16 @@ function AdminTls(): JSX.Element {
         </header>
         <div className="rounded-md border border-slate-200 bg-slate-50 text-slate-700 text-sm px-4 py-3 leading-relaxed">
           <p>
-            <strong>TLS managed externally.</strong> This appliance is configured
-            with <code className="text-xs bg-white px-1 rounded">TLS_MODE=external</code>
-            , meaning an upstream reverse proxy (Caddy in the Vibe installer&apos;s
-            multi-app mode, or Cloudflare Tunnel) terminates TLS before traffic
-            reaches the appliance.
+            <strong>TLS managed externally.</strong> This appliance is configured with{' '}
+            <code className="text-xs bg-white px-1 rounded">TLS_MODE=external</code>, meaning an
+            upstream reverse proxy (Caddy in the Vibe installer&apos;s multi-app mode, or Cloudflare
+            Tunnel) terminates TLS before traffic reaches the appliance.
           </p>
           <p className="mt-2 text-xs text-slate-500">
-            The in-app Let&apos;s Encrypt renewal job is disabled in this mode.
-            To re-enable in-app TLS, restart the appliance with{' '}
-            <code className="bg-white px-1 rounded">TLS_MODE=internal</code> and a
-            staff domain configured.
+            The in-app Let&apos;s Encrypt renewal job is disabled in this mode. To re-enable in-app
+            TLS, restart the appliance with{' '}
+            <code className="bg-white px-1 rounded">TLS_MODE=internal</code> and a staff domain
+            configured.
           </p>
         </div>
       </div>
@@ -3510,10 +3492,10 @@ function AdminTls(): JSX.Element {
       <header>
         <h2 className="font-semibold text-slate-900">TLS / Let&apos;s Encrypt</h2>
         <p className="text-xs text-slate-600 mt-1">
-          Issue + auto-renew certs for the staff site and client portal. Requires the
-          appliance to be reachable at each domain on port 80 (HTTP-01 challenge) and
-          DNS A records pointing at the appliance&apos;s public IP. A daily background
-          job renews any cert within 30 days of expiry.
+          Issue + auto-renew certs for the staff site and client portal. Requires the appliance to
+          be reachable at each domain on port 80 (HTTP-01 challenge) and DNS A records pointing at
+          the appliance&apos;s public IP. A daily background job renews any cert within 30 days of
+          expiry.
         </p>
       </header>
 
@@ -3531,9 +3513,9 @@ function AdminTls(): JSX.Element {
       )}
       {settings.tls_acme_environment === 'production' && (
         <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 text-xs px-3 py-2">
-          <strong>Production mode.</strong> Let&apos;s Encrypt enforces strict rate
-          limits (50 certs / domain / week, 5 failed validations / hour). Test in
-          Staging first whenever the DNS or firewall config changes.
+          <strong>Production mode.</strong> Let&apos;s Encrypt enforces strict rate limits (50 certs
+          / domain / week, 5 failed validations / hour). Test in Staging first whenever the DNS or
+          firewall config changes.
         </div>
       )}
 
@@ -3545,23 +3527,20 @@ function AdminTls(): JSX.Element {
           <input
             type="text"
             defaultValue={settings.tls_staff_domain ?? ''}
-            onBlur={(e) =>
-              settingsMut.mutate({ tlsStaffDomain: e.target.value.trim() || null })
-            }
+            onBlur={(e) => settingsMut.mutate({ tlsStaffDomain: e.target.value.trim() || null })}
             placeholder="connect.example.com"
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
         </label>
         <label className="block">
           <span className="text-xs text-slate-600">
-            Client portal domain <span className="text-slate-400">(optional; omit to reuse the staff cert)</span>
+            Client portal domain{' '}
+            <span className="text-slate-400">(optional; omit to reuse the staff cert)</span>
           </span>
           <input
             type="text"
             defaultValue={settings.tls_portal_domain ?? ''}
-            onBlur={(e) =>
-              settingsMut.mutate({ tlsPortalDomain: e.target.value.trim() || null })
-            }
+            onBlur={(e) => settingsMut.mutate({ tlsPortalDomain: e.target.value.trim() || null })}
             placeholder="portal.example.com"
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
@@ -3571,9 +3550,7 @@ function AdminTls(): JSX.Element {
           <input
             type="email"
             defaultValue={settings.tls_acme_email ?? ''}
-            onBlur={(e) =>
-              settingsMut.mutate({ tlsAcmeEmail: e.target.value.trim() || null })
-            }
+            onBlur={(e) => settingsMut.mutate({ tlsAcmeEmail: e.target.value.trim() || null })}
             placeholder="ops@example.com"
             className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
           />
@@ -3617,8 +3594,8 @@ function AdminTls(): JSX.Element {
           </div>
         </div>
         <p className="text-[11px] text-slate-500">
-          HTTP-01 requires port 80 on the appliance reachable from Let&apos;s Encrypt.
-          Use DNS-01 for LAN-only installs or wildcard certs (Phase 2).
+          HTTP-01 requires port 80 on the appliance reachable from Let&apos;s Encrypt. Use DNS-01
+          for LAN-only installs or wildcard certs (Phase 2).
         </p>
       </section>
 
@@ -3628,8 +3605,8 @@ function AdminTls(): JSX.Element {
         {status.inFlight && (
           <div className="rounded-md border border-brand-200 bg-brand-50 text-brand-900 text-xs px-3 py-2 flex items-center gap-2">
             <span className="inline-block w-2 h-2 rounded-full bg-brand-600 animate-pulse" />
-            Requesting certificate from Let&apos;s Encrypt — this can take up to 60
-            seconds while HTTP-01 validation runs.
+            Requesting certificate from Let&apos;s Encrypt — this can take up to 60 seconds while
+            HTTP-01 validation runs.
           </div>
         )}
         {!cert && !status.inFlight && (
@@ -3775,8 +3752,8 @@ function AdminRequestTemplates(): JSX.Element {
         <div>
           <h2 className="font-semibold text-slate-900">Request templates</h2>
           <p className="text-xs text-slate-500">
-            Reusable checklists. Applied to a conversation, items are encrypted under
-            that conversation&apos;s content key — the template itself stays cleartext.
+            Reusable checklists. Applied to a conversation, items are encrypted under that
+            conversation&apos;s content key — the template itself stays cleartext.
           </p>
         </div>
         <button
@@ -4077,9 +4054,7 @@ function TemplateEditor({
                   value={it.description ?? ''}
                   onChange={(e) =>
                     setItems((prev) =>
-                      prev.map((p, i) =>
-                        i === idx ? { ...p, description: e.target.value } : p,
-                      ),
+                      prev.map((p, i) => (i === idx ? { ...p, description: e.target.value } : p)),
                     )
                   }
                   maxLength={2000}
@@ -4095,10 +4070,7 @@ function TemplateEditor({
                           i === idx
                             ? {
                                 ...p,
-                                responseType: e.target.value as
-                                  | 'file'
-                                  | 'text'
-                                  | 'both',
+                                responseType: e.target.value as 'file' | 'text' | 'both',
                               }
                             : p,
                         ),
@@ -4124,9 +4096,7 @@ function TemplateEditor({
                               ? {
                                   ...p,
                                   defaultDueOffsetDays:
-                                    e.target.value === ''
-                                      ? null
-                                      : Number(e.target.value),
+                                    e.target.value === '' ? null : Number(e.target.value),
                                 }
                               : p,
                           ),

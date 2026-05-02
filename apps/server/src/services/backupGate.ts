@@ -28,9 +28,9 @@ let lastWarnAt = 0;
  */
 export async function ensureBackupFresh(res: Response): Promise<boolean> {
   if (!env.backupRequired) return true;
-  const row = (await db('firm_settings')
-    .where({ id: 1 })
-    .first('last_backup_ok_at')) as { last_backup_ok_at: Date | null } | undefined;
+  const row = (await db('firm_settings').where({ id: 1 }).first('last_backup_ok_at')) as
+    | { last_backup_ok_at: Date | null }
+    | undefined;
   const lastOk = row?.last_backup_ok_at ?? null;
   if (!lastOk) {
     // Never seen a backup. Pre-grace-period (24h post-install) we let
@@ -38,9 +38,9 @@ export async function ensureBackupFresh(res: Response): Promise<boolean> {
     // timestamp as the install marker — that row is created exactly
     // once on /install and is the canonical "the appliance is alive"
     // signal.
-    const installRow = (await db('firm_keys')
-      .whereNull('retired_at')
-      .first('created_at')) as { created_at: Date } | undefined;
+    const installRow = (await db('firm_keys').whereNull('retired_at').first('created_at')) as
+      | { created_at: Date }
+      | undefined;
     const installedAt = installRow?.created_at;
     const graceHours = 24;
     if (installedAt && Date.now() - new Date(installedAt).getTime() < graceHours * 3600 * 1000) {

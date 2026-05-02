@@ -86,13 +86,11 @@ describe('user CRUD (admin-only)', () => {
 
   it('POST /users rejects non-admin callers with 403', async () => {
     const agent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
-    const res = await agent
-      .post('/users')
-      .send({
-        username: 'unauth-created',
-        displayName: 'x',
-        password: 'will-never-work-1234',
-      });
+    const res = await agent.post('/users').send({
+      username: 'unauth-created',
+      displayName: 'x',
+      password: 'will-never-work-1234',
+    });
     expect(res.status).toBe(403);
   });
 
@@ -180,15 +178,17 @@ describe('device enrollment', () => {
   });
 
   it('POST /users/me/devices requires auth', async () => {
-    const res = await request(app).post('/users/me/devices').send({
-      deviceId: 'x',
-      publicKey: 'x',
-      encryptedPrivateKey: 'x',
-      kdfSalt: 'x',
-      kdfParams: { opsLimit: 3, memLimit: 65536, algorithm: 'argon2id13' },
-      clientPlatform: 'pwa',
-      clientVersion: '0.1.0',
-    });
+    const res = await request(app)
+      .post('/users/me/devices')
+      .send({
+        deviceId: 'x',
+        publicKey: 'x',
+        encryptedPrivateKey: 'x',
+        kdfSalt: 'x',
+        kdfParams: { opsLimit: 3, memLimit: 65536, algorithm: 'argon2id13' },
+        clientPlatform: 'pwa',
+        clientVersion: '0.1.0',
+      });
     expect(res.status).toBe(401);
   });
 });
@@ -273,8 +273,8 @@ describe('GET /firm/key-meta', () => {
   });
 });
 
-describe('privileged actions terminate the target user\'s sessions', () => {
-  it('reset-password kills the target\'s live session', async () => {
+describe("privileged actions terminate the target user's sessions", () => {
+  it("reset-password kills the target's live session", async () => {
     const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
     // Create a fresh user so we can safely change their password without disturbing seeds.
     const created = await admin.post('/users').send({
@@ -632,7 +632,11 @@ describe('PATCH /conversations/:id/wrapped-keys — multi-device rewrap', () => 
     const wk = detail.body.wrappedKeys as Record<string, string>;
     expect(wk[aliceRid1]).toBeTruthy();
     expect(wk[aliceRid2]).toBeTruthy();
-    const unwrapped = await crypto.unwrapKey(wk[aliceRid2]!, aliceKp2.publicKey, aliceKp2.secretKey);
+    const unwrapped = await crypto.unwrapKey(
+      wk[aliceRid2]!,
+      aliceKp2.publicKey,
+      aliceKp2.secretKey,
+    );
     expect(Buffer.from(unwrapped)).toEqual(Buffer.from(bundle.key));
 
     // A racing / malicious attempt to OVERWRITE Alice's existing entry must be
@@ -683,9 +687,9 @@ describe('PATCH /conversations/:id/wrapped-keys — multi-device rewrap', () => 
   it('rejects non-members', async () => {
     const bob = await loginAs('bob', 'bob-dev-only-ChangeMe!');
     // Use a bogus conversation id — bob isn't a member of ANY conversation.
-    const bad = await bob.patch(
-      '/conversations/00000000-0000-0000-0000-000000000000/wrapped-keys',
-    ).send({ added: { '00000000-0000-0000-0000-000000000000:dev-1': 'ignored' } });
+    const bad = await bob
+      .patch('/conversations/00000000-0000-0000-0000-000000000000/wrapped-keys')
+      .send({ added: { '00000000-0000-0000-0000-000000000000:dev-1': 'ignored' } });
     // assertCallerIsMember throws, which surfaces as 403 or 404 depending on order.
     expect([403, 404]).toContain(bad.status);
   });

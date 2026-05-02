@@ -67,12 +67,9 @@ const isoDateSchema = z
 // Each ciphertext field is base64; capped to keep the JSON body honest.
 // 64 KiB ciphertext is well above any realistic per-item title or description.
 // RFC-4648 form: groups of 4 chars, with 0–2 trailing `=` for padding.
-const B64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$/;
-const b64Ciphertext = z
-  .string()
-  .min(1)
-  .max(65536)
-  .regex(B64_REGEX, 'must be RFC4648 base64');
+const B64_REGEX =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$/;
+const b64Ciphertext = z.string().min(1).max(65536).regex(B64_REGEX, 'must be RFC4648 base64');
 
 // The revision-note ciphertext is echoed onto a system message's
 // `ciphertext_meta` JSONB blob, which is hard-capped at 4 KiB by
@@ -83,11 +80,7 @@ const b64Ciphertext = z
 // longer notes there if they're patched directly via PATCH /request-items
 // without the system-message echo, but `request_revision` route caps both
 // to keep the JSONB ceiling honest.
-const b64NoteCiphertext = z
-  .string()
-  .min(1)
-  .max(3072)
-  .regex(B64_REGEX, 'must be RFC4648 base64');
+const b64NoteCiphertext = z.string().min(1).max(3072).regex(B64_REGEX, 'must be RFC4648 base64');
 
 const createItemSchema = z.object({
   titleCiphertext: b64Ciphertext,
@@ -238,19 +231,13 @@ async function assertStaffMember(
   if (!ok) throw new RequestsServiceError('forbidden', 'not_a_conversation_member');
 }
 
-async function loadListOr404(
-  listId: string,
-  trx?: Knex.Transaction,
-): Promise<RequestListRow> {
+async function loadListOr404(listId: string, trx?: Knex.Transaction): Promise<RequestListRow> {
   const row = await requestListsRepo.byId(listId, trx);
   if (!row) throw new RequestsServiceError('not_found', 'list_not_found');
   return row;
 }
 
-async function loadItemOr404(
-  itemId: string,
-  trx?: Knex.Transaction,
-): Promise<RequestItemRow> {
+async function loadItemOr404(itemId: string, trx?: Knex.Transaction): Promise<RequestItemRow> {
   const row = await requestItemsRepo.byId(itemId, trx);
   if (!row) throw new RequestsServiceError('not_found', 'item_not_found');
   return row;
@@ -310,9 +297,7 @@ export interface CreateListInput extends CreateRequestListBody {
  * item titles itself; if both `templateId` and `items` are present, `items`
  * wins and `templateId` is recorded as provenance only.
  */
-export async function createList(
-  input: CreateListInput,
-): Promise<RequestListWithItems> {
+export async function createList(input: CreateListInput): Promise<RequestListWithItems> {
   return db.transaction(async (trx) => {
     await assertStaffMember(input.conversationId, input.createdBy, trx);
 
@@ -433,10 +418,7 @@ export async function updateList(
   });
 }
 
-export async function cancelList(
-  listId: string,
-  actorUserId: string,
-): Promise<RequestList> {
+export async function cancelList(listId: string, actorUserId: string): Promise<RequestList> {
   return updateList(listId, { status: 'cancelled' }, actorUserId);
 }
 
@@ -551,10 +533,7 @@ export async function updateItem(
   });
 }
 
-export async function deletePendingItem(
-  itemId: string,
-  actorUserId: string,
-): Promise<void> {
+export async function deletePendingItem(itemId: string, actorUserId: string): Promise<void> {
   await db.transaction(async (trx) => {
     const { item, list } = await loadItemAndListOr404(itemId, trx);
     await assertStaffMember(list.conversation_id, actorUserId, trx);
@@ -805,7 +784,12 @@ export async function markDone(
     });
     let listCompleted = false;
     const counts = await requestListsRepo.statusCounts(item.list_id, trx);
-    if (counts.pending === 0 && counts.submitted === 0 && counts.revision === 0 && counts.done > 0) {
+    if (
+      counts.pending === 0 &&
+      counts.submitted === 0 &&
+      counts.revision === 0 &&
+      counts.done > 0
+    ) {
       // Race-safe completion: guarded UPDATE so two concurrent mark-done
       // calls on the last two items don't both fire `request.list_completed`
       // and double-write `completed_at`. Whichever transaction's UPDATE
@@ -874,11 +858,7 @@ export async function requestRevision(
     }
     // Re-opening drops the list out of `completed` if it had auto-completed.
     if (list.status === 'completed') {
-      await requestListsRepo.updatePartial(
-        list.id,
-        { status: 'active', completed_at: null },
-        trx,
-      );
+      await requestListsRepo.updatePartial(list.id, { status: 'active', completed_at: null }, trx);
     }
     await auditRepo.write({
       actorUserId,
@@ -926,11 +906,7 @@ export const requestNudgeSchema = z.object({
   // ticker — the row is enqueued with scheduled_for=NOW so the next tick
   // picks it up. This keeps audit + skip-check logic uniform between
   // manual and auto nudges.).
-  sendAt: z
-    .string()
-    .datetime()
-    .nullable()
-    .optional(),
+  sendAt: z.string().datetime().nullable().optional(),
   channel: z.enum(['inapp', 'email', 'sms', 'all']).default('all'),
   /** Optional staff-authored override of the default body. Capped at 500 chars to
    *  keep ciphertext_meta under its 4 KB ceiling. */
@@ -1201,7 +1177,8 @@ export async function archiveTemplate(
   actorUserId: string,
 ): Promise<RequestTemplate> {
   const updated = await requestTemplatesRepo.archive(templateId);
-  if (!updated) throw new RequestsServiceError('not_found', 'template_not_found_or_already_archived');
+  if (!updated)
+    throw new RequestsServiceError('not_found', 'template_not_found_or_already_archived');
   await auditRepo.write({
     actorUserId,
     action: 'request.template_archived',

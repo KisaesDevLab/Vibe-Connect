@@ -161,8 +161,7 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
-  deleteGroup: (id: string) =>
-    json<{ ok: true }>(`/groups/${id}`, { method: 'DELETE' }),
+  deleteGroup: (id: string) => json<{ ok: true }>(`/groups/${id}`, { method: 'DELETE' }),
   addGroupMember: (groupId: string, userId: string) =>
     json<{ ok: true }>(`/groups/${groupId}/members`, {
       method: 'POST',
@@ -239,9 +238,7 @@ export const api = {
       {
         method: 'POST',
         body: JSON.stringify(payload),
-        headers: opts?.idempotencyKey
-          ? { 'X-Idempotency-Key': opts.idempotencyKey }
-          : undefined,
+        headers: opts?.idempotencyKey ? { 'X-Idempotency-Key': opts.idempotencyKey } : undefined,
       },
     ),
   editMessage: (
@@ -295,8 +292,7 @@ export const api = {
   // Ask every other device of every member to re-run the rewrap sweep. Used
   // from the "Sync this device" button in the conversation banner when a
   // brand-new browser is missing its wrapped_keys entries.
-  requestDeviceSync: () =>
-    json<{ ok: true }>('/users/me/devices/request-sync', { method: 'POST' }),
+  requestDeviceSync: () => json<{ ok: true }>('/users/me/devices/request-sync', { method: 'POST' }),
 
   // Admin-only. Returns the encrypted firm recovery private key; the 24-word
   // phrase stays on the admin's device. Used to derive the firm private key
@@ -488,14 +484,11 @@ export const api = {
         `/request-items/${encodeURIComponent(id)}/mark-done`,
         { method: 'POST', body: '{}' },
       ),
-    requestRevision: (
-      id: string,
-      body: { noteCiphertext: string; contentKeyVersion: number },
-    ) =>
-      json<{ item: RequestItem }>(
-        `/request-items/${encodeURIComponent(id)}/request-revision`,
-        { method: 'POST', body: JSON.stringify(body) },
-      ),
+    requestRevision: (id: string, body: { noteCiphertext: string; contentKeyVersion: number }) =>
+      json<{ item: RequestItem }>(`/request-items/${encodeURIComponent(id)}/request-revision`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
     linkMessage: (id: string, messageId: string) =>
       json<{ ok: true }>(`/request-items/${encodeURIComponent(id)}/link-message`, {
         method: 'POST',
@@ -525,10 +518,10 @@ export const api = {
         customBody?: string | null;
       },
     ) =>
-      json<{ messageId: string }>(
-        `/request-lists/${encodeURIComponent(listId)}/nudge`,
-        { method: 'POST', body: JSON.stringify(body) },
-      ),
+      json<{ messageId: string }>(`/request-lists/${encodeURIComponent(listId)}/nudge`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
   },
 
   uploadAttachment: async (

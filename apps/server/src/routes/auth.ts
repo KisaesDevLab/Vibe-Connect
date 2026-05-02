@@ -169,9 +169,7 @@ authRouter.patch(
       } else {
         const normalized = normalizePhone(value);
         if (!normalized) {
-          res
-            .status(400)
-            .json({ error: 'invalid_phone', detail: 'phone too short or malformed' });
+          res.status(400).json({ error: 'invalid_phone', detail: 'phone too short or malformed' });
           return;
         }
         patch.phone = normalized;

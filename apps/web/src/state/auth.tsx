@@ -58,18 +58,19 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     setUser(user);
   }, []);
 
-  const logout = useCallback(async (opts?: { forgetDevice?: boolean }) => {
-    const userId = user?.id;
-    await api.logout();
-    setUser(null);
-    // Always wipe readable client-side caches. Loaded async to avoid circular deps.
-    void import('./search.js').then((m) => m.SearchIndex.wipeAll().catch(() => null));
-    if (opts?.forgetDevice && userId) {
-      void import('./crypto.js').then((m) =>
-        m.wipeDeviceSecrets(userId).catch(() => null),
-      );
-    }
-  }, [user]);
+  const logout = useCallback(
+    async (opts?: { forgetDevice?: boolean }) => {
+      const userId = user?.id;
+      await api.logout();
+      setUser(null);
+      // Always wipe readable client-side caches. Loaded async to avoid circular deps.
+      void import('./search.js').then((m) => m.SearchIndex.wipeAll().catch(() => null));
+      if (opts?.forgetDevice && userId) {
+        void import('./crypto.js').then((m) => m.wipeDeviceSecrets(userId).catch(() => null));
+      }
+    },
+    [user],
+  );
 
   const value = useMemo(
     () => ({ user, loading, error, login, logout, refresh }),

@@ -277,9 +277,7 @@ export function ConversationView(): JSX.Element {
       const version = convQ.data.rotationVersion ?? 1;
       // Pick the body: prefer the typed text, else fall back to filename marker so
       // message lists aren't empty for attachment-only sends.
-      const textBody =
-        body.trim() ||
-        (pendingFile ? `📎 ${pendingFile.name}` : '');
+      const textBody = body.trim() || (pendingFile ? `📎 ${pendingFile.name}` : '');
       const { ciphertext } = await encryptForConversation(textBody, convKey, version);
       // Generate a fresh idempotency key per send. If the network call times out and the
       // user retries, the server suppresses the duplicate and returns the original id.
@@ -438,15 +436,13 @@ export function ConversationView(): JSX.Element {
     return plainCopy;
   }
 
-  async function downloadAttachment(
-    att: {
-      id: string;
-      filename: string;
-      wrappedFileKey: string;
-      mimeType: string;
-      contentKeyVersion: number;
-    },
-  ): Promise<void> {
+  async function downloadAttachment(att: {
+    id: string;
+    filename: string;
+    wrappedFileKey: string;
+    mimeType: string;
+    contentKeyVersion: number;
+  }): Promise<void> {
     const bytes = await decryptAttachmentBytes(att);
     if (!bytes) return;
     const blob = bytesToBlob(bytes, att.mimeType);
@@ -459,15 +455,13 @@ export function ConversationView(): JSX.Element {
    * Falls through silently if decrypt fails — the caller's onDownload (raw
    * image) is still wired, so the user has a working fallback path.
    */
-  async function downloadImageAsPdf(
-    att: {
-      id: string;
-      filename: string;
-      wrappedFileKey: string;
-      mimeType: string;
-      contentKeyVersion: number;
-    },
-  ): Promise<void> {
+  async function downloadImageAsPdf(att: {
+    id: string;
+    filename: string;
+    wrappedFileKey: string;
+    mimeType: string;
+    contentKeyVersion: number;
+  }): Promise<void> {
     const bytes = await decryptAttachmentBytes(att);
     if (!bytes) return;
     const { imagesToPdf } = await import('../lib/imageToPdf.js');
@@ -583,168 +577,171 @@ export function ConversationView(): JSX.Element {
   return (
     <div className="h-full flex">
       <div className="h-full flex flex-col flex-1 min-w-0">
-      <div className="px-4 py-3 border-b border-slate-200 bg-white flex items-center gap-3">
-        <div className="font-semibold text-slate-900">{header.title}</div>
-        <div className="text-xs text-slate-500">{header.subtitle}</div>
-        <PresenceDot status={header.presence} />
-        <div className="ml-auto flex items-center gap-2">
-          <label className="relative flex items-center">
-            <svg
-              className="absolute left-2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              aria-hidden
-            >
-              <circle cx="11" cy="11" r="7" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input
-              type="search"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape' && searchQuery) {
-                  e.preventDefault();
-                  setSearchQuery('');
-                }
-              }}
-              placeholder="Find in conversation"
-              aria-label="Find in conversation"
-              className="pl-7 pr-2 py-1 text-xs w-40 rounded border border-slate-300 focus:border-brand-500 focus:outline-none"
-            />
-          </label>
-          {trimmedQuery && (
-            <span className="text-[11px] text-slate-500 whitespace-nowrap">
-              {filteredMessages.length === 0
-                ? 'No matches'
-                : `${filteredMessages.length} of ${messages.length}`}
-            </span>
-          )}
-          {/* Phase 24: toggle the request panel. Hidden entirely when the
+        <div className="px-4 py-3 border-b border-slate-200 bg-white flex items-center gap-3">
+          <div className="font-semibold text-slate-900">{header.title}</div>
+          <div className="text-xs text-slate-500">{header.subtitle}</div>
+          <PresenceDot status={header.presence} />
+          <div className="ml-auto flex items-center gap-2">
+            <label className="relative flex items-center">
+              <svg
+                className="absolute left-2 w-3.5 h-3.5 text-slate-400 pointer-events-none"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                aria-hidden
+              >
+                <circle cx="11" cy="11" r="7" />
+                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && searchQuery) {
+                    e.preventDefault();
+                    setSearchQuery('');
+                  }
+                }}
+                placeholder="Find in conversation"
+                aria-label="Find in conversation"
+                className="pl-7 pr-2 py-1 text-xs w-40 rounded border border-slate-300 focus:border-brand-500 focus:outline-none"
+              />
+            </label>
+            {trimmedQuery && (
+              <span className="text-[11px] text-slate-500 whitespace-nowrap">
+                {filteredMessages.length === 0
+                  ? 'No matches'
+                  : `${filteredMessages.length} of ${messages.length}`}
+              </span>
+            )}
+            {/* Phase 24: toggle the request panel. Hidden entirely when the
               firm-wide kill switch is off — the admin guide tells admins
               "data is preserved, re-enable to restore". Uses the existing
               brand palette for the active state. */}
-          {requestsEnabled && (
-            <button
-              type="button"
-              onClick={() => setRequestsOpen((v) => !v)}
-              aria-pressed={requestsOpen}
-              aria-label={requestsOpen ? 'Hide request panel' : 'Show request panel'}
-              title={requestsOpen ? 'Hide requests' : 'Show requests'}
-              className={clsx(
-                'text-xs rounded-md px-2 py-1 border',
-                requestsOpen
-                  ? 'bg-brand-600 text-white border-brand-600 hover:bg-brand-700'
-                  : 'border-slate-300 text-slate-700 hover:bg-slate-50',
-              )}
-            >
-              Requests
-            </button>
-          )}
-          {/* Phase 26: Files link. Only present for external conversations —
+            {requestsEnabled && (
+              <button
+                type="button"
+                onClick={() => setRequestsOpen((v) => !v)}
+                aria-pressed={requestsOpen}
+                aria-label={requestsOpen ? 'Hide request panel' : 'Show request panel'}
+                title={requestsOpen ? 'Hide requests' : 'Show requests'}
+                className={clsx(
+                  'text-xs rounded-md px-2 py-1 border',
+                  requestsOpen
+                    ? 'bg-brand-600 text-white border-brand-600 hover:bg-brand-700'
+                    : 'border-slate-300 text-slate-700 hover:bg-slate-50',
+                )}
+              >
+                Requests
+              </button>
+            )}
+            {/* Phase 26: Files link. Only present for external conversations —
               internal/internal_thread don't have a client vault. The link
               navigates to the per-client vault page; vault is shared across
               every conversation that includes the same external identity.
               Hidden entirely when the firm-wide kill switch is off. */}
-          {vaultEnabled &&
-            (() => {
-              const ext = convQ.data?.members?.find((m) => m.externalIdentityId);
-              if (!ext?.externalIdentityId) return null;
-              return (
-                <NavLink
-                  to={`/clients/${ext.externalIdentityId}/files`}
-                  className="text-xs rounded-md px-2 py-1 border border-slate-300 text-slate-700 hover:bg-slate-50"
-                >
-                  Files
-                </NavLink>
-              );
-            })()}
-        </div>
-      </div>
-
-      {waitingForSync && <SyncBanner />}
-
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-slate-50">
-        {loading && <div className="text-sm text-slate-500">Loading…</div>}
-        {!loading && !waitingForSync && messages.length === 0 && (
-          <div className="text-sm text-slate-500">No messages yet. Say hello.</div>
-        )}
-        {!loading && !waitingForSync && trimmedQuery && filteredMessages.length === 0 &&
-          messages.length > 0 && (
-            <div className="text-sm text-slate-500">
-              No messages match &ldquo;{searchQuery}&rdquo; in this conversation.
-            </div>
-          )}
-        {groupByDay(filteredMessages).map((day) => (
-          <div key={day.date}>
-            <div className="text-center text-[11px] uppercase tracking-wide text-slate-400 my-2">
-              {day.date}
-            </div>
-            <div className="space-y-2">
-              {day.items.map((m) => (
-                <MessageRow
-                  key={m.id}
-                  msg={m}
-                  sender={m.senderId ? usersById[m.senderId] : undefined}
-                  me={me?.id ?? null}
-                  isAdmin={Boolean(me?.isAdmin)}
-                  editWindowMs={editWindowMs}
-                  onDownloadAttachment={(a) => void downloadAttachment(a)}
-                  onDownloadAttachmentAsPdf={(a) => void downloadImageAsPdf(a)}
-                  onDownloadMessageAsPdf={(m2) => void downloadMessageImagesAsPdf(m2)}
-                  decryptAttachmentBytes={decryptAttachmentBytes}
-                  highlight={trimmedQuery || null}
-                  onEdit={(messageId, newBody) =>
-                    void editMut.mutateAsync({ messageId, newBody })
-                  }
-                  onDelete={(messageId) => void deleteMut.mutateAsync(messageId)}
-                />
-              ))}
-            </div>
+            {vaultEnabled &&
+              (() => {
+                const ext = convQ.data?.members?.find((m) => m.externalIdentityId);
+                if (!ext?.externalIdentityId) return null;
+                return (
+                  <NavLink
+                    to={`/clients/${ext.externalIdentityId}/files`}
+                    className="text-xs rounded-md px-2 py-1 border border-slate-300 text-slate-700 hover:bg-slate-50"
+                  >
+                    Files
+                  </NavLink>
+                );
+              })()}
           </div>
-        ))}
-      </div>
+        </div>
 
-      <TypingBanner userIds={typingUserIds} usersById={usersById} meId={me?.id ?? null} />
+        {waitingForSync && <SyncBanner />}
 
-      <Compose
-        body={body}
-        urgent={urgent}
-        scheduledFor={scheduledFor}
-        destructAfterViewSeconds={destructAfterViewSeconds}
-        destructEnabled={policyQ.data?.messageDestructEnabled !== false}
-        destructMaxSeconds={policyQ.data?.messageDestructMaxSeconds ?? 604800}
-        pendingFile={pendingFile}
-        uploadState={uploadState}
-        uploadDetail={uploadDetail}
-        disabled={waitingForSync}
-        disabledReason={
-          waitingForSync
-            ? 'This device is still syncing. Sending is disabled until another of your devices rewraps the conversation key for this one.'
-            : null
-        }
-        mentionCandidates={(convQ.data?.members ?? [])
-          .map((m) => (m.userId ? usersById[m.userId] : undefined))
-          .filter((u): u is PublicUser => u !== undefined && u.id !== me?.id)}
-        onBody={onBodyChange}
-        onUrgent={setUrgent}
-        onScheduledFor={setScheduledFor}
-        onDestructAfterViewSeconds={setDestructAfterViewSeconds}
-        onPickFile={(f) => {
-          setPendingFile(f);
-          setUploadState('idle');
-          setUploadDetail(null);
-        }}
-        onSend={() => {
-          if (!body.trim() && !pendingFile) return;
-          sendMut.mutate();
-        }}
-      />
-      {/* Hidden ref for lint + future reloads */}
-      <button type="button" onClick={() => void reload()} className="hidden" />
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-slate-50">
+          {loading && <div className="text-sm text-slate-500">Loading…</div>}
+          {!loading && !waitingForSync && messages.length === 0 && (
+            <div className="text-sm text-slate-500">No messages yet. Say hello.</div>
+          )}
+          {!loading &&
+            !waitingForSync &&
+            trimmedQuery &&
+            filteredMessages.length === 0 &&
+            messages.length > 0 && (
+              <div className="text-sm text-slate-500">
+                No messages match &ldquo;{searchQuery}&rdquo; in this conversation.
+              </div>
+            )}
+          {groupByDay(filteredMessages).map((day) => (
+            <div key={day.date}>
+              <div className="text-center text-[11px] uppercase tracking-wide text-slate-400 my-2">
+                {day.date}
+              </div>
+              <div className="space-y-2">
+                {day.items.map((m) => (
+                  <MessageRow
+                    key={m.id}
+                    msg={m}
+                    sender={m.senderId ? usersById[m.senderId] : undefined}
+                    me={me?.id ?? null}
+                    isAdmin={Boolean(me?.isAdmin)}
+                    editWindowMs={editWindowMs}
+                    onDownloadAttachment={(a) => void downloadAttachment(a)}
+                    onDownloadAttachmentAsPdf={(a) => void downloadImageAsPdf(a)}
+                    onDownloadMessageAsPdf={(m2) => void downloadMessageImagesAsPdf(m2)}
+                    decryptAttachmentBytes={decryptAttachmentBytes}
+                    highlight={trimmedQuery || null}
+                    onEdit={(messageId, newBody) =>
+                      void editMut.mutateAsync({ messageId, newBody })
+                    }
+                    onDelete={(messageId) => void deleteMut.mutateAsync(messageId)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <TypingBanner userIds={typingUserIds} usersById={usersById} meId={me?.id ?? null} />
+
+        <Compose
+          body={body}
+          urgent={urgent}
+          scheduledFor={scheduledFor}
+          destructAfterViewSeconds={destructAfterViewSeconds}
+          destructEnabled={policyQ.data?.messageDestructEnabled !== false}
+          destructMaxSeconds={policyQ.data?.messageDestructMaxSeconds ?? 604800}
+          pendingFile={pendingFile}
+          uploadState={uploadState}
+          uploadDetail={uploadDetail}
+          disabled={waitingForSync}
+          disabledReason={
+            waitingForSync
+              ? 'This device is still syncing. Sending is disabled until another of your devices rewraps the conversation key for this one.'
+              : null
+          }
+          mentionCandidates={(convQ.data?.members ?? [])
+            .map((m) => (m.userId ? usersById[m.userId] : undefined))
+            .filter((u): u is PublicUser => u !== undefined && u.id !== me?.id)}
+          onBody={onBodyChange}
+          onUrgent={setUrgent}
+          onScheduledFor={setScheduledFor}
+          onDestructAfterViewSeconds={setDestructAfterViewSeconds}
+          onPickFile={(f) => {
+            setPendingFile(f);
+            setUploadState('idle');
+            setUploadDetail(null);
+          }}
+          onSend={() => {
+            if (!body.trim() && !pendingFile) return;
+            sendMut.mutate();
+          }}
+        />
+        {/* Hidden ref for lint + future reloads */}
+        <button type="button" onClick={() => void reload()} className="hidden" />
       </div>
       {id && requestsEnabled && (
         <RequestPanel
@@ -765,10 +762,10 @@ function SyncBanner(): JSX.Element {
   return (
     <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-sm px-4 py-2 flex items-center gap-3">
       <div className="flex-1">
-        <strong>This device is syncing.</strong> History for this conversation was encrypted
-        before this browser/machine was enrolled, so it can&apos;t be read yet. Keep another of
-        your signed-in devices online + unlocked — as soon as it processes the sync, messages
-        will appear automatically.
+        <strong>This device is syncing.</strong> History for this conversation was encrypted before
+        this browser/machine was enrolled, so it can&apos;t be read yet. Keep another of your
+        signed-in devices online + unlocked — as soon as it processes the sync, messages will appear
+        automatically.
         {info && <span className="ml-2 text-amber-800">{info}</span>}
       </div>
       <button
@@ -811,9 +808,7 @@ function TypingBanner({
       : names.length === 2
         ? `${names[0]} and ${names[1]} are typing…`
         : `${names[0]} and ${others.length - 1} others are typing…`;
-  return (
-    <div className="px-4 py-1 text-xs text-slate-500 bg-slate-50 italic">{text}</div>
-  );
+  return <div className="px-4 py-1 text-xs text-slate-500 bg-slate-50 italic">{text}</div>;
 }
 
 function MessageRow({
@@ -882,7 +877,8 @@ function MessageRow({
           <span>Message deleted</span>
           {sender && <span className="not-italic font-medium ml-1">· {sender.displayName}</span>}
           <span className="not-italic ml-1">
-            · {new Date(msg.deletedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            ·{' '}
+            {new Date(msg.deletedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </span>
           {isAdmin && (
             <NavLink
@@ -912,9 +908,7 @@ function MessageRow({
       >
         {mine && !editing && (withinEditWindow || true) && (
           <div
-            className={clsx(
-              'absolute -top-2 right-1 hidden group-hover:flex gap-1 text-[10px]',
-            )}
+            className={clsx('absolute -top-2 right-1 hidden group-hover:flex gap-1 text-[10px]')}
           >
             {withinEditWindow && (
               <button
@@ -932,7 +926,11 @@ function MessageRow({
             <button
               type="button"
               onClick={() => {
-                if (window.confirm('Delete this message? Recipients will see a "deleted" placeholder.')) {
+                if (
+                  window.confirm(
+                    'Delete this message? Recipients will see a "deleted" placeholder.',
+                  )
+                ) {
                   onDelete(msg.id);
                 }
               }}
@@ -1026,7 +1024,13 @@ function MessageRow({
           )
         )}
         {msg.attachments.length > 0 && (
-          <div className={clsx('mt-1 space-y-1', msg.body && 'pt-2 border-t', mine ? 'border-brand-500' : 'border-slate-200')}>
+          <div
+            className={clsx(
+              'mt-1 space-y-1',
+              msg.body && 'pt-2 border-t',
+              mine ? 'border-brand-500' : 'border-slate-200',
+            )}
+          >
             {msg.attachments.map((a) => (
               <AttachmentView
                 key={a.id}
@@ -1053,7 +1057,11 @@ function MessageRow({
                 decryptAttachmentBytes={decryptAttachmentBytes}
               />
             ))}
-            <MessageCombinePdfButton msg={msg} mine={mine} onCombine={() => onDownloadMessageAsPdf(msg)} />
+            <MessageCombinePdfButton
+              msg={msg}
+              mine={mine}
+              onCombine={() => onDownloadMessageAsPdf(msg)}
+            />
           </div>
         )}
         <div className={clsx('text-[10px] mt-1', mine ? 'text-brand-100' : 'text-slate-400')}>
@@ -1118,7 +1126,9 @@ function MessageCombinePdfButton({
       onClick={onCombine}
       className={clsx(
         'block w-full text-left text-[11px] px-2 py-1 rounded-md hover:underline',
-        mine ? 'bg-brand-500/20 text-brand-50 hover:bg-brand-500/40' : 'bg-slate-50 text-slate-600 hover:bg-slate-100',
+        mine
+          ? 'bg-brand-500/20 text-brand-50 hover:bg-brand-500/40'
+          : 'bg-slate-50 text-slate-600 hover:bg-slate-100',
       )}
       title={`Combine ${eligible.length} images into a single PDF`}
     >
@@ -1232,7 +1242,9 @@ function AttachmentImagePreview({
     return <AttachmentChip attachment={attachment} mine={mine} onDownload={onDownload} />;
   }
   return (
-    <figure className={clsx('rounded-md overflow-hidden', mine ? 'bg-brand-500/40' : 'bg-slate-100')}>
+    <figure
+      className={clsx('rounded-md overflow-hidden', mine ? 'bg-brand-500/40' : 'bg-slate-100')}
+    >
       <button
         type="button"
         onClick={onDownload}
@@ -1309,7 +1321,9 @@ function AttachmentChip({
       disabled={infected || pending}
       className={clsx(
         'flex items-center gap-2 text-xs rounded-md px-2 py-1 w-full text-left',
-        mine ? 'bg-brand-500/40 hover:bg-brand-500/60 text-brand-50' : 'bg-slate-100 hover:bg-slate-200 text-slate-700',
+        mine
+          ? 'bg-brand-500/40 hover:bg-brand-500/60 text-brand-50'
+          : 'bg-slate-100 hover:bg-slate-200 text-slate-700',
         infected && 'bg-rose-100 text-rose-800 cursor-not-allowed',
         pending && 'opacity-60 cursor-progress',
       )}
@@ -1440,8 +1454,7 @@ function Compose({
     const matches = mentionCandidates
       .filter(
         (u) =>
-          u.displayName.toLowerCase().includes(prefix) ||
-          u.username.toLowerCase().includes(prefix),
+          u.displayName.toLowerCase().includes(prefix) || u.username.toLowerCase().includes(prefix),
       )
       .slice(0, 6);
     if (matches.length === 0) return null;
@@ -1740,7 +1753,11 @@ function conversationHeader(
   return { title: names.join(', ') || 'Conversation', subtitle: conv.type, presence };
 }
 
-function PresenceDot({ status }: { status: PublicUser['status'] | 'mixed' | null }): JSX.Element | null {
+function PresenceDot({
+  status,
+}: {
+  status: PublicUser['status'] | 'mixed' | null;
+}): JSX.Element | null {
   if (!status) return null;
   const color =
     status === 'active'

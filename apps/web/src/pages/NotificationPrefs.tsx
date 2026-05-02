@@ -183,9 +183,7 @@ export function NotificationPrefsPage(): JSX.Element {
           />
           Only for urgent messages
         </label>
-        <p className="text-xs text-slate-500">
-          Texts are metadata-only — same rule as email.
-        </p>
+        <p className="text-xs text-slate-500">Texts are metadata-only — same rule as email.</p>
         {!hasPhone && (
           <p className="text-xs text-amber-700">
             Add a mobile number above before enabling SMS notifications.
@@ -193,8 +191,8 @@ export function NotificationPrefsPage(): JSX.Element {
         )}
         {hasPhone && !smsAvailableAtFirm && (
           <p className="text-xs text-amber-700">
-            Your firm&apos;s SMS provider isn&apos;t configured. Ask an admin to set one up
-            in <strong>Admin → Text messages</strong>.
+            Your firm&apos;s SMS provider isn&apos;t configured. Ask an admin to set one up in{' '}
+            <strong>Admin → Text messages</strong>.
           </p>
         )}
       </div>
@@ -262,8 +260,8 @@ function PhoneCard({
     <div className="bg-white rounded shadow-card p-4 space-y-2">
       <h3 className="font-medium text-slate-800">My mobile number</h3>
       <p className="text-xs text-slate-500">
-        Used only for the SMS fallback below — never for delivering message content. Stored in
-        E.164 form (e.g. <code className="text-[11px]">+15551234567</code>).
+        Used only for the SMS fallback below — never for delivering message content. Stored in E.164
+        form (e.g. <code className="text-[11px]">+15551234567</code>).
       </p>
       <div className="flex items-center gap-2">
         <input
@@ -300,9 +298,7 @@ function PhoneCard({
         )}
       </div>
       {error && <p className="text-xs text-rose-600">{error}</p>}
-      {savedAt && !error && !dirty && (
-        <p className="text-xs text-emerald-700">Saved.</p>
-      )}
+      {savedAt && !error && !dirty && <p className="text-xs text-emerald-700">Saved.</p>}
     </div>
   );
 }

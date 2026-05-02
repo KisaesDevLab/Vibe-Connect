@@ -39,7 +39,13 @@ function hmac(payload: string): string {
 
 function unsubscribeKek(): Uint8Array {
   return new Uint8Array(
-    crypto.hkdfSync('sha256', env.sessionSecret, Buffer.alloc(0), 'vibe-connect-unsubscribe-v2', 32),
+    crypto.hkdfSync(
+      'sha256',
+      env.sessionSecret,
+      Buffer.alloc(0),
+      'vibe-connect-unsubscribe-v2',
+      32,
+    ),
   );
 }
 
@@ -50,10 +56,7 @@ function unsubscribeKek(): Uint8Array {
  */
 export async function signUnsubscribeToken(externalIdentityId: string): Promise<string> {
   const payload = `${VERSION_V2}|${externalIdentityId}`;
-  const blob = await secretboxEncrypt(
-    new TextEncoder().encode(payload),
-    unsubscribeKek(),
-  );
+  const blob = await secretboxEncrypt(new TextEncoder().encode(payload), unsubscribeKek());
   // secretboxEncrypt returns base64 (not base64url). Re-encode to keep the
   // token URL-safe and prefix with the version tag so verifyUnsubscribeToken
   // can pick the right path without parsing cost.

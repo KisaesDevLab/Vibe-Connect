@@ -64,7 +64,9 @@ export async function decryptVaultFile(
 ): Promise<Uint8Array> {
   const c = await loadCrypto();
   const fileKey = await c.secretboxDecrypt(wrappedFileKey, zoneKey);
-  const envelope = JSON.parse(c.utf8Decode(new Uint8Array(ciphertext))) as CryptoModule.SymmetricEnvelope;
+  const envelope = JSON.parse(
+    c.utf8Decode(new Uint8Array(ciphertext)),
+  ) as CryptoModule.SymmetricEnvelope;
   return c.decryptMessage(envelope, fileKey);
 }
 
@@ -123,11 +125,7 @@ async function tusHead(url: string): Promise<number> {
   return Number(res.headers.get('Upload-Offset') ?? '0');
 }
 
-async function tusPatch(
-  url: string,
-  buffer: Uint8Array,
-  offset: number,
-): Promise<number> {
+async function tusPatch(url: string, buffer: Uint8Array, offset: number): Promise<number> {
   const res = await fetch(url, {
     method: 'PATCH',
     credentials: 'include',

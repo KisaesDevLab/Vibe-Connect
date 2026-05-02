@@ -139,9 +139,7 @@ class PostfixProvider implements EmailProvider {
  *  firm_settings.email_provider enum doesn't include 'none' precisely
  *  because we don't want an admin clicking it off — the appliance
  *  operator does. */
-async function resolveEmailProviderKind(): Promise<
-  'mock' | 'postmark' | 'postfix' | 'none'
-> {
+async function resolveEmailProviderKind(): Promise<'mock' | 'postmark' | 'postfix' | 'none'> {
   if (env.emailProvider === 'none') return 'none';
   try {
     const { db } = await import('../../db/knex.js');

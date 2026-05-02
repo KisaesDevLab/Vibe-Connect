@@ -52,11 +52,7 @@ function ConnectionDot({
   );
 }
 
-function SignOutMenu({
-  onSignOut,
-}: {
-  onSignOut: (forgetDevice: boolean) => void;
-}): JSX.Element {
+function SignOutMenu({ onSignOut }: { onSignOut: (forgetDevice: boolean) => void }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -122,7 +118,8 @@ function SignOutMenu({
           >
             <div className="font-medium">Sign out &amp; forget device</div>
             <div className="text-xs text-rose-600/80">
-              Use on shared or public computers. You will need to re-enroll and unlock with your passphrase next time.
+              Use on shared or public computers. You will need to re-enroll and unlock with your
+              passphrase next time.
             </div>
           </button>
         </div>
@@ -224,9 +221,7 @@ export function AppShell(): JSX.Element {
               🔒
             </button>
           )}
-          <SignOutMenu
-            onSignOut={(forgetDevice) => void logout({ forgetDevice })}
-          />
+          <SignOutMenu onSignOut={(forgetDevice) => void logout({ forgetDevice })} />
         </div>
       </header>
       <aside

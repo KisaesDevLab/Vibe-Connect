@@ -73,8 +73,7 @@ const AUDIT_DETAIL_EXPORT_ALLOWLIST: Record<string, ReadonlySet<string>> = {
 
 function redactAuditDetailsForExport(action: unknown, details: unknown): unknown {
   if (!details || typeof details !== 'object') return details;
-  const allow =
-    typeof action === 'string' ? AUDIT_DETAIL_EXPORT_ALLOWLIST[action] : undefined;
+  const allow = typeof action === 'string' ? AUDIT_DETAIL_EXPORT_ALLOWLIST[action] : undefined;
   // Unknown action → redact entirely so a future code path that writes
   // sensitive detail doesn't leak by default. An explicit opt-in entry in
   // the allowlist above is the only way to surface a given key.
@@ -159,11 +158,7 @@ const settingsSchema = z.object({
   // Min 1 offset so a saved-empty-array doesn't silently disable the
   // sweeper while leaving auto_nudge_enabled = true.
   autoNudgeEnabled: z.boolean().optional(),
-  autoNudgeOffsetsHours: z
-    .array(z.number().int().min(0).max(8760))
-    .min(1)
-    .max(10)
-    .optional(),
+  autoNudgeOffsetsHours: z.array(z.number().int().min(0).max(8760)).min(1).max(10).optional(),
 
   // TLS / Let's Encrypt — domains, ACME contact, environment. Phase 1 only
   // accepts 'http-01' for the challenge type; Phase 2 widens this.
@@ -264,8 +259,7 @@ adminRouter.patch(
     if (parsed.data.appName !== undefined) {
       // Empty string + null both mean "fall back to default" — store as null
       // so the security-policy resolver doesn't have to special-case empties.
-      const trimmed =
-        parsed.data.appName === null ? null : parsed.data.appName.trim() || null;
+      const trimmed = parsed.data.appName === null ? null : parsed.data.appName.trim() || null;
       patch.app_name = trimmed;
     }
     if (parsed.data.logoUrl !== undefined) patch.logo_url = parsed.data.logoUrl;
@@ -428,7 +422,10 @@ adminRouter.get(
 
     // Fetch one extra to know if there's a next page without a separate COUNT query.
     const fetched = await applyFilters(
-      db('audit_log').orderBy('created_at', 'desc').limit(limit + 1).offset(offset),
+      db('audit_log')
+        .orderBy('created_at', 'desc')
+        .limit(limit + 1)
+        .offset(offset),
     );
     const hasMore = fetched.length > limit;
     const rows = hasMore ? fetched.slice(0, limit) : fetched;
@@ -718,7 +715,10 @@ adminRouter.post(
         action: 'admin.client_invite_send_failed',
         targetType: 'external_identity',
         targetId: identityId,
-        details: { via: parsed.data.inviteVia, error: err instanceof Error ? err.message : String(err) },
+        details: {
+          via: parsed.data.inviteVia,
+          error: err instanceof Error ? err.message : String(err),
+        },
       });
       res.status(201).json({
         id: identityId,
@@ -748,20 +748,19 @@ adminRouter.post(
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const body = z
-      .object({ via: z.enum(['email', 'sms']).optional() })
-      .safeParse(req.body ?? {});
-    const via = body.success && body.data.via ? body.data.via : (row.invited_via as 'email' | 'sms' | null) ?? 'email';
+    const body = z.object({ via: z.enum(['email', 'sms']).optional() }).safeParse(req.body ?? {});
+    const via =
+      body.success && body.data.via
+        ? body.data.via
+        : ((row.invited_via as 'email' | 'sms' | null) ?? 'email');
     const invite = await generateInviteMaterial();
-    await db('external_identities')
-      .where({ id: req.params.id! })
-      .update({
-        invite_token_hash: invite.tokenHash,
-        invite_public_key: invite.publicKey,
-        invited_at: db.fn.now(),
-        invited_via: via,
-        deactivated_at: null,
-      });
+    await db('external_identities').where({ id: req.params.id! }).update({
+      invite_token_hash: invite.tokenHash,
+      invite_public_key: invite.publicKey,
+      invited_at: db.fn.now(),
+      invited_via: via,
+      deactivated_at: null,
+    });
     const [firmSettingsRow, actorRow] = await Promise.all([
       db('firm_settings').where({ id: 1 }).first(),
       db('users').where({ id: req.session.userId! }).first(),
@@ -878,19 +877,17 @@ adminRouter.post(
         .where({ external_identity_id: req.params.id })
         .whereNull('revoked_at')
         .update({ revoked_at: trx.fn.now() });
-      await trx('external_identities')
-        .where({ id: req.params.id! })
-        .update({
-          email: anonEmail,
-          phone: null,
-          display_name: anonName,
-          firm_client_ref: null,
-          verification_last4_hash: null,
-          verification_type: 'none',
-          verification_required: false,
-          preferences: {},
-          deactivated_at: trx.fn.now(),
-        });
+      await trx('external_identities').where({ id: req.params.id! }).update({
+        email: anonEmail,
+        phone: null,
+        display_name: anonName,
+        firm_client_ref: null,
+        verification_last4_hash: null,
+        verification_type: 'none',
+        verification_required: false,
+        preferences: {},
+        deactivated_at: trx.fn.now(),
+      });
       // Delete any open access-code rows since they referenced the original email/phone.
       await trx('access_codes').where({ external_identity_id: req.params.id }).del();
     });
@@ -1334,9 +1331,7 @@ adminRouter.put(
       res.status(400).json({ error: 'unknown_key' });
       return;
     }
-    const body = z
-      .object({ value: z.string().min(1).max(4096) })
-      .safeParse(req.body);
+    const body = z.object({ value: z.string().min(1).max(4096) }).safeParse(req.body);
     if (!body.success) {
       res.status(400).json({ error: 'bad_request' });
       return;
@@ -1560,10 +1555,8 @@ adminRouter.get(
     //   - 'never'   : no heartbeat ever recorded
     let state: 'ok' | 'warn' | 'blocked' | 'never';
     if (!lastOk) state = 'never';
-    else if (daysSinceBackup !== null && daysSinceBackup >= env.backupBlockDays)
-      state = 'blocked';
-    else if (daysSinceBackup !== null && daysSinceBackup >= env.backupWarnDays)
-      state = 'warn';
+    else if (daysSinceBackup !== null && daysSinceBackup >= env.backupBlockDays) state = 'blocked';
+    else if (daysSinceBackup !== null && daysSinceBackup >= env.backupWarnDays) state = 'warn';
     else state = 'ok';
 
     res.json({
@@ -1603,7 +1596,7 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const auth = req.header('authorization') ?? '';
     const m = /^Bearer\s+(.+)$/i.exec(auth);
-    const presented = m ? m[1] ?? '' : '';
+    const presented = m ? (m[1] ?? '') : '';
     const expected = env.backupHeartbeatToken;
     if (!expected || presented.length !== expected.length) {
       res.status(401).json({ error: 'unauthorized' });
@@ -1784,7 +1777,10 @@ const inviteClientSchema = z
     }),
     verification: z.object({
       type: z.enum(['ssn', 'ein', 'none']),
-      last4: z.string().regex(/^\d{4}$/).optional(),
+      last4: z
+        .string()
+        .regex(/^\d{4}$/)
+        .optional(),
       // null = never; undefined = fall back to firm default.
       reverifyEveryHours: z
         .union([z.literal(4), z.literal(8), z.literal(24), z.literal(168)])
@@ -2020,7 +2016,10 @@ const resendInviteSchema = z
     }),
     verification: z.object({
       type: z.enum(['ssn', 'ein', 'none']),
-      last4: z.string().regex(/^\d{4}$/).optional(),
+      last4: z
+        .string()
+        .regex(/^\d{4}$/)
+        .optional(),
       reverifyEveryHours: z
         .union([z.literal(4), z.literal(8), z.literal(24), z.literal(168)])
         .nullable()
@@ -2120,7 +2119,8 @@ clientsRouter.post(
     //   - Type changed to none → clear hash.
     const newType = parsed.data.verification.type;
     const currentType = current.verification_type as 'ssn' | 'ein' | 'none';
-    let verificationLast4Hash: string | null = (current.verification_last4_hash as string | null) ?? null;
+    let verificationLast4Hash: string | null =
+      (current.verification_last4_hash as string | null) ?? null;
     if (newType === 'none') {
       verificationLast4Hash = null;
     } else if (parsed.data.verification.last4) {
@@ -2133,8 +2133,7 @@ clientsRouter.post(
     const invite = await generateInviteMaterial();
     const primaryVia: 'email' | 'sms' = emailEnabled && email ? 'email' : 'sms';
 
-    const existingPrefs =
-      (current.preferences as Record<string, unknown> | null | undefined) ?? {};
+    const existingPrefs = (current.preferences as Record<string, unknown> | null | undefined) ?? {};
     const preferences: Record<string, unknown> = {
       ...existingPrefs,
       email_notifications: emailEnabled,
@@ -2146,7 +2145,7 @@ clientsRouter.post(
 
     const firmClientRef =
       parsed.data.firmClientRef === undefined
-        ? (current.firm_client_ref as string | null) ?? null
+        ? ((current.firm_client_ref as string | null) ?? null)
         : (parsed.data.firmClientRef ?? '').trim() || null;
 
     await db('external_identities')

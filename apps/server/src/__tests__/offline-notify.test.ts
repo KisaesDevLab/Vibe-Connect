@@ -57,9 +57,7 @@ beforeEach(async () => {
   await db('conversations').del();
   // Reset every staff member's prefs + presence to a known baseline.
   await db('notification_prefs').del();
-  await db('user_presence')
-    .update({ socket_count: 0 })
-    .whereNotNull('user_id');
+  await db('user_presence').update({ socket_count: 0 }).whereNotNull('user_id');
   await db('users').update({ phone: null });
 });
 

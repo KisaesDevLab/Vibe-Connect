@@ -27,7 +27,9 @@ interface TauriRuntime {
 declare global {
   interface Window {
     __TAURI__?: TauriRuntime;
-    __TAURI_INTERNALS__?: { invoke?: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T> };
+    __TAURI_INTERNALS__?: {
+      invoke?: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+    };
   }
 }
 
@@ -39,11 +41,17 @@ export function tauriBridge(): TauriBridge | null {
   // what Tauri 2.x stable ships by default.
   const internals = window.__TAURI_INTERNALS__?.invoke;
   if (internals) {
-    return { invoke: <T>(cmd: string, args?: Record<string, unknown>) => internals(cmd, args) as Promise<T> };
+    return {
+      invoke: <T>(cmd: string, args?: Record<string, unknown>) =>
+        internals(cmd, args) as Promise<T>,
+    };
   }
   const coreInvoke = window.__TAURI__?.core?.invoke ?? window.__TAURI__?.invoke;
   if (coreInvoke) {
-    return { invoke: <T>(cmd: string, args?: Record<string, unknown>) => coreInvoke(cmd, args) as Promise<T> };
+    return {
+      invoke: <T>(cmd: string, args?: Record<string, unknown>) =>
+        coreInvoke(cmd, args) as Promise<T>,
+    };
   }
   return null;
 }

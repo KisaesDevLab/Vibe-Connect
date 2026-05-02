@@ -124,7 +124,9 @@ button {
   padding: 10px 16px;
   cursor: pointer;
   margin-top: 4px;
-  transition: opacity 120ms, transform 80ms;
+  transition:
+    opacity 120ms,
+    transform 80ms;
 }
 
 button:hover:not(:disabled) {

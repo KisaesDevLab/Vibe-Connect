@@ -21,10 +21,7 @@ import { portalRouter } from './routes/portal.js';
 import { portalConversationsRouter } from './routes/portalConversations.js';
 import { portalUploadRouter } from './routes/portalUpload.js';
 import { portalRequestsRouter } from './routes/portalRequests.js';
-import {
-  conversationRequestsRouter,
-  requestsRouter,
-} from './routes/requests.js';
+import { conversationRequestsRouter, requestsRouter } from './routes/requests.js';
 import { vaultsRouter } from './routes/vaults.js';
 import { vaultsUploadRouter } from './routes/vaultsUpload.js';
 import { portalVaultRouter } from './routes/portalVault.js';
@@ -119,12 +116,7 @@ export function createApp(): Express {
   // of a parsed object is NOT byte-equivalent (whitespace, key order, Unicode
   // escapes can diverge). We stash on `req.rawBody` and let webhook handlers
   // read it for verification. Only set for bridge paths to keep memory bounded.
-  const captureRawBody = (
-    req: Request,
-    _res: Response,
-    buf: Buffer,
-    _encoding: string,
-  ): void => {
+  const captureRawBody = (req: Request, _res: Response, buf: Buffer, _encoding: string): void => {
     if (buf && buf.length && req.path.startsWith('/bridges/')) {
       (req as Request & { rawBody?: Buffer }).rawBody = Buffer.from(buf);
     }
@@ -146,7 +138,10 @@ export function createApp(): Express {
   const DEFAULT_BODY = '1mb';
   const MESSAGE_BODY = '25mb';
   const EMAIL_INBOUND_BODY = '50mb';
-  app.use('/bridges/email-inbound', express.json({ limit: EMAIL_INBOUND_BODY, verify: captureRawBody }));
+  app.use(
+    '/bridges/email-inbound',
+    express.json({ limit: EMAIL_INBOUND_BODY, verify: captureRawBody }),
+  );
   app.use(
     '/bridges/email-inbound-raw',
     express.json({ limit: EMAIL_INBOUND_BODY, verify: captureRawBody }),
@@ -389,9 +384,7 @@ export function createApp(): Express {
     const reqId = req.reqId;
     if (typeof status === 'number' && status >= 400 && status < 600) {
       logger.warn('request_client_error', { reqId, status, code, msg: err.message });
-      res
-        .status(status)
-        .json({ error: typeof code === 'string' ? code : 'error', reqId });
+      res.status(status).json({ error: typeof code === 'string' ? code : 'error', reqId });
       return;
     }
     logger.error('request_error', { reqId, msg: err.message, stack: err.stack });

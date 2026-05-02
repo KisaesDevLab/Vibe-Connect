@@ -27,9 +27,7 @@ const SORT_MODE_STORAGE_KEY = 'vibe-connect:sidebar-sort-mode';
 
 function readSortMode(): SortMode {
   try {
-    return window.localStorage.getItem(SORT_MODE_STORAGE_KEY) === 'recent'
-      ? 'recent'
-      : 'presence';
+    return window.localStorage.getItem(SORT_MODE_STORAGE_KEY) === 'recent' ? 'recent' : 'presence';
   } catch {
     return 'presence';
   }
@@ -228,9 +226,7 @@ function ClientRowView({
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium text-slate-800 truncate">
           {client.displayName}
-          {!hasActivated && (
-            <span className="ml-1 text-[10px] text-amber-700">(pending)</span>
-          )}
+          {!hasActivated && <span className="ml-1 text-[10px] text-amber-700">(pending)</span>}
         </div>
         <div className="text-[11px] text-slate-500 truncate">{subtitle}</div>
       </div>
@@ -399,9 +395,10 @@ export function Sidebar(): JSX.Element {
   const groups = useMemo(() => groupsQ.data?.groups ?? [], [groupsQ.data]);
   const clients = useMemo(() => clientsQ.data?.clients ?? [], [clientsQ.data]);
 
-  const { unreadByUser, unreadByClient } = useMemo(() => computeUnread(conversations), [
-    conversations,
-  ]);
+  const { unreadByUser, unreadByClient } = useMemo(
+    () => computeUnread(conversations),
+    [conversations],
+  );
 
   // Per-contact "last activity" timestamps — only 1:1 staff DMs, Notes-to-self,
   // and single-client external conversations count. Group conversations live in
@@ -570,7 +567,6 @@ export function Sidebar(): JSX.Element {
     return withLabel;
   }, [conversations, usersById, me, sortMode]);
 
-
   // Global shortcut Ctrl/Cmd+Shift+I opens the invite modal when staff app is
   // focused. Ignored while the user is typing into a text field so it doesn't
   // fight browser dev-tools bindings inside inputs — matches the sidebar spec.
@@ -695,128 +691,126 @@ export function Sidebar(): JSX.Element {
             </section>
           );
         })}
-        {clientMessagingEnabled && (() => {
-          const clientFilter = (c: ClientRow) =>
-            !filter ||
-            c.displayName.toLowerCase().includes(filter.toLowerCase()) ||
-            (c.email?.toLowerCase().includes(filter.toLowerCase()) ?? false) ||
-            (c.phone?.includes(filter) ?? false);
-          const scopeFilter = (c: ClientRow) =>
-            clientScope === 'all' || myClientIds.has(c.id);
-          const filtered = clients.filter((c) => scopeFilter(c) && clientFilter(c));
-          // Sibling count we can surface when 'mine' is empty — lets the user
-          // know the firm has clients to look at even if none match their
-          // personal scope yet, and lines up the "Show all" hint below.
-          const allFilteredCount = clients.filter(clientFilter).length;
-          // The /clients endpoint returns rows in alphabetical displayName order
-          // already. In 'recent' mode, re-sort by the most recent external
-          // message; clients with no history keep the server's A→Z order at the
-          // bottom. Copy before sorting to avoid mutating the query-cached array.
-          const visible =
-            sortMode === 'recent'
-              ? [...filtered].sort((a, b) => {
-                  const ta = activityByClient[a.id] ?? 0;
-                  const tb = activityByClient[b.id] ?? 0;
-                  if (ta !== tb) return tb - ta;
-                  return a.displayName.localeCompare(b.displayName);
-                })
-              : filtered;
-          const open = openGroups['__clients'] !== false;
-          if (filter && visible.length === 0 && clientScope === 'all') return null;
-          return (
-            <section key="__clients">
-              <GroupHeader
-                name="Clients"
-                count={visible.length}
-                open={open}
-                onToggle={() =>
-                  setOpenGroups((prev) => ({ ...prev, ['__clients']: !open }))
-                }
-              />
-              {open && (
-                <div className="px-3 py-1.5 flex items-center justify-between">
-                  <div
-                    role="group"
-                    aria-label="Client visibility scope"
-                    className="inline-flex rounded bg-slate-100 p-0.5 text-[10px] font-medium"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setClientScope('mine')}
-                      aria-pressed={clientScope === 'mine'}
-                      title="Only clients you share a conversation with"
-                      className={clsx(
-                        'px-2 py-0.5 rounded',
-                        clientScope === 'mine'
-                          ? 'bg-white text-slate-800 shadow-sm'
-                          : 'text-slate-500 hover:text-slate-800',
-                      )}
+        {clientMessagingEnabled &&
+          (() => {
+            const clientFilter = (c: ClientRow) =>
+              !filter ||
+              c.displayName.toLowerCase().includes(filter.toLowerCase()) ||
+              (c.email?.toLowerCase().includes(filter.toLowerCase()) ?? false) ||
+              (c.phone?.includes(filter) ?? false);
+            const scopeFilter = (c: ClientRow) => clientScope === 'all' || myClientIds.has(c.id);
+            const filtered = clients.filter((c) => scopeFilter(c) && clientFilter(c));
+            // Sibling count we can surface when 'mine' is empty — lets the user
+            // know the firm has clients to look at even if none match their
+            // personal scope yet, and lines up the "Show all" hint below.
+            const allFilteredCount = clients.filter(clientFilter).length;
+            // The /clients endpoint returns rows in alphabetical displayName order
+            // already. In 'recent' mode, re-sort by the most recent external
+            // message; clients with no history keep the server's A→Z order at the
+            // bottom. Copy before sorting to avoid mutating the query-cached array.
+            const visible =
+              sortMode === 'recent'
+                ? [...filtered].sort((a, b) => {
+                    const ta = activityByClient[a.id] ?? 0;
+                    const tb = activityByClient[b.id] ?? 0;
+                    if (ta !== tb) return tb - ta;
+                    return a.displayName.localeCompare(b.displayName);
+                  })
+                : filtered;
+            const open = openGroups['__clients'] !== false;
+            if (filter && visible.length === 0 && clientScope === 'all') return null;
+            return (
+              <section key="__clients">
+                <GroupHeader
+                  name="Clients"
+                  count={visible.length}
+                  open={open}
+                  onToggle={() => setOpenGroups((prev) => ({ ...prev, ['__clients']: !open }))}
+                />
+                {open && (
+                  <div className="px-3 py-1.5 flex items-center justify-between">
+                    <div
+                      role="group"
+                      aria-label="Client visibility scope"
+                      className="inline-flex rounded bg-slate-100 p-0.5 text-[10px] font-medium"
                     >
-                      Mine
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setClientScope('all')}
-                      aria-pressed={clientScope === 'all'}
-                      title="Every reachable client at the firm"
-                      className={clsx(
-                        'px-2 py-0.5 rounded',
-                        clientScope === 'all'
-                          ? 'bg-white text-slate-800 shadow-sm'
-                          : 'text-slate-500 hover:text-slate-800',
-                      )}
-                    >
-                      All
-                    </button>
-                  </div>
-                </div>
-              )}
-              {open && (
-                <button
-                  type="button"
-                  onClick={() => setInviteModalOpen(true)}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs font-medium text-brand-700 hover:bg-brand-50"
-                >
-                  <span className="w-5 h-5 rounded-full border border-brand-300 grid place-items-center text-sm leading-none">
-                    +
-                  </span>
-                  Invite a client
-                  <span className="ml-auto text-[10px] text-slate-400 hidden md:inline">
-                    ⌘⇧I
-                  </span>
-                </button>
-              )}
-              {open &&
-                visible.map((c) => (
-                  <ClientRowView
-                    key={c.id}
-                    client={c}
-                    unread={unreadByClient[c.id] ?? 0}
-                    onOpen={() => toggleClient(c.id)}
-                  />
-                ))}
-              {open && visible.length === 0 && !clientsQ.isLoading && (
-                <p className="px-3 py-2 text-[11px] text-slate-500">
-                  {clientScope === 'mine' && allFilteredCount > 0 ? (
-                    <>
-                      You haven&apos;t started a conversation with anyone yet.{' '}
+                      <button
+                        type="button"
+                        onClick={() => setClientScope('mine')}
+                        aria-pressed={clientScope === 'mine'}
+                        title="Only clients you share a conversation with"
+                        className={clsx(
+                          'px-2 py-0.5 rounded',
+                          clientScope === 'mine'
+                            ? 'bg-white text-slate-800 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-800',
+                        )}
+                      >
+                        Mine
+                      </button>
                       <button
                         type="button"
                         onClick={() => setClientScope('all')}
-                        className="text-brand-700 hover:underline font-medium"
+                        aria-pressed={clientScope === 'all'}
+                        title="Every reachable client at the firm"
+                        className={clsx(
+                          'px-2 py-0.5 rounded',
+                          clientScope === 'all'
+                            ? 'bg-white text-slate-800 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-800',
+                        )}
                       >
-                        Show all {allFilteredCount}
+                        All
                       </button>
-                      .
-                    </>
-                  ) : (
-                    <>No clients yet — click <strong>Invite a client</strong> above to reach one.</>
-                  )}
-                </p>
-              )}
-            </section>
-          );
-        })()}
+                    </div>
+                  </div>
+                )}
+                {open && (
+                  <button
+                    type="button"
+                    onClick={() => setInviteModalOpen(true)}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-left text-xs font-medium text-brand-700 hover:bg-brand-50"
+                  >
+                    <span className="w-5 h-5 rounded-full border border-brand-300 grid place-items-center text-sm leading-none">
+                      +
+                    </span>
+                    Invite a client
+                    <span className="ml-auto text-[10px] text-slate-400 hidden md:inline">⌘⇧I</span>
+                  </button>
+                )}
+                {open &&
+                  visible.map((c) => (
+                    <ClientRowView
+                      key={c.id}
+                      client={c}
+                      unread={unreadByClient[c.id] ?? 0}
+                      onOpen={() => toggleClient(c.id)}
+                    />
+                  ))}
+                {open && visible.length === 0 && !clientsQ.isLoading && (
+                  <p className="px-3 py-2 text-[11px] text-slate-500">
+                    {clientScope === 'mine' && allFilteredCount > 0 ? (
+                      <>
+                        You haven&apos;t started a conversation with anyone yet.{' '}
+                        <button
+                          type="button"
+                          onClick={() => setClientScope('all')}
+                          className="text-brand-700 hover:underline font-medium"
+                        >
+                          Show all {allFilteredCount}
+                        </button>
+                        .
+                      </>
+                    ) : (
+                      <>
+                        No clients yet — click <strong>Invite a client</strong> above to reach one.
+                      </>
+                    )}
+                  </p>
+                )}
+              </section>
+            );
+          })()}
         {(() => {
           if (threads.length === 0) return null;
           const lcFilter = filter.toLowerCase();
@@ -831,9 +825,7 @@ export function Sidebar(): JSX.Element {
                 name="Threads"
                 count={visible.length}
                 open={open}
-                onToggle={() =>
-                  setOpenGroups((prev) => ({ ...prev, ['__threads']: !open }))
-                }
+                onToggle={() => setOpenGroups((prev) => ({ ...prev, ['__threads']: !open }))}
               />
               {open &&
                 visible.map((t) => (
@@ -952,8 +944,8 @@ export function Sidebar(): JSX.Element {
               </span>
             </label>
             <p className="text-xs text-slate-500">
-              A fresh conversation key is generated client-side and wrapped to every selected
-              staff member&apos;s active devices plus the firm recovery key.
+              A fresh conversation key is generated client-side and wrapped to every selected staff
+              member&apos;s active devices plus the firm recovery key.
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -1040,10 +1032,7 @@ export function Sidebar(): JSX.Element {
             className="w-full max-w-sm bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden"
           >
             <header className="px-4 py-3 border-b border-slate-200">
-              <h3
-                id="pending-action-title"
-                className="text-sm font-semibold text-slate-900"
-              >
+              <h3 id="pending-action-title" className="text-sm font-semibold text-slate-900">
                 {pendingActionFor.displayName}
               </h3>
               <p className="text-[11px] text-slate-500 mt-0.5">
@@ -1120,9 +1109,7 @@ export function Sidebar(): JSX.Element {
           if (sms === 'sent') parts.push('SMS sent');
           else if (sms === 'failed') parts.push('SMS failed');
           setResendFlash(
-            `Re-invited ${result.displayName}${
-              parts.length > 0 ? ` — ${parts.join(', ')}` : ''
-            }.`,
+            `Re-invited ${result.displayName}${parts.length > 0 ? ` — ${parts.join(', ')}` : ''}.`,
           );
           window.setTimeout(() => setResendFlash(null), 6_000);
         }}

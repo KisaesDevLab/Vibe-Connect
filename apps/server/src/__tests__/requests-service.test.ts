@@ -30,7 +30,9 @@ beforeAll(async () => {
     process.env.TEST_DATABASE_URL ?? 'postgres://vibe:vibe@localhost:5435/vibe_connect_test';
   await resetTestDb();
   const { db } = await import('../db/knex.js');
-  const rows = await db('users').whereIn('username', ['kurt', 'alice', 'bob']).select('id', 'username');
+  const rows = await db('users')
+    .whereIn('username', ['kurt', 'alice', 'bob'])
+    .select('id', 'username');
   userIds = Object.fromEntries(rows.map((r) => [r.username, r.id])) as SeedUserIds;
 }, 120_000);
 
@@ -307,7 +309,9 @@ describe('onMessagePosted (auto-flip on linked message)', () => {
       actorExternalIdentityId: null,
     });
     expect(updated).toBeNull();
-    const item = await (await import('../repositories/requests.js')).requestItemsRepo.byId(itemIds[0]!);
+    const item = await (
+      await import('../repositories/requests.js')
+    ).requestItemsRepo.byId(itemIds[0]!);
     expect(item?.status).toBe('pending');
   });
 
@@ -431,7 +435,10 @@ describe('onMessagePosted (auto-flip on linked message)', () => {
     };
     const first = await svc.onMessagePosted(args);
     expect(first?.status).toBe('submitted');
-    const second = await svc.onMessagePosted({ ...args, messageId: '00000000-0000-0000-0000-000000000002' });
+    const second = await svc.onMessagePosted({
+      ...args,
+      messageId: '00000000-0000-0000-0000-000000000002',
+    });
     expect(second).toBeNull(); // already submitted, no transition fires
   });
 });

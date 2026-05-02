@@ -386,8 +386,7 @@ export function CryptoProvider({ children }: { children: ReactNode }): JSX.Eleme
         if (eventType === 'request_item_revision') {
           body = '🔁 Revision requested. See the Requests panel for the note.';
         } else if (eventType === 'request_nudge_sent') {
-          const listTitle =
-            typeof meta.listTitle === 'string' ? meta.listTitle : 'pending items';
+          const listTitle = typeof meta.listTitle === 'string' ? meta.listTitle : 'pending items';
           const custom = typeof meta.customBody === 'string' ? meta.customBody : null;
           body = custom
             ? `🔔 Reminder: ${custom}`

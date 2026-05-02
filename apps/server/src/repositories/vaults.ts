@@ -201,9 +201,7 @@ export const vaultKeysRepo = {
     if (row.zone === 'staff_only') {
       for (const r of Object.keys(added)) {
         if (isClientRecipient(r)) {
-          throw new Error(
-            `vault_keys merge: client recipient ${r} forbidden in staff_only zone`,
-          );
+          throw new Error(`vault_keys merge: client recipient ${r} forbidden in staff_only zone`);
         }
       }
     }
@@ -227,11 +225,7 @@ export const vaultKeysRepo = {
    * Crypto-shred: zero out wrapped_keys so no recipient can decrypt the zone
    * bytes-on-disk anymore. Bytes stay until the next backup prune.
    */
-  async cryptoShred(
-    vaultId: string,
-    zone: VaultZone,
-    trx?: Knex.Transaction,
-  ): Promise<number> {
+  async cryptoShred(vaultId: string, zone: VaultZone, trx?: Knex.Transaction): Promise<number> {
     return (trx ?? db)('vault_keys')
       .where({ vault_id: vaultId, zone })
       .update({ wrapped_keys: JSON.stringify({}) as unknown as never });
@@ -252,7 +246,12 @@ export const vaultFoldersRepo = {
   async insert(
     row: Pick<
       VaultFolderRow,
-      'vault_id' | 'parent_folder_id' | 'zone' | 'name_ciphertext' | 'content_key_version' | 'sort_order'
+      | 'vault_id'
+      | 'parent_folder_id'
+      | 'zone'
+      | 'name_ciphertext'
+      | 'content_key_version'
+      | 'sort_order'
     >,
     trx?: Knex.Transaction,
   ): Promise<VaultFolderRow> {
@@ -455,13 +454,9 @@ export const vaultUploadsRepo = {
       .update({ bytes_received: bytesReceived });
   },
   async deleteByUploadUrlId(uploadUrlId: string, trx?: Knex.Transaction): Promise<number> {
-    return (trx ?? db)('vault_uploads_in_progress')
-      .where({ upload_url_id: uploadUrlId })
-      .del();
+    return (trx ?? db)('vault_uploads_in_progress').where({ upload_url_id: uploadUrlId }).del();
   },
   async reapExpired(trx?: Knex.Transaction): Promise<number> {
-    return (trx ?? db)('vault_uploads_in_progress')
-      .where('expires_at', '<', db.fn.now())
-      .del();
+    return (trx ?? db)('vault_uploads_in_progress').where('expires_at', '<', db.fn.now()).del();
   },
 };

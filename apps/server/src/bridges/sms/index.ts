@@ -111,10 +111,7 @@ class TextLinkSms implements SmsProvider {
       logger.error('sms.textlink.webhook_secret_missing');
       return false;
     }
-    const expected = crypto
-      .createHmac('sha256', secret)
-      .update(ctx.rawBody)
-      .digest('hex');
+    const expected = crypto.createHmac('sha256', secret).update(ctx.rawBody).digest('hex');
     const got = ctx.headers['x-textlink-signature'] ?? ctx.headers['X-TextLink-Signature'] ?? '';
     try {
       return crypto.timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(got, 'hex'));

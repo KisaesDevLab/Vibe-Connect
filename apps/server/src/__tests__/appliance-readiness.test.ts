@@ -44,13 +44,11 @@ afterAll(async () => {
   await db('firm_keys').where({ public_key: 'test-public-key-placeholder' }).delete();
   // Also clear settings my tests wrote so provider-selection / others
   // start clean.
-  await db('firm_settings')
-    .where({ id: 1 })
-    .update({
-      last_backup_ok_at: null,
-      last_backup_recorded_at: null,
-      last_backup_status: null,
-    });
+  await db('firm_settings').where({ id: 1 }).update({
+    last_backup_ok_at: null,
+    last_backup_recorded_at: null,
+    last_backup_status: null,
+  });
 });
 
 beforeEach(() => {
@@ -119,9 +117,7 @@ describe('A.1 — /health readiness probe', () => {
 describe('A.3 — ALLOWED_ORIGIN CORS allow-list', () => {
   it('reflect-origin behavior when ALLOWED_ORIGIN is unset (default)', async () => {
     const app = await loadApp({});
-    const r = await request(app)
-      .get('/health')
-      .set('Origin', 'https://random.example.com');
+    const r = await request(app).get('/health').set('Origin', 'https://random.example.com');
     expect(r.status).toBe(200);
     // CORS reflected the origin back; cors() default with credentials:true
     // emits Access-Control-Allow-Origin: <origin>.
@@ -132,9 +128,7 @@ describe('A.3 — ALLOWED_ORIGIN CORS allow-list', () => {
     const app = await loadApp({
       ALLOWED_ORIGIN: 'https://connect.firm.com,https://other.firm.com',
     });
-    const r = await request(app)
-      .get('/health')
-      .set('Origin', 'https://connect.firm.com');
+    const r = await request(app).get('/health').set('Origin', 'https://connect.firm.com');
     expect(r.status).toBe(200);
     expect(r.headers['access-control-allow-origin']).toBe('https://connect.firm.com');
   });
@@ -143,9 +137,7 @@ describe('A.3 — ALLOWED_ORIGIN CORS allow-list', () => {
     const app = await loadApp({
       ALLOWED_ORIGIN: 'https://connect.firm.com',
     });
-    const r = await request(app)
-      .get('/health')
-      .set('Origin', 'https://evil.example.com');
+    const r = await request(app).get('/health').set('Origin', 'https://evil.example.com');
     // The cors() middleware passes an Error to express's error handler;
     // app.ts:err-middleware returns 500 with internal_error. The exact
     // status code is less important than confirming the origin header
@@ -157,13 +149,9 @@ describe('A.3 — ALLOWED_ORIGIN CORS allow-list', () => {
     const app = await loadApp({
       ALLOWED_ORIGIN: 'regex:^https://[a-z]+\\.firm\\.com$',
     });
-    const r1 = await request(app)
-      .get('/health')
-      .set('Origin', 'https://staff.firm.com');
+    const r1 = await request(app).get('/health').set('Origin', 'https://staff.firm.com');
     expect(r1.headers['access-control-allow-origin']).toBe('https://staff.firm.com');
-    const r2 = await request(app)
-      .get('/health')
-      .set('Origin', 'https://staff.evil.com');
+    const r2 = await request(app).get('/health').set('Origin', 'https://staff.evil.com');
     expect(r2.headers['access-control-allow-origin']).toBeUndefined();
   });
 

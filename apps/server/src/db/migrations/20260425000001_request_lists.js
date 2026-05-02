@@ -66,9 +66,7 @@ exports.up = async function up(knex) {
     `ALTER TABLE request_lists ADD CONSTRAINT chk_request_lists_status
        CHECK (status IN ('active', 'completed', 'archived', 'cancelled'))`,
   );
-  await knex.raw(
-    `CREATE INDEX idx_request_lists_conversation ON request_lists (conversation_id)`,
-  );
+  await knex.raw(`CREATE INDEX idx_request_lists_conversation ON request_lists (conversation_id)`);
   // Common hot-path: "any active list for this conversation?" — partial index
   // keeps the index lean since most rows historically will be terminal.
   await knex.raw(
@@ -78,11 +76,7 @@ exports.up = async function up(knex) {
 
   await knex.schema.createTable('request_items', (t) => {
     t.uuid('id').primary().defaultTo(knex.raw('gen_random_uuid()'));
-    t.uuid('list_id')
-      .notNullable()
-      .references('id')
-      .inTable('request_lists')
-      .onDelete('CASCADE');
+    t.uuid('list_id').notNullable().references('id').inTable('request_lists').onDelete('CASCADE');
     t.binary('title_ciphertext').notNullable(); // E2EE
     t.binary('description_ciphertext').nullable(); // E2EE
     t.binary('revision_note_ciphertext').nullable(); // E2EE; latest revision only
@@ -105,12 +99,8 @@ exports.up = async function up(knex) {
     `ALTER TABLE request_items ADD CONSTRAINT chk_request_items_status
        CHECK (status IN ('pending', 'submitted', 'done', 'revision'))`,
   );
-  await knex.raw(
-    `CREATE INDEX idx_request_items_list_sort ON request_items (list_id, sort_order)`,
-  );
-  await knex.raw(
-    `CREATE INDEX idx_request_items_list_status ON request_items (list_id, status)`,
-  );
+  await knex.raw(`CREATE INDEX idx_request_items_list_sort ON request_items (list_id, sort_order)`);
+  await knex.raw(`CREATE INDEX idx_request_items_list_status ON request_items (list_id, status)`);
 };
 
 exports.down = async function down(knex) {

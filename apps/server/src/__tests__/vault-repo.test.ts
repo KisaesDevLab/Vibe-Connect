@@ -85,7 +85,9 @@ describe('vaultKeysRepo zone-separation invariant', () => {
   it('inserts a staff_only row with only staff recipients', async () => {
     const { vaultKeysRepo } = await import('../repositories/vaults.js');
     const v = await makeVault();
-    const row = await vaultKeysRepo.insert(v.id, 'staff_only', 1, { [userKeyId]: 'wrapped-base64' });
+    const row = await vaultKeysRepo.insert(v.id, 'staff_only', 1, {
+      [userKeyId]: 'wrapped-base64',
+    });
     expect(row.zone).toBe('staff_only');
     expect(row.rotation_version).toBe(1);
     expect(row.wrapped_keys[userKeyId]).toBe('wrapped-base64');
@@ -306,9 +308,8 @@ describe('vaultService IDOR guards (regression)', () => {
 
 describe('vaultFilesRepo + vaultFoldersRepo lifecycle', () => {
   it('inserts file under folder and lists it; soft delete hides it', async () => {
-    const { clientVaultsRepo, vaultFoldersRepo, vaultFilesRepo } = await import(
-      '../repositories/vaults.js'
-    );
+    const { clientVaultsRepo, vaultFoldersRepo, vaultFilesRepo } =
+      await import('../repositories/vaults.js');
     const v = await clientVaultsRepo.upsertByExternalIdentityId(externalIdentityId);
     const folder = await vaultFoldersRepo.insert({
       vault_id: v.id,

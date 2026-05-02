@@ -97,11 +97,7 @@ exports.up = async function up(knex) {
   await knex.schema.createTable('vault_files', (t) => {
     t.uuid('id').primary().defaultTo(knex.raw('gen_random_uuid()'));
     t.uuid('vault_id').notNullable().references('id').inTable('client_vaults').onDelete('CASCADE');
-    t.uuid('folder_id')
-      .nullable()
-      .references('id')
-      .inTable('vault_folders')
-      .onDelete('CASCADE');
+    t.uuid('folder_id').nullable().references('id').inTable('vault_folders').onDelete('CASCADE');
     t.text('zone').notNullable();
     t.text('filename_ciphertext').notNullable();
     t.string('mime_type', 128).notNullable();
@@ -114,11 +110,7 @@ exports.up = async function up(knex) {
     t.integer('version').notNullable().defaultTo(1);
     // Reserved for v2 file versioning. Self-ref FK already in place.
     t.uuid('prior_version_id').nullable().references('id').inTable('vault_files');
-    t.uuid('uploaded_by_user_id')
-      .nullable()
-      .references('id')
-      .inTable('users')
-      .onDelete('SET NULL');
+    t.uuid('uploaded_by_user_id').nullable().references('id').inTable('users').onDelete('SET NULL');
     t.uuid('uploaded_by_external_identity_id')
       .nullable()
       .references('id')
@@ -162,20 +154,12 @@ exports.up = async function up(knex) {
     t.text('upload_url_id').notNullable().unique(); // tus upload-id (opaque)
     t.uuid('vault_id').notNullable().references('id').inTable('client_vaults').onDelete('CASCADE');
     t.text('zone').notNullable();
-    t.uuid('folder_id')
-      .nullable()
-      .references('id')
-      .inTable('vault_folders')
-      .onDelete('CASCADE');
+    t.uuid('folder_id').nullable().references('id').inTable('vault_folders').onDelete('CASCADE');
     t.bigInteger('expected_size').notNullable();
     t.bigInteger('bytes_received').notNullable().defaultTo(0);
     t.jsonb('metadata').notNullable().defaultTo('{}'); // tus Upload-Metadata: filenameCiphertext, wrappedFileKey, mimeType
     t.timestamp('expires_at', { useTz: true }).notNullable();
-    t.uuid('created_by_user_id')
-      .nullable()
-      .references('id')
-      .inTable('users')
-      .onDelete('SET NULL');
+    t.uuid('created_by_user_id').nullable().references('id').inTable('users').onDelete('SET NULL');
     t.uuid('created_by_external_identity_id')
       .nullable()
       .references('id')

@@ -58,10 +58,7 @@ export function scorePassword(pw: string): PasswordStrengthResult {
     points -= 1;
   }
   // Run-of-three penalty (aaa / 123 / abc).
-  if (
-    /(.)\1{2,}/.test(pw) ||
-    /(?:012|123|234|345|456|567|678|789|890|abc|bcd|cde|def)/i.test(pw)
-  ) {
+  if (/(.)\1{2,}/.test(pw) || /(?:012|123|234|345|456|567|678|789|890|abc|bcd|cde|def)/i.test(pw)) {
     points -= 1;
     warnings.push('Avoid obvious runs like "123" or "aaa".');
   }
@@ -75,7 +72,15 @@ export function scorePassword(pw: string): PasswordStrengthResult {
   }
   const score: 0 | 1 | 2 | 3 | 4 = Math.max(0, Math.min(4, points)) as 0 | 1 | 2 | 3 | 4;
   const label: PasswordStrengthResult['label'] =
-    score === 0 ? 'weak' : score === 1 ? 'weak' : score === 2 ? 'fair' : score === 3 ? 'strong' : 'very strong';
+    score === 0
+      ? 'weak'
+      : score === 1
+        ? 'weak'
+        : score === 2
+          ? 'fair'
+          : score === 3
+            ? 'strong'
+            : 'very strong';
   if (classes < 3) warnings.push('Mix more character types (upper, lower, digits, symbols).');
   return { score, label, warnings };
 }

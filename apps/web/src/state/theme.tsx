@@ -1,6 +1,14 @@
 // Light/dark theme toggle with localStorage persistence and system fallback.
 // Apply via `html.classList.add('dark')`; Tailwind picks up the `dark:` variants.
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 
 type Mode = 'light' | 'dark' | 'system';
 
@@ -15,7 +23,9 @@ const Ctx = createContext<ThemeCtx | null>(null);
 const STORAGE_KEY = 'vibe-connect:theme';
 
 function prefersDark(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  return (
+    typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
+  );
 }
 
 function apply(mode: Mode): 'light' | 'dark' {
@@ -54,7 +64,10 @@ export function ThemeProvider({ children }: { children: ReactNode }): JSX.Elemen
     setMode(effective === 'dark' ? 'light' : 'dark');
   }, [effective, setMode]);
 
-  const value = useMemo(() => ({ mode, effective, setMode, toggle }), [mode, effective, setMode, toggle]);
+  const value = useMemo(
+    () => ({ mode, effective, setMode, toggle }),
+    [mode, effective, setMode, toggle],
+  );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

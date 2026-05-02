@@ -284,7 +284,10 @@ usersRouter.get(
       return;
     }
     const rows = await usersRepo.listActiveDeviceKeysForUsers(ids);
-    const grouped: Record<string, Array<{ deviceId: string; publicKey: string; keyVersion: number }>> = {};
+    const grouped: Record<
+      string,
+      Array<{ deviceId: string; publicKey: string; keyVersion: number }>
+    > = {};
     for (const r of rows) {
       const list = grouped[r.user_id] ?? (grouped[r.user_id] = []);
       list.push({ deviceId: r.device_id, publicKey: r.public_key, keyVersion: r.key_version });

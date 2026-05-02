@@ -73,7 +73,9 @@ export async function decryptVaultFile(
 ): Promise<Uint8Array> {
   const c = await loadCrypto();
   const fileKey = await c.secretboxDecrypt(wrappedFileKey, zoneKey);
-  const envelope = JSON.parse(c.utf8Decode(new Uint8Array(ciphertext))) as CryptoModule.SymmetricEnvelope;
+  const envelope = JSON.parse(
+    c.utf8Decode(new Uint8Array(ciphertext)),
+  ) as CryptoModule.SymmetricEnvelope;
   return c.decryptMessage(envelope, fileKey);
 }
 

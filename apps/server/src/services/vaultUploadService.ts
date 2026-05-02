@@ -15,11 +15,7 @@ import { randomBytes } from 'node:crypto';
 import { attachmentStorage } from './attachmentStorage.js';
 import { scanBuffer } from './clamav.js';
 import { auditRepo } from '../repositories/audit.js';
-import {
-  clientVaultsRepo,
-  vaultFilesRepo,
-  type VaultUploadRow,
-} from '../repositories/vaults.js';
+import { clientVaultsRepo, vaultFilesRepo, type VaultUploadRow } from '../repositories/vaults.js';
 import { publish } from '../realtime/pgFanout.js';
 import { logger } from '../logger.js';
 import { TusFinalizeError } from './tusServer.js';

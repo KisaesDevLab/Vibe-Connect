@@ -136,11 +136,13 @@ function ConversationPlaceholder(): JSX.Element {
         <div className="font-medium text-slate-700">Select a conversation to get started.</div>
         <ul className="text-xs text-slate-500 text-left list-disc pl-5 space-y-1">
           <li>Click a coworker in the left sidebar to open a direct message.</li>
-          <li>Use <strong>Multi-select</strong> in the sidebar to start a group conversation.</li>
+          <li>
+            Use <strong>Multi-select</strong> in the sidebar to start a group conversation.
+          </li>
           <li>
             Press <kbd className="px-1 rounded bg-slate-100 border border-slate-200">Ctrl/⌘</kbd>+
-            <kbd className="px-1 rounded bg-slate-100 border border-slate-200">K</kbd> to jump to
-            an existing conversation, or{' '}
+            <kbd className="px-1 rounded bg-slate-100 border border-slate-200">K</kbd> to jump to an
+            existing conversation, or{' '}
             <kbd className="px-1 rounded bg-slate-100 border border-slate-200">Ctrl/⌘</kbd>+
             <kbd className="px-1 rounded bg-slate-100 border border-slate-200">F</kbd> to search
             decrypted messages.
@@ -190,44 +192,44 @@ export function App(): JSX.Element {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-      <BrowserRouter basename={routerBasename}>
-        <AuthProvider>
-          <CryptoProvider>
-            <SearchProvider>
-              <RealtimeProvider>
-                <DeviceSyncRunner />
-                <GlobalShortcuts />
-                <LockOverlay />
-                <InstallGate>
-                <Routes>
-                  <Route path="/setup" element={<InstallPage />} />
-                  <Route path="/login" element={<LoginPage />} />
-                  <Route path="/enrollment" element={<EnrollmentPage />} />
-                  <Route
-                    path="/"
-                    element={
-                      <Protected>
-                        <AppShell />
-                      </Protected>
-                    }
-                  >
-                    <Route index element={<ConversationPlaceholder />} />
-                    <Route path="inbox" element={<InboxPage />} />
-                    <Route path="conversation/:id" element={<ConversationView />} />
-                    <Route path="admin/*" element={<AdminPage />} />
-                    <Route path="account" element={<AccountPage />} />
-                    <Route path="notifications" element={<NotificationPrefsPage />} />
-                    <Route path="requests" element={<RequestsDashboardPage />} />
-                    <Route path="clients/:id/files" element={<ClientFilesPage />} />
-                  </Route>
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
-                </InstallGate>
-              </RealtimeProvider>
-            </SearchProvider>
-          </CryptoProvider>
-        </AuthProvider>
-      </BrowserRouter>
+        <BrowserRouter basename={routerBasename}>
+          <AuthProvider>
+            <CryptoProvider>
+              <SearchProvider>
+                <RealtimeProvider>
+                  <DeviceSyncRunner />
+                  <GlobalShortcuts />
+                  <LockOverlay />
+                  <InstallGate>
+                    <Routes>
+                      <Route path="/setup" element={<InstallPage />} />
+                      <Route path="/login" element={<LoginPage />} />
+                      <Route path="/enrollment" element={<EnrollmentPage />} />
+                      <Route
+                        path="/"
+                        element={
+                          <Protected>
+                            <AppShell />
+                          </Protected>
+                        }
+                      >
+                        <Route index element={<ConversationPlaceholder />} />
+                        <Route path="inbox" element={<InboxPage />} />
+                        <Route path="conversation/:id" element={<ConversationView />} />
+                        <Route path="admin/*" element={<AdminPage />} />
+                        <Route path="account" element={<AccountPage />} />
+                        <Route path="notifications" element={<NotificationPrefsPage />} />
+                        <Route path="requests" element={<RequestsDashboardPage />} />
+                        <Route path="clients/:id/files" element={<ClientFilesPage />} />
+                      </Route>
+                      <Route path="*" element={<Navigate to="/" replace />} />
+                    </Routes>
+                  </InstallGate>
+                </RealtimeProvider>
+              </SearchProvider>
+            </CryptoProvider>
+          </AuthProvider>
+        </BrowserRouter>
       </ThemeProvider>
     </QueryClientProvider>
   );

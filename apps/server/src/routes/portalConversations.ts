@@ -56,11 +56,7 @@ portalConversationsRouter.get(
         'c.type': 'external',
       })
       .whereNull('cm.removed_at')
-      .select(
-        'c.id',
-        'c.display_name as displayName',
-        'c.updated_at as updatedAt',
-      )
+      .select('c.id', 'c.display_name as displayName', 'c.updated_at as updatedAt')
       .orderBy('c.updated_at', 'desc');
     // Last-message hint: per-conversation metadata for the sidebar card so the
     // client can show "just now" / "2 replies" without a round trip. Minimal

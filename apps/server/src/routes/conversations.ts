@@ -361,7 +361,10 @@ conversationsRouter.post(
     // when disabled, but a hostile client could still POST the field; reject
     // here. The cap is also applied so a tweaked client can't pick a 100-year
     // timer.
-    if (parsed.data.destructAfterViewSeconds !== null && parsed.data.destructAfterViewSeconds !== undefined) {
+    if (
+      parsed.data.destructAfterViewSeconds !== null &&
+      parsed.data.destructAfterViewSeconds !== undefined
+    ) {
       const firmSettings = await db('firm_settings').where({ id: 1 }).first();
       if (!(firmSettings?.message_destruct_enabled ?? true)) {
         res.status(400).json({ error: 'destruct_disabled' });
@@ -369,9 +372,7 @@ conversationsRouter.post(
       }
       const cap = Number(firmSettings?.message_destruct_max_seconds ?? 604800);
       if (parsed.data.destructAfterViewSeconds > cap) {
-        res
-          .status(400)
-          .json({ error: 'destruct_seconds_too_large', details: { maxSeconds: cap } });
+        res.status(400).json({ error: 'destruct_seconds_too_large', details: { maxSeconds: cap } });
         return;
       }
     }
@@ -711,7 +712,10 @@ const wrappedKeysPatchSchema = z.object({
       (m) => Object.keys(m).every((k) => wrappedKeyEntryPattern.test(k)),
       'added_key_format_invalid',
     )
-    .refine((m) => Object.keys(m).length > 0 && Object.keys(m).length <= 64, 'added_count_out_of_range'),
+    .refine(
+      (m) => Object.keys(m).length > 0 && Object.keys(m).length <= 64,
+      'added_count_out_of_range',
+    ),
 });
 
 conversationsRouter.patch(
@@ -729,10 +733,7 @@ conversationsRouter.patch(
       res.status(404).json({ error: 'no_conversation_key' });
       return;
     }
-    const { added } = await conversationKeysRepo.mergeWrappedAdditive(
-      latest.id,
-      parsed.data.added,
-    );
+    const { added } = await conversationKeysRepo.mergeWrappedAdditive(latest.id, parsed.data.added);
     if (added.length > 0) {
       // Wake every member's tabs — especially the device that just enrolled,
       // which may not have joined the conv: room yet.

@@ -46,14 +46,14 @@ describe('L-1: retention max-iterations cap emits a warning', () => {
         })),
       );
       await runRetentionSweep();
-      const capCall = warnSpy.mock.calls.find(
-        (args) => args[0] === 'retention.max_iterations_hit',
-      );
+      const capCall = warnSpy.mock.calls.find((args) => args[0] === 'retention.max_iterations_hit');
       expect(capCall).toBeUndefined();
     } finally {
       await db('messages').where({ conversation_id: convId }).del();
       await db('conversations').where({ id: convId }).del();
-      await db('users').where({ id: (staff as { id: string }).id }).del();
+      await db('users')
+        .where({ id: (staff as { id: string }).id })
+        .del();
       await db('firm_settings').where({ id: 1 }).update({ retention_days: null });
       warnSpy.mockRestore();
     }
@@ -144,11 +144,13 @@ describe('L-4 / portal lastMessageAt is surfaced for the sidebar', () => {
     });
     const res = await request(app).get('/portal/conversations').set('Cookie', cookie);
     expect(res.status).toBe(200);
-    const row = (res.body.conversations as Array<{
-      id: string;
-      lastMessageAt: string | null;
-      lastMessageSource: string | null;
-    }>).find((c) => c.id === conv.id);
+    const row = (
+      res.body.conversations as Array<{
+        id: string;
+        lastMessageAt: string | null;
+        lastMessageSource: string | null;
+      }>
+    ).find((c) => c.id === conv.id);
     expect(row).toBeDefined();
     expect(row!.lastMessageAt).toBeTruthy();
     expect(row!.lastMessageSource).toBe('email-in');

@@ -97,9 +97,7 @@ describe('admin providers API', () => {
         'email.smtp.host',
       ]),
     );
-    const twilio = res.body.items.find(
-      (x: { key: string }) => x.key === 'sms.twilio.auth_token',
-    );
+    const twilio = res.body.items.find((x: { key: string }) => x.key === 'sms.twilio.auth_token');
     expect(twilio).toEqual(
       expect.objectContaining({
         configured: true,
@@ -135,18 +133,14 @@ describe('admin providers API', () => {
 
   it('PUT rejects unknown keys with 400', async () => {
     const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
-    const res = await admin
-      .put('/admin/providers/not.a.real.key')
-      .send({ value: 'whatever' });
+    const res = await admin.put('/admin/providers/not.a.real.key').send({ value: 'whatever' });
     expect(res.status).toBe(400);
     expect(res.body.error).toBe('unknown_key');
   });
 
   it('PUT rejects empty value with 400', async () => {
     const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
-    const res = await admin
-      .put('/admin/providers/sms.twilio.auth_token')
-      .send({ value: '   ' });
+    const res = await admin.put('/admin/providers/sms.twilio.auth_token').send({ value: '   ' });
     expect([400]).toContain(res.status);
   });
 
@@ -170,9 +164,7 @@ describe('admin providers API', () => {
   it('requires admin — non-admin staff cannot read or write', async () => {
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
     const r1 = await alice.get('/admin/providers');
-    const r2 = await alice
-      .put('/admin/providers/sms.twilio.auth_token')
-      .send({ value: 'x' });
+    const r2 = await alice.put('/admin/providers/sms.twilio.auth_token').send({ value: 'x' });
     const r3 = await alice.delete('/admin/providers/sms.twilio.auth_token');
     expect(r1.status).toBe(403);
     expect(r2.status).toBe(403);

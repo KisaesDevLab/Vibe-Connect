@@ -229,9 +229,7 @@ export const conversationKeysRepo = {
     trx?: Knex.Transaction,
   ): Promise<{ added: string[] }> {
     const q = trx ?? db;
-    const row = await q<ConversationKeyRow>('conversation_keys')
-      .where({ id })
-      .first();
+    const row = await q<ConversationKeyRow>('conversation_keys').where({ id }).first();
     if (!row) return { added: [] };
     const existing = row.wrapped_keys ?? {};
     const toAdd: Record<string, string> = {};

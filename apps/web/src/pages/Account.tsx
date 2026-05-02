@@ -97,7 +97,8 @@ function ChangePasswordCard(): JSX.Element {
       setNext('');
       setNext2('');
     },
-    onError: (e: Error) => setError(e.message.includes('400') ? 'Wrong current password.' : e.message),
+    onError: (e: Error) =>
+      setError(e.message.includes('400') ? 'Wrong current password.' : e.message),
   });
   function onSubmit(e: FormEvent): void {
     e.preventDefault();
@@ -112,8 +113,8 @@ function ChangePasswordCard(): JSX.Element {
     <section className="bg-white rounded shadow-card p-4 space-y-3">
       <h3 className="font-medium text-slate-900">Change password</h3>
       <p className="text-xs text-slate-500">
-        Changing your password does not re-wrap your device keys. Your device passphrase
-        (set at enrollment) is separate.
+        Changing your password does not re-wrap your device keys. Your device passphrase (set at
+        enrollment) is separate.
       </p>
       <form onSubmit={onSubmit} className="space-y-3">
         <label className="block">
@@ -174,8 +175,8 @@ function MyDevicesCard(): JSX.Element {
     <section className="bg-white rounded shadow-card p-4 space-y-3">
       <h3 className="font-medium text-slate-900">My enrolled devices</h3>
       <p className="text-xs text-slate-500">
-        Each row is a browser or app that holds a wrapped copy of your encryption key.
-        Contact your firm admin to revoke a lost device.
+        Each row is a browser or app that holds a wrapped copy of your encryption key. Contact your
+        firm admin to revoke a lost device.
       </p>
       {q.isLoading ? (
         <div className="text-sm text-slate-500">Loading…</div>
@@ -198,7 +199,9 @@ function MyDevicesCard(): JSX.Element {
                 <td className="p-2">{d.clientVersion ?? '—'}</td>
                 <td
                   className="p-2"
-                  title={d.lastHeartbeatAt ? new Date(d.lastHeartbeatAt).toLocaleString() : undefined}
+                  title={
+                    d.lastHeartbeatAt ? new Date(d.lastHeartbeatAt).toLocaleString() : undefined
+                  }
                 >
                   {d.lastHeartbeatAt ? relativeTime(d.lastHeartbeatAt) : '—'}
                 </td>
@@ -208,8 +211,8 @@ function MyDevicesCard(): JSX.Element {
             {(q.data?.devices ?? []).length === 0 && (
               <tr>
                 <td className="p-2 text-slate-500" colSpan={5}>
-                  No devices enrolled yet. Sign in from another browser or the desktop
-                  app to enroll; each enrollment adds a wrapped copy of your key here.
+                  No devices enrolled yet. Sign in from another browser or the desktop app to
+                  enroll; each enrollment adds a wrapped copy of your key here.
                 </td>
               </tr>
             )}

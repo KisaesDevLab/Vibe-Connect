@@ -44,7 +44,8 @@ function dueChip(row: RequestDashboardRow): DueChip {
     };
   }
   if (diffDays === 0) return { label: 'Due today', className: 'bg-amber-100 text-amber-900' };
-  if (diffDays <= 3) return { label: `Due in ${diffDays}d`, className: 'bg-amber-50 text-amber-800' };
+  if (diffDays <= 3)
+    return { label: `Due in ${diffDays}d`, className: 'bg-amber-50 text-amber-800' };
   return { label: `Due ${row.list.dueDate}`, className: 'bg-slate-100 text-slate-700' };
 }
 
@@ -134,8 +135,8 @@ export function RequestsDashboardPage(): JSX.Element {
         <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <h2 className="text-base font-semibold mb-1">Requests are disabled</h2>
           <p>
-            An admin has turned off the client-requests feature. Existing lists are preserved
-            and will reappear when an admin re-enables Requests in{' '}
+            An admin has turned off the client-requests feature. Existing lists are preserved and
+            will reappear when an admin re-enables Requests in{' '}
             <NavLink to="/admin/settings" className="underline font-medium">
               Admin → Settings
             </NavLink>
@@ -285,10 +286,7 @@ export function RequestsDashboardPage(): JSX.Element {
                   </td>
                   <td className="px-3 py-2 align-middle">
                     <span
-                      className={clsx(
-                        'text-[10px] font-medium px-2 py-0.5 rounded',
-                        due.className,
-                      )}
+                      className={clsx('text-[10px] font-medium px-2 py-0.5 rounded', due.className)}
                     >
                       {due.label}
                     </span>

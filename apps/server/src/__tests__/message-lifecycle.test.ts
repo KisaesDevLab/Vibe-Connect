@@ -56,7 +56,11 @@ async function send(
   bundle: { key: Uint8Array; rotationVersion: number },
   extra: Record<string, unknown> = {},
 ) {
-  const env = await crypto.encryptMessage(crypto.utf8Encode(body), bundle.key, bundle.rotationVersion);
+  const env = await crypto.encryptMessage(
+    crypto.utf8Encode(body),
+    bundle.key,
+    bundle.rotationVersion,
+  );
   const wire = Buffer.from(JSON.stringify(env), 'utf8').toString('base64');
   return kurt.agent
     .post(`/conversations/${convId}/messages`)
@@ -135,8 +139,10 @@ describe('Phase 27 — message edit/delete/destruct', () => {
     expect(new Date(row.destruct_at).toISOString()).toBe(firstStamp);
 
     // Audit row fired exactly once.
-    const audits = await db('audit_log')
-      .where({ action: 'message.destruct_armed', target_id: msgId });
+    const audits = await db('audit_log').where({
+      action: 'message.destruct_armed',
+      target_id: msgId,
+    });
     expect(audits).toHaveLength(1);
   });
 
@@ -175,7 +181,9 @@ describe('Phase 27 — message edit/delete/destruct', () => {
     // Backdate destruct_at into the past so the route's `<= now()` check fires
     // without us actually waiting.
     const { db } = await import('../db/knex.js');
-    await db('messages').where({ id: msgId }).update({ destruct_at: new Date(Date.now() - 1000) });
+    await db('messages')
+      .where({ id: msgId })
+      .update({ destruct_at: new Date(Date.now() - 1000) });
 
     const env2 = await crypto.encryptMessage(crypto.utf8Encode('late'), bundle.key, 1);
     const ed = await kurt.agent.patch(`/conversations/messages/${msgId}`).send({
@@ -194,7 +202,9 @@ describe('Phase 27 — message edit/delete/destruct', () => {
 
     // Backdate destruct_at and run the ticker once.
     const { db } = await import('../db/knex.js');
-    await db('messages').where({ id: msgId }).update({ destruct_at: new Date(Date.now() - 1000) });
+    await db('messages')
+      .where({ id: msgId })
+      .update({ destruct_at: new Date(Date.now() - 1000) });
 
     const { runOnce } = await import('../services/destructMessages.js');
     const fired = await runOnce();
@@ -230,8 +240,10 @@ describe('Phase 27 — message edit/delete/destruct', () => {
 
     // Audit row was written.
     const { db } = await import('../db/knex.js');
-    const audit = await db('audit_log')
-      .where({ action: 'admin.message_history_viewed', target_id: msgId });
+    const audit = await db('audit_log').where({
+      action: 'admin.message_history_viewed',
+      target_id: msgId,
+    });
     expect(audit).toHaveLength(1);
   });
 

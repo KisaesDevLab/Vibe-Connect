@@ -17,9 +17,7 @@ exports.seed = async function seed(knex) {
   // (e.g. a fresh prod install with operators added later), grab the
   // earliest-created user. If there's NO user yet (truly empty db), bail —
   // templates can be created from the admin UI later.
-  const owner = await knex('users')
-    .orderBy('created_at')
-    .first('id');
+  const owner = await knex('users').orderBy('created_at').first('id');
   if (!owner) return;
 
   const templates = [

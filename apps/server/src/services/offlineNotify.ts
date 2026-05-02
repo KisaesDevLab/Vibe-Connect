@@ -79,12 +79,15 @@ async function loadSender(args: OfflineNotifyArgs, trx?: Knex.Transaction): Prom
  * fall back to "no DND" so a malformed setting can never silently swallow
  * notifications.
  */
-function isWithinDnd(now: Date, prefs: {
-  dnd_enabled: boolean;
-  dnd_start: string;
-  dnd_end: string;
-  timezone: string;
-}): boolean {
+function isWithinDnd(
+  now: Date,
+  prefs: {
+    dnd_enabled: boolean;
+    dnd_start: string;
+    dnd_end: string;
+    timezone: string;
+  },
+): boolean {
   if (!prefs.dnd_enabled) return false;
   const m = /^(\d{2}):(\d{2})$/;
   const ms = m.exec(prefs.dnd_start);
@@ -359,9 +362,8 @@ async function loadExternalRecipients(conversationId: string): Promise<ExternalR
     );
   return rows.map((r) => {
     const prefs = (r.preferences as Record<string, unknown> | null) ?? {};
-    const email = typeof r.email === 'string' && !/@placeholder\.invalid$/i.test(r.email)
-      ? r.email
-      : null;
+    const email =
+      typeof r.email === 'string' && !/@placeholder\.invalid$/i.test(r.email) ? r.email : null;
     return {
       external_identity_id: String(r.external_identity_id),
       display_name: String(r.display_name ?? ''),

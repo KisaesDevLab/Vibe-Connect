@@ -15,8 +15,6 @@ import { db } from '../db/knex.js';
 
 /** Delete all persisted sessions for the given user. Returns count deleted. */
 export async function terminateSessionsForUser(userId: string): Promise<number> {
-  const rows = await db('session')
-    .whereRaw(`sess->>'userId' = ?`, [userId])
-    .del();
+  const rows = await db('session').whereRaw(`sess->>'userId' = ?`, [userId]).del();
   return rows;
 }

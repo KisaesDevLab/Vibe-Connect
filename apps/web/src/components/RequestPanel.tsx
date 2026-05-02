@@ -66,12 +66,7 @@ function useConversationKey(
     void (async () => {
       try {
         const c = await import('@vibe-connect/crypto');
-        const convKey = await c.unwrapConversationKey(
-          wrappedKeys,
-          rid,
-          device.publicKey,
-          secret,
-        );
+        const convKey = await c.unwrapConversationKey(wrappedKeys, rid, device.publicKey, secret);
         if (!cancelled) setKeyState({ convKey });
       } catch {
         // Most often a stale rotationVersion (we'll get the next batch on
@@ -97,9 +92,7 @@ function useConversationKey(
     return async (ciphertextBase64: string): Promise<string> => {
       try {
         const c = await import('@vibe-connect/crypto');
-        const env = JSON.parse(atob(ciphertextBase64)) as Parameters<
-          typeof c.decryptMessage
-        >[0];
+        const env = JSON.parse(atob(ciphertextBase64)) as Parameters<typeof c.decryptMessage>[0];
         const plain = await c.decryptMessage(env, keyState.convKey);
         return c.utf8Decode(plain);
       } catch {
@@ -142,10 +135,11 @@ export function RequestPanel({
   onClose,
 }: Props): JSX.Element | null {
   const qc = useQueryClient();
-  const { encryptText, decryptText, ready: keyReady } = useConversationKey(
-    conversationId,
-    wrappedKeys,
-  );
+  const {
+    encryptText,
+    decryptText,
+    ready: keyReady,
+  } = useConversationKey(conversationId, wrappedKeys);
 
   const listsQ = useQuery({
     queryKey: ['request-lists', 'conv', conversationId],
@@ -208,15 +202,12 @@ export function RequestPanel({
     onError: onMutationError,
   });
   const nudgeMut = useMutation({
-    mutationFn: (listId: string) =>
-      api.requests.nudge(listId, { channel: 'all' }),
+    mutationFn: (listId: string) => api.requests.nudge(listId, { channel: 'all' }),
     onError: (err: Error) => {
       // The API maps rate-limit collisions to 429; surface that instead of
       // the generic "Request failed" string so the staff can see why.
       setError(
-        err.message === '429'
-          ? 'Already nudged 3 times in the last 24 hours.'
-          : err.message,
+        err.message === '429' ? 'Already nudged 3 times in the last 24 hours.' : err.message,
       );
     },
     onSuccess: () => setError(null),
@@ -229,9 +220,7 @@ export function RequestPanel({
       <header className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
         <div>
           <h3 className="font-semibold text-sm text-slate-900">Requests</h3>
-          <p className="text-[11px] text-slate-500">
-            Track what you&apos;ve asked from the client
-          </p>
+          <p className="text-[11px] text-slate-500">Track what you&apos;ve asked from the client</p>
         </div>
         <button
           type="button"
@@ -277,7 +266,9 @@ export function RequestPanel({
       {error && (
         <div className="mx-4 mt-2 text-xs rounded-md border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2 flex justify-between gap-2">
           <span>{error}</span>
-          <button onClick={() => setError(null)} aria-label="Dismiss">×</button>
+          <button onClick={() => setError(null)} aria-label="Dismiss">
+            ×
+          </button>
         </div>
       )}
 
@@ -354,9 +345,7 @@ function ListDetail({
   nudging: boolean;
 }): JSX.Element {
   const progress = progressOf(list.items);
-  const hasOpenWork = list.items.some(
-    (i) => i.status === 'pending' || i.status === 'revision',
-  );
+  const hasOpenWork = list.items.some((i) => i.status === 'pending' || i.status === 'revision');
   return (
     <div className="px-4 py-3 space-y-3">
       <div>
@@ -390,9 +379,7 @@ function ListDetail({
         {list.description && (
           <p className="text-[11px] text-slate-600 mt-0.5">{list.description}</p>
         )}
-        {list.dueDate && (
-          <p className="text-[11px] text-slate-500 mt-0.5">Due {list.dueDate}</p>
-        )}
+        {list.dueDate && <p className="text-[11px] text-slate-500 mt-0.5">Due {list.dueDate}</p>}
       </div>
       <div>
         <div className="flex items-center justify-between text-[11px] text-slate-600 mb-1">
@@ -476,12 +463,8 @@ function ItemRow({
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-slate-800 truncate">{title}</span>
           </div>
-          {description && (
-            <p className="text-[11px] text-slate-600 mt-0.5">{description}</p>
-          )}
-          {item.dueDate && (
-            <p className="text-[10px] text-slate-500 mt-0.5">Due {item.dueDate}</p>
-          )}
+          {description && <p className="text-[11px] text-slate-600 mt-0.5">{description}</p>}
+          {item.dueDate && <p className="text-[10px] text-slate-500 mt-0.5">Due {item.dueDate}</p>}
           {revisionNote ? (
             <p className="text-[11px] text-rose-700 mt-1 bg-rose-50 border border-rose-100 rounded px-2 py-1">
               <span className="font-medium">Revision note:</span> {revisionNote}
@@ -492,8 +475,7 @@ function ItemRow({
             // ciphertext note, so it leaves the field null and we render a
             // cleartext explainer.
             <p className="text-[11px] text-rose-700 mt-1 bg-rose-50 border border-rose-100 rounded px-2 py-1">
-              Auto-reverted by virus scan or scan-unavailable error. Ask the
-              client to re-upload.
+              Auto-reverted by virus scan or scan-unavailable error. Ask the client to re-upload.
             </p>
           ) : null}
         </div>
@@ -673,8 +655,8 @@ function NewListModal({
         <header className="px-4 py-3 border-b border-slate-200">
           <h3 className="font-semibold text-sm text-slate-900">New request list</h3>
           <p className="text-[11px] text-slate-500">
-            Pick a template, or build a list from scratch. Item titles are end-to-end
-            encrypted; the list title stays visible to the firm so reminders can name it.
+            Pick a template, or build a list from scratch. Item titles are end-to-end encrypted; the
+            list title stays visible to the firm so reminders can name it.
           </p>
         </header>
         <div className="px-4 py-3 space-y-3 overflow-y-auto flex-1">
@@ -690,13 +672,9 @@ function NewListModal({
                   // items array so the user gets a clean draft instead of the
                   // old template's leftovers. Confirm if the items are dirty.
                   const dirty = items.some(
-                    (i) =>
-                      i.title.trim().length > 0 || i.description.trim().length > 0,
+                    (i) => i.title.trim().length > 0 || i.description.trim().length > 0,
                   );
-                  if (
-                    !dirty ||
-                    confirm('Clear the prefilled items and start blank?')
-                  ) {
+                  if (!dirty || confirm('Clear the prefilled items and start blank?')) {
                     setTemplateId('');
                     setItems([blankDraftItem()]);
                   }
@@ -773,9 +751,7 @@ function NewListModal({
                     value={it.description}
                     onChange={(e) =>
                       setItems((prev) =>
-                        prev.map((p, i) =>
-                          i === idx ? { ...p, description: e.target.value } : p,
-                        ),
+                        prev.map((p, i) => (i === idx ? { ...p, description: e.target.value } : p)),
                       )
                     }
                     maxLength={2000}
@@ -805,9 +781,7 @@ function NewListModal({
                       value={it.dueDate}
                       onChange={(e) =>
                         setItems((prev) =>
-                          prev.map((p, i) =>
-                            i === idx ? { ...p, dueDate: e.target.value } : p,
-                          ),
+                          prev.map((p, i) => (i === idx ? { ...p, dueDate: e.target.value } : p)),
                         )
                       }
                       className="text-xs rounded border border-slate-300 px-1.5 py-0.5"

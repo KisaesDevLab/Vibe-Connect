@@ -13,11 +13,7 @@
 import { Router, type Request as ExpressRequest } from 'express';
 import { db } from '../db/knex.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
-import {
-  presentItem,
-  presentList,
-  RequestsServiceError,
-} from '../services/requestsService.js';
+import { presentItem, presentList, RequestsServiceError } from '../services/requestsService.js';
 import {
   requestItemsRepo,
   requestListsRepo,
@@ -67,7 +63,10 @@ function getSession(req: ExpressRequest): PortalSessionShim {
  * ciphertext. List titles often encode engagement names ("Smith Family
  * 1040") that are exactly what step-up verification is meant to gate.
  */
-async function isStepupNeeded(externalIdentityId: string, verifiedUntil: string | null): Promise<boolean> {
+async function isStepupNeeded(
+  externalIdentityId: string,
+  verifiedUntil: string | null,
+): Promise<boolean> {
   const identity = await db('external_identities')
     .where({ id: externalIdentityId })
     .first('verification_required', 'verification_last4_hash');

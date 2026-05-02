@@ -32,9 +32,7 @@ function oneOf<T extends string>(key: string, allowed: readonly T[], def: T): T 
   const v = process.env[key];
   if (v === undefined || v === '') return def;
   if (!(allowed as readonly string[]).includes(v)) {
-    throw new Error(
-      `Invalid ${key}=${v}; expected one of ${allowed.join(', ')}`,
-    );
+    throw new Error(`Invalid ${key}=${v}; expected one of ${allowed.join(', ')}`);
   }
   return v as T;
 }
@@ -150,11 +148,7 @@ export const env = {
   // response shape is preserved so the absence isn't probe-able). The
   // db-backed `firm_settings.email_provider` enum doesn't include 'none'
   // — flipping the override here is the only way to disable mail wholesale.
-  emailProvider: str('EMAIL_PROVIDER', 'mock') as
-    | 'mock'
-    | 'postmark'
-    | 'postfix'
-    | 'none',
+  emailProvider: str('EMAIL_PROVIDER', 'mock') as 'mock' | 'postmark' | 'postfix' | 'none',
   emailFrom: str('EMAIL_FROM', 'Vibe Connect <noreply@vibeconnect.local>'),
   emailInboundDomain: str('EMAIL_INBOUND_DOMAIN', 'connect.vibeconnect.local'),
   postmarkServerToken: str('POSTMARK_SERVER_TOKEN', ''),

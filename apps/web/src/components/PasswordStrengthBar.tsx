@@ -4,12 +4,7 @@ import { scorePassword } from './passwordStrength.js';
 export function PasswordStrengthBar({ password }: { password: string }): JSX.Element | null {
   const result = useMemo(() => scorePassword(password), [password]);
   if (password.length === 0) return null;
-  const fills = [
-    result.score >= 1,
-    result.score >= 2,
-    result.score >= 3,
-    result.score >= 4,
-  ];
+  const fills = [result.score >= 1, result.score >= 2, result.score >= 3, result.score >= 4];
   const color =
     result.score === 0
       ? 'bg-rose-500'
@@ -45,7 +40,9 @@ export function PasswordStrengthBar({ password }: { password: string }): JSX.Ele
         >
           {result.label}
         </span>
-        {result.warnings[0] && <span className="text-slate-500 truncate">{result.warnings[0]}</span>}
+        {result.warnings[0] && (
+          <span className="text-slate-500 truncate">{result.warnings[0]}</span>
+        )}
       </div>
     </div>
   );

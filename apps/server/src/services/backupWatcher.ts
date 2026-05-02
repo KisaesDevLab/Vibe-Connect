@@ -30,15 +30,13 @@ let timer: NodeJS.Timeout | null = null;
 
 async function checkOnce(): Promise<void> {
   try {
-    const settings = (await db('firm_settings')
-      .where({ id: 1 })
-      .first('last_backup_ok_at')) as { last_backup_ok_at: Date | null } | undefined;
+    const settings = (await db('firm_settings').where({ id: 1 }).first('last_backup_ok_at')) as
+      | { last_backup_ok_at: Date | null }
+      | undefined;
     const lastOk = settings?.last_backup_ok_at ?? null;
 
     if (lastOk) {
-      const days = Math.floor(
-        (Date.now() - new Date(lastOk).getTime()) / (1000 * 60 * 60 * 24),
-      );
+      const days = Math.floor((Date.now() - new Date(lastOk).getTime()) / (1000 * 60 * 60 * 24));
       if (days >= env.backupBlockDays) {
         logger.warn('backup.stale_blocking', {
           daysSinceBackup: days,
@@ -58,16 +56,15 @@ async function checkOnce(): Promise<void> {
 
     // Never any heartbeat. Honor the grace window from install date so a
     // fresh appliance gets time to set up Duplicati before logging warnings.
-    const installRow = (await db('firm_keys')
-      .whereNull('retired_at')
-      .first('created_at')) as { created_at: Date } | undefined;
+    const installRow = (await db('firm_keys').whereNull('retired_at').first('created_at')) as
+      | { created_at: Date }
+      | undefined;
     if (!installRow) {
       // Pre-install. The /health endpoint is already telling the operator
       // they need to run /install — no need to layer another warning.
       return;
     }
-    const ageHours =
-      (Date.now() - new Date(installRow.created_at).getTime()) / (1000 * 60 * 60);
+    const ageHours = (Date.now() - new Date(installRow.created_at).getTime()) / (1000 * 60 * 60);
     if (ageHours < GRACE_PERIOD_HOURS) return;
     logger.warn('backup.never_heartbeat', {
       hoursSinceInstall: Math.floor(ageHours),

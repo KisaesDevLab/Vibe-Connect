@@ -63,12 +63,9 @@ export function isClientRecipientId(recipientId: string): boolean {
 
 export const zoneSchema = z.enum(['shared', 'staff_only']);
 
-const B64_REGEX = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$/;
-const b64String = z
-  .string()
-  .min(1)
-  .max(65536)
-  .regex(B64_REGEX, 'must be RFC4648 base64');
+const B64_REGEX =
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=|[A-Za-z0-9+/]{4})$/;
+const b64String = z.string().min(1).max(65536).regex(B64_REGEX, 'must be RFC4648 base64');
 // Folder names are short; cap at 4 KiB ciphertext envelope.
 const b64Name = z.string().min(1).max(4096).regex(B64_REGEX, 'must be RFC4648 base64');
 
@@ -120,7 +117,10 @@ export type VaultServiceErrorCode =
   | 'client_delete_blocked';
 
 export class VaultServiceError extends Error {
-  constructor(public readonly code: VaultServiceErrorCode, message?: string) {
+  constructor(
+    public readonly code: VaultServiceErrorCode,
+    message?: string,
+  ) {
     super(message ?? code);
     this.name = 'VaultServiceError';
   }
@@ -283,7 +283,9 @@ export async function recipientIdsForCaller(args: {
       .where({ user_id: args.userId })
       .whereNull('revoked_at')
       .select('device_id');
-    return devices.map((d: { device_id: string }) => recipientIdForUserDevice(args.userId!, d.device_id));
+    return devices.map((d: { device_id: string }) =>
+      recipientIdForUserDevice(args.userId!, d.device_id),
+    );
   }
   if (args.externalIdentityId && args.sessionId) {
     return [recipientIdForClientSession(args.externalIdentityId, args.sessionId)];
@@ -476,11 +478,13 @@ export async function patchFolder(args: {
     if (before.vault_id !== args.vaultId) throw new VaultServiceError('not_found');
     if (before.deleted_at) throw new VaultServiceError('invalid_state', 'deleted');
     const updates: Parameters<typeof vaultFoldersRepo.updatePartial>[1] = {};
-    if (args.patch.nameCiphertext !== undefined) updates.name_ciphertext = args.patch.nameCiphertext;
+    if (args.patch.nameCiphertext !== undefined)
+      updates.name_ciphertext = args.patch.nameCiphertext;
     if (args.patch.contentKeyVersion !== undefined)
       updates.content_key_version = args.patch.contentKeyVersion;
     if (args.patch.sortOrder !== undefined) updates.sort_order = args.patch.sortOrder;
-    if (args.patch.parentFolderId !== undefined) updates.parent_folder_id = args.patch.parentFolderId;
+    if (args.patch.parentFolderId !== undefined)
+      updates.parent_folder_id = args.patch.parentFolderId;
     const after = await vaultFoldersRepo.updatePartial(args.folderId, updates, trx);
     if (!after) throw new VaultServiceError('not_found');
     const isRename = args.patch.nameCiphertext !== undefined && Object.keys(updates).length === 1;

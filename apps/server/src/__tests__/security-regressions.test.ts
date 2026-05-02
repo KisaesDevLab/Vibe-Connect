@@ -85,13 +85,11 @@ describe('C1: message DELETE blocks removed ex-members', () => {
     // DELETE /:id/members with a body — it requires rotated wrapped keys so
     // the remaining members get a fresh conversation key the ex-member never
     // saw. For this test any non-empty map is fine; we don't decrypt.
-    const removed = await kurt.agent
-      .delete(`/conversations/${convId}/members`)
-      .send({
-        userId: alice.userId,
-        rotatedWrappedKeys: { [`${kurt.userId}:k`]: 'rotated-placeholder' },
-        rotationVersion: bundle.rotationVersion + 1,
-      });
+    const removed = await kurt.agent.delete(`/conversations/${convId}/members`).send({
+      userId: alice.userId,
+      rotatedWrappedKeys: { [`${kurt.userId}:k`]: 'rotated-placeholder' },
+      rotationVersion: bundle.rotationVersion + 1,
+    });
     expect([200, 204]).toContain(removed.status);
 
     // Alice tries to delete her own prior message — must be refused because

@@ -96,10 +96,7 @@ async function handleSubmit(): Promise<void> {
     }
 
     const label = probe.appName ?? norm.hostname;
-    setStatus(
-      'success',
-      `Connected to ${label} (build ${probe.buildVersion}). Loading…`,
-    );
+    setStatus('success', `Connected to ${label} (build ${probe.buildVersion}). Loading…`);
 
     await setApplianceUrl(norm.url);
     await navigateToAppliance();

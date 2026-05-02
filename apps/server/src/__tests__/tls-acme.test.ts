@@ -196,9 +196,7 @@ describe('PATCH /admin/settings stores TLS fields', () => {
       }),
     );
 
-    const bad = await admin
-      .patch('/admin/settings')
-      .send({ tlsStaffDomain: 'not a domain' });
+    const bad = await admin.patch('/admin/settings').send({ tlsStaffDomain: 'not a domain' });
     expect(bad.status).toBe(400);
   });
 });
@@ -216,9 +214,7 @@ describe('HTTP-01 responder + background order', () => {
     // the responder mid-flight. We wrap the order in a racing probe: once
     // orderState.tokensSeen has a token, hit the responder and record
     // what it returned.
-    const { runAcmeOrder, getHttp01KeyAuthorization } = await import(
-      '../services/tlsAcme.js'
-    );
+    const { runAcmeOrder, getHttp01KeyAuthorization } = await import('../services/tlsAcme.js');
 
     // Kick the order + race it with a probe against the responder. The
     // FakeClient sleeps between provision and cleanup to give us a
@@ -258,9 +254,7 @@ describe('HTTP-01 responder + background order', () => {
     expect(probeBody).toBe(orderState.keyAuthByToken.get(token!));
 
     // Token is cleaned up after cleanup() runs.
-    const afterCleanup = await request(app).get(
-      `/.well-known/acme-challenge/${token}`,
-    );
+    const afterCleanup = await request(app).get(`/.well-known/acme-challenge/${token}`);
     expect(afterCleanup.status).toBe(404);
 
     // Cert files landed on disk.
@@ -278,9 +272,7 @@ describe('HTTP-01 responder + background order', () => {
   });
 
   it('unknown token returns 404 cleanly with no auth required', async () => {
-    const res = await request(app).get(
-      '/.well-known/acme-challenge/does-not-exist-anywhere',
-    );
+    const res = await request(app).get('/.well-known/acme-challenge/does-not-exist-anywhere');
     expect(res.status).toBe(404);
     expect(res.text).toBe('not found');
   });

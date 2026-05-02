@@ -297,9 +297,7 @@ portalUploadRouter.post(
     // transition. Idempotent — already-submitted items no-op.
     const linkedMsg = await messagesRepo.byId(meta.data.messageId);
     if (linkedMsg) {
-      const linkedItemId = readRequestItemId(
-        linkedMsg.ciphertext_meta as Record<string, unknown>,
-      );
+      const linkedItemId = readRequestItemId(linkedMsg.ciphertext_meta as Record<string, unknown>);
       if (linkedItemId) {
         const attachmentCount = (await attachmentsRepo.byMessage(linkedMsg.id)).length;
         const hasTextBody = linkedMsg.ciphertext.length > 0;

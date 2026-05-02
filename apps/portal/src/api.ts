@@ -67,12 +67,9 @@ export const portalApi = {
   // rides the existing /portal/conversations/:id/messages flow with
   // ciphertextMeta.requestItemId set — there's no dedicated submit endpoint.
   requests: {
-    list: () =>
-      json<{ lists: RequestList[]; requestsDisabled?: boolean }>('/portal/request-lists'),
+    list: () => json<{ lists: RequestList[]; requestsDisabled?: boolean }>('/portal/request-lists'),
     get: (id: string) =>
-      json<{ list: RequestListWithItems }>(
-        `/portal/request-lists/${encodeURIComponent(id)}`,
-      ),
+      json<{ list: RequestListWithItems }>(`/portal/request-lists/${encodeURIComponent(id)}`),
   },
   // Phase 26: Client Vault — Shared zone only from the portal.
   vault: {

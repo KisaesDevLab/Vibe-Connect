@@ -507,13 +507,9 @@ async function loadSessionFromCookie(req: Request): Promise<PortalSession | null
   // the session and forcing a fresh verify flow; we audit-log the drift so
   // anything suspicious surfaces in admin review.
   const sessionUaFamily = uaFamily(session.user_agent);
-  const currentUaFamily = uaFamily(
-    (req.headers['user-agent'] as string | undefined) ?? null,
-  );
+  const currentUaFamily = uaFamily((req.headers['user-agent'] as string | undefined) ?? null);
   if (sessionUaFamily && currentUaFamily && sessionUaFamily !== currentUaFamily) {
-    await db('client_sessions')
-      .where({ id: session.id })
-      .update({ revoked_at: db.fn.now() });
+    await db('client_sessions').where({ id: session.id }).update({ revoked_at: db.fn.now() });
     await auditRepo.write({
       actorExternalIdentityId: session.external_identity_id,
       action: 'portal.session_ua_drift_revoked',

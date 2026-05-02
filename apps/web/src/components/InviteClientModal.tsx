@@ -155,9 +155,11 @@ export function InviteClientModal({
   const [reverifyHours, setReverifyHours] = useState<ReverifyOption>(defaultReverifyHours);
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
-  const [duplicate, setDuplicate] = useState<
-    { id: string; displayName: string; field: 'email' | 'phone' } | null
-  >(null);
+  const [duplicate, setDuplicate] = useState<{
+    id: string;
+    displayName: string;
+    field: 'email' | 'phone';
+  } | null>(null);
 
   const pinRefs = useRef<Array<HTMLInputElement | null>>([]);
   const firstFieldRef = useRef<HTMLInputElement | null>(null);
@@ -174,8 +176,7 @@ export function InviteClientModal({
       // Channel pre-fill. Prefer the stored preference flag if present so a
       // client invited via both channels comes back with both toggled on; fall
       // back to "whatever has a value" for legacy rows that never saved the flag.
-      const emailInitiallyEnabled =
-        resendTarget.emailNotifications ?? Boolean(resendTarget.email);
+      const emailInitiallyEnabled = resendTarget.emailNotifications ?? Boolean(resendTarget.email);
       setEmailEnabled(emailInitiallyEnabled);
       setEmailValue(resendTarget.email ?? '');
       setEmailError(null);
@@ -239,14 +240,13 @@ export function InviteClientModal({
   const resendKeepsVerification = Boolean(
     isResend && resendTarget && verificationType === resendTarget.verificationType && last4AllBlank,
   );
-  const last4Complete =
-    verificationType === 'none' || last4AllDigits || resendKeepsVerification;
+  const last4Complete = verificationType === 'none' || last4AllDigits || resendKeepsVerification;
   const canSubmit = Boolean(
     displayName.trim().length > 0 &&
-      displayName.trim().length <= 80 &&
-      anyChannel &&
-      last4Complete &&
-      !submitting,
+    displayName.trim().length <= 80 &&
+    anyChannel &&
+    last4Complete &&
+    !submitting,
   );
 
   const previewFirstName = useMemo(() => {
@@ -423,7 +423,7 @@ export function InviteClientModal({
         );
       } else {
         setServerError(
-          err instanceof Error ? err.message : 'We couldn\'t reach the server. Please try again.',
+          err instanceof Error ? err.message : "We couldn't reach the server. Please try again.",
         );
       }
       setSubmitting(false);
@@ -881,9 +881,9 @@ function LockIcon(): JSX.Element {
 // markup is **both**, driven by the channel checkbox state.
 function renderPreview(text: string): string {
   const escape = (s: string): string =>
-    s
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-  return escape(text).replace(/\*\*(.+?)\*\*/g, '<strong class="font-medium text-slate-800">$1</strong>');
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return escape(text).replace(
+    /\*\*(.+?)\*\*/g,
+    '<strong class="font-medium text-slate-800">$1</strong>',
+  );
 }

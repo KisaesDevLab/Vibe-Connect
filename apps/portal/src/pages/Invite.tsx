@@ -89,7 +89,9 @@ export function InvitePage(): JSX.Element {
         {state === 'working' && (
           <>
             <h1 className="text-lg font-semibold">Accepting your invite…</h1>
-            <p className="text-sm text-slate-500">One moment while we set up your secure connection.</p>
+            <p className="text-sm text-slate-500">
+              One moment while we set up your secure connection.
+            </p>
           </>
         )}
         {state === 'done' && (

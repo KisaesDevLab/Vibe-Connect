@@ -60,9 +60,7 @@ describe('POST /clients/invite', () => {
 
     // Row inserted with bcrypt'd last-4 (never the plaintext).
     const { db } = await import('../db/knex.js');
-    const row = await db('external_identities')
-      .where({ id: res.body.externalIdentityId })
-      .first();
+    const row = await db('external_identities').where({ id: res.body.externalIdentityId }).first();
     expect(row.email).toBe('rob-email-only@cfhcpa.test');
     expect(row.verification_type).toBe('ssn');
     expect(row.verification_required).toBe(true);
@@ -88,9 +86,7 @@ describe('POST /clients/invite', () => {
     expect(res.body.deliveryStatus.email).toBeNull();
 
     const { db } = await import('../db/knex.js');
-    const row = await db('external_identities')
-      .where({ id: res.body.externalIdentityId })
-      .first();
+    const row = await db('external_identities').where({ id: res.body.externalIdentityId }).first();
     expect(row.phone).toBe('+15555550123');
     expect(row.invited_via).toBe('sms');
     expect(row.verification_type).toBe('none');
@@ -175,11 +171,13 @@ describe('POST /clients/invite', () => {
   });
 
   it('requires auth', async () => {
-    const res = await request(app).post('/clients/invite').send({
-      displayName: 'Anon Try',
-      channels: { email: { enabled: true, value: 'anon@cfhcpa.test' }, sms: { enabled: false } },
-      verification: { type: 'none' },
-    });
+    const res = await request(app)
+      .post('/clients/invite')
+      .send({
+        displayName: 'Anon Try',
+        channels: { email: { enabled: true, value: 'anon@cfhcpa.test' }, sms: { enabled: false } },
+        verification: { type: 'none' },
+      });
     expect(res.status).toBe(401);
   });
 
@@ -200,7 +198,10 @@ describe('POST /clients/invite', () => {
     for (const bad of ['', '1', '123', '12345', 'abcd', '12 4', '12.4', '--34']) {
       const res = await agent.post('/clients/invite').send({
         displayName: 'Last4 Fuzz',
-        channels: { email: { enabled: true, value: 'last4fuzz@cfhcpa.test' }, sms: { enabled: false } },
+        channels: {
+          email: { enabled: true, value: 'last4fuzz@cfhcpa.test' },
+          sms: { enabled: false },
+        },
         verification: { type: 'ssn', last4: bad, reverifyEveryHours: 24 },
       });
       expect(res.status).toBe(400);
@@ -212,7 +213,10 @@ describe('POST /clients/invite', () => {
     for (const bad of [0, 1, 12, 48, 72, 9999, -1]) {
       const res = await agent.post('/clients/invite').send({
         displayName: 'Rev Fuzz',
-        channels: { email: { enabled: true, value: 'revfuzz@cfhcpa.test' }, sms: { enabled: false } },
+        channels: {
+          email: { enabled: true, value: 'revfuzz@cfhcpa.test' },
+          sms: { enabled: false },
+        },
         verification: { type: 'ssn', last4: '1234', reverifyEveryHours: bad },
       });
       expect(res.status).toBe(400);
@@ -242,9 +246,7 @@ describe('POST /clients/invite', () => {
     });
     expect(res.status).toBe(201);
     const { db } = await import('../db/knex.js');
-    const row = await db('external_identities')
-      .where({ id: res.body.externalIdentityId })
-      .first();
+    const row = await db('external_identities').where({ id: res.body.externalIdentityId }).first();
     expect(row.display_name).toBe('Trimmed Name');
   });
 
@@ -263,9 +265,7 @@ describe('POST /clients/invite', () => {
     });
     expect(res.status).toBe(201);
     const { db } = await import('../db/knex.js');
-    const row = await db('external_identities')
-      .where({ id: res.body.externalIdentityId })
-      .first();
+    const row = await db('external_identities').where({ id: res.body.externalIdentityId }).first();
     expect(row.display_name).toBe(xss);
   });
 
@@ -329,9 +329,7 @@ describe('POST /clients/invite', () => {
     });
     expect(res.status).toBe(201);
     const { db } = await import('../db/knex.js');
-    const row = await db('external_identities')
-      .where({ id: res.body.externalIdentityId })
-      .first();
+    const row = await db('external_identities').where({ id: res.body.externalIdentityId }).first();
     expect(row.firm_client_ref).toBe('ENG-2026-42');
   });
 
