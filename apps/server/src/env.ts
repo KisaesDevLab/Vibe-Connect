@@ -39,6 +39,40 @@ function oneOf<T extends string>(key: string, allowed: readonly T[], def: T): T 
   return v as T;
 }
 
+/**
+ * Parse a CORS allow-list. Comma-separated. Each entry is either a literal
+ * origin (e.g. `https://connect.firm.com`) or `regex:<pattern>` for a
+ * RegExp match. Empty list = unset = caller falls through to the legacy
+ * reflect-origin behavior.
+ *
+ * Why both literals and regex: appliance customers usually have one or two
+ * known FQDNs (literal is safer); but on-prem deploys with rotating
+ * sub-tenant subdomains (e.g. `*.firm-internal.local`) need a pattern.
+ * Regex is opt-in per-entry so a typo in a literal can't accidentally
+ * become a permissive regex.
+ */
+type OriginRule = { kind: 'literal'; value: string } | { kind: 'regex'; value: RegExp };
+function parseAllowedOrigin(): OriginRule[] {
+  const raw = process.env.ALLOWED_ORIGIN;
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((entry) => {
+      if (entry.startsWith('regex:')) {
+        const pat = entry.slice('regex:'.length);
+        try {
+          return { kind: 'regex' as const, value: new RegExp(pat) };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new Error(`Invalid regex in ALLOWED_ORIGIN: ${pat} — ${msg}`);
+        }
+      }
+      return { kind: 'literal' as const, value: entry };
+    });
+}
+
 const isProd = process.env.NODE_ENV === 'production';
 
 export const env = {
@@ -76,6 +110,14 @@ export const env = {
   // pipeline (image build args), defaults to 'dev' for local containers.
   buildVersion: str('BUILD_VERSION', 'dev'),
 
+  // Optional CORS allow-list. Empty = legacy reflect-origin behavior (the
+  // default appliance shape, where SameSite=lax + session checks gate writes
+  // and CORS is only used to keep XHR errors quiet). Set this in deployments
+  // where you want explicit CORS enforcement — e.g. when the appliance is
+  // reachable from a marketing site or a third-party portal that should NOT
+  // be allowed to issue credentialed XHRs against the API.
+  allowedOrigin: parseAllowedOrigin(),
+
   databaseUrl: str('DATABASE_URL', 'postgres://vibe:vibe@localhost:5435/vibe_connect'),
   testDatabaseUrl: str(
     'TEST_DATABASE_URL',
@@ -101,7 +143,18 @@ export const env = {
   // operator explicitly opts in by setting this flag.
   s3AllowPrivateEndpoint: bool('S3_ALLOW_PRIVATE_ENDPOINT', false),
 
-  emailProvider: str('EMAIL_PROVIDER', 'mock') as 'mock' | 'postmark' | 'postfix',
+  // 'none' is an explicit "no email" configuration: every send call returns
+  // success without dispatching. Use it on appliance deployments that
+  // don't have outbound mail configured yet (the portal's access-code flow
+  // will keep working since SMS can carry the code, and the same /identify
+  // response shape is preserved so the absence isn't probe-able). The
+  // db-backed `firm_settings.email_provider` enum doesn't include 'none'
+  // — flipping the override here is the only way to disable mail wholesale.
+  emailProvider: str('EMAIL_PROVIDER', 'mock') as
+    | 'mock'
+    | 'postmark'
+    | 'postfix'
+    | 'none',
   emailFrom: str('EMAIL_FROM', 'Vibe Connect <noreply@vibeconnect.local>'),
   emailInboundDomain: str('EMAIL_INBOUND_DOMAIN', 'connect.vibeconnect.local'),
   postmarkServerToken: str('POSTMARK_SERVER_TOKEN', ''),
@@ -163,6 +216,41 @@ export const env = {
   oidcScopes: str('OIDC_SCOPES', 'openid email profile'),
   oidcAdminClaim: str('OIDC_ADMIN_CLAIM', ''),
   oidcAdminClaimValue: str('OIDC_ADMIN_CLAIM_VALUE', ''),
+
+  // Backup-criticality enforcement. Default `false` (standalone) leaves
+  // every code path unchanged for self-managed installs. Set to `true` in
+  // the appliance overlay where Duplicati is expected to POST to
+  // /admin/backup-heartbeat after each successful run; the server then
+  // surfaces a banner via /admin/key-status when no successful heartbeat
+  // arrives in BACKUP_WARN_DAYS (warn) or BACKUP_BLOCK_DAYS (refuse new
+  // vault uploads — existing data still readable).
+  backupRequired: bool('BACKUP_REQUIRED', false),
+  backupWarnDays: num('BACKUP_WARN_DAYS', 7),
+  backupBlockDays: num('BACKUP_BLOCK_DAYS', 30),
+  // Bearer token Duplicati (or any backup tool) uses to authenticate to
+  // /admin/backup-heartbeat. Empty string disables the endpoint — Duplicati
+  // would have to be misconfigured to call an empty-token endpoint, but the
+  // gate hard-fails authentication anyway. Length-checked for at least
+  // 32 chars (entropy floor) when BACKUP_REQUIRED is on; see the assertion
+  // block at the bottom of this file.
+  backupHeartbeatToken: str('BACKUP_HEARTBEAT_TOKEN', ''),
+  // tus partial-upload cleanup. Default 24h matches the previously
+  // hardcoded UPLOAD_TTL_SECONDS so existing installs keep the same
+  // disk-reclaim cadence after upgrade. Set higher (e.g. 168 for 7
+  // days) on appliances where upload resumes routinely span days
+  // because clients work over flaky tethered connections — the disk
+  // cost is bounded by ATTACHMENT_MAX_BYTES per parked upload.
+  // Disk-only impact; lowering does not lose finished uploads (those
+  // are moved out of tus-incoming into the durable store on finalize).
+  tusOrphanTtlHours: num('TUS_ORPHAN_TTL_HOURS', 24),
+  // Override target for the staff app's `/desktop/` redirect. Defaults to
+  // GitHub releases; pin to an internal mirror if the appliance can't
+  // reach github.com. The redirect itself is in the nginx config; this
+  // value is plumbed through there at template-render time.
+  desktopDownloadUrl: str(
+    'DESKTOP_DOWNLOAD_URL',
+    'https://github.com/KisaesDevLab/Vibe-Connect/releases/latest',
+  ),
 
   // Where the tlsAcme service writes issued certs. Inside the container the
   // app mounts the same host directory that nginx read-only-mounts, so a
@@ -231,6 +319,18 @@ if (env.attachmentDriver === 's3' && env.s3Endpoint && !env.s3AllowPrivateEndpoi
     if (err instanceof Error && err.message.startsWith('S3_ENDPOINT points at')) throw err;
     throw new Error(`S3_ENDPOINT is not a valid URL: ${env.s3Endpoint}`);
   }
+}
+
+if (env.backupRequired && env.backupHeartbeatToken.length < 32) {
+  // Without a long, opaque token any HTTP caller can clear the staleness
+  // gate by POSTing to /admin/backup-heartbeat. The check is a 32-char
+  // floor rather than a strict format because operators may want to
+  // generate it via `openssl rand -hex 32` (64 hex chars), via a UUID
+  // generator (36 chars), or via a passphrase-style mnemonic — only
+  // entropy matters.
+  throw new Error(
+    'BACKUP_REQUIRED=true demands BACKUP_HEARTBEAT_TOKEN of at least 32 characters. Generate with: openssl rand -hex 32',
+  );
 }
 
 if (env.isProd && process.env.SESSION_SECURE === undefined) {

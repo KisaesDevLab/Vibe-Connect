@@ -24,6 +24,11 @@ set -e
 : "${HTTP_PORT:=80}"
 : "${HTTPS_PORT:=443}"
 : "${PORTAL_HTTPS_PORT:=8443}"
+# Where the staff `/desktop/` redirect points. Default is the public
+# GitHub releases page; appliances on isolated networks override to a
+# locally-mirrored URL. Mounted only on the staff server block — the
+# portal SPA never surfaces this path.
+: "${DESKTOP_DOWNLOAD_URL:=https://github.com/KisaesDevLab/Vibe-Connect/releases/latest}"
 
 # Whitelist BASE_PATH to either '/' or '/<segment>'. The value flows into
 # nginx's sub_filter substitution and the SPA's <base href> attribute; an
@@ -73,13 +78,13 @@ case "${TLS_MODE}" in
     ;;
 esac
 
-export BASE_PATH BASE_PATH_HREF TLS_MODE TLS_MODE_INTERNAL HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT
+export BASE_PATH BASE_PATH_HREF TLS_MODE TLS_MODE_INTERNAL HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT DESKTOP_DOWNLOAD_URL
 
 echo "[entrypoint] rendering nginx.conf with BASE_PATH=${BASE_PATH} TLS_MODE=${TLS_MODE}"
 # Restrict envsubst to our explicit list — without this, $http_accept,
 # $proxy_add_x_forwarded_for, $request_uri, etc. (nginx runtime variables
 # with leading $) would all get clobbered by env values that don't exist.
-envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT}' \
+envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${DESKTOP_DOWNLOAD_URL}' \
   < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
 
 # In external TLS mode there are no certs on disk to watch — drop the inotify

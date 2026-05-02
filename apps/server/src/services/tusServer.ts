@@ -336,7 +336,13 @@ export async function reapExpiredTusUploads(): Promise<number> {
   } catch {
     return dropped;
   }
-  const cutoff = Date.now() - UPLOAD_TTL_SECONDS * 1000;
+  // Disk-sweep cutoff is operator-tunable via TUS_ORPHAN_TTL_HOURS; the
+  // upload-init expiry above (UPLOAD_TTL_SECONDS) stays at 24h so a
+  // longer disk-sweep window can't accidentally hold DB rows past their
+  // protocol-level Upload-Expires header. Defaults match the legacy
+  // hardcoded behavior; raising the env keeps orphans on disk longer
+  // for clients that resume late, lowering reclaims faster.
+  const cutoff = Date.now() - env.tusOrphanTtlHours * 60 * 60 * 1000;
   for (const name of entries) {
     if (!name.endsWith('.part')) continue;
     const full = path.join(dir, name);

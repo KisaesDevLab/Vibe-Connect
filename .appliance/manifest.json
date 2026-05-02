@@ -1,0 +1,152 @@
+{
+  "$comment": "Vibe-Appliance metadata for Vibe-Connect. Read by the appliance bootstrap to render compose, env templates, and the admin console panel. Path-prefix mode (BASE_PATH=/connect); multi-subdomain support is a deferred follow-on.",
+  "schemaVersion": 1,
+  "slug": "vibe-connect",
+  "displayName": "Vibe Connect",
+  "description": "End-to-end encrypted messaging and document sharing for CPA firms and their clients",
+  "userFacing": true,
+  "image": {
+    "server": "ghcr.io/kisaesdevlab/vibe-connect-server",
+    "client": "ghcr.io/kisaesdevlab/vibe-connect-client",
+    "defaultTag": "latest"
+  },
+  "ports": {
+    "server": 4000,
+    "clientStaff": 443,
+    "clientPortal": 8443
+  },
+  "distribution": {
+    "mode": "path-prefix",
+    "basePathEnv": "BASE_PATH",
+    "basePathDefault": "/connect",
+    "sessionCookiePathEnv": "SESSION_COOKIE_PATH",
+    "tlsModeEnv": "TLS_MODE"
+  },
+  "ingress": {
+    "audiences": [
+      {
+        "name": "staff",
+        "target": "vibe-connect-client:443",
+        "websocket": true,
+        "note": "Staff SPA + /api proxy. Caddy upstream terminates TLS in appliance mode (TLS_MODE=external)."
+      },
+      {
+        "name": "portal",
+        "target": "vibe-connect-client:8443",
+        "websocket": true,
+        "note": "Client portal SPA + /portal proxy. Same nginx image, different port."
+      }
+    ]
+  },
+  "depends": ["postgres"],
+  "comment_no_redis": "Realtime fanout uses Postgres LISTEN/NOTIFY (apps/server/src/realtime/pgFanout.ts). Redis is NOT required.",
+  "env": {
+    "required": [
+      { "name": "SESSION_SECRET", "generate": "hex32", "secret": true },
+      {
+        "name": "DATABASE_URL",
+        "from": "shared-postgres-url",
+        "database": "vibe_connect",
+        "user": "vibe"
+      },
+      {
+        "name": "BACKUP_HEARTBEAT_TOKEN",
+        "generate": "hex32",
+        "secret": true,
+        "doc": "Bearer token Duplicati POSTs to /admin/backup-heartbeat. Required when BACKUP_REQUIRED=true."
+      },
+      { "name": "SITE_URL", "from": "subdomain-url", "subdomain": "connect" },
+      {
+        "name": "PORTAL_URL",
+        "from": "subdomain-url",
+        "subdomain": "connect",
+        "suffix": "/portal"
+      },
+      { "name": "API_URL", "from": "subdomain-url", "subdomain": "connect" }
+    ],
+    "optional": [
+      { "name": "BASE_PATH", "default": "/connect" },
+      { "name": "SESSION_COOKIE_PATH", "default": "/connect" },
+      { "name": "TLS_MODE", "default": "external" },
+      { "name": "SESSION_SECURE", "default": "true" },
+      { "name": "MIGRATIONS_AUTO", "default": "false" },
+      { "name": "BACKUP_REQUIRED", "default": "true" },
+      { "name": "BACKUP_WARN_DAYS", "default": "7" },
+      { "name": "BACKUP_BLOCK_DAYS", "default": "30" },
+      {
+        "name": "EMAIL_PROVIDER",
+        "default": "none",
+        "doc": "mock | postmark | postfix | none. Set to 'none' to ship without outbound mail; portal access codes still work via SMS."
+      },
+      { "name": "EMAIL_FROM", "doc": "Required when EMAIL_PROVIDER is set" },
+      { "name": "POSTMARK_SERVER_TOKEN", "secret": true },
+      { "name": "SMTP_HOST" },
+      { "name": "SMTP_PORT", "default": "587" },
+      { "name": "SMTP_USER", "secret": true },
+      { "name": "SMTP_PASS", "secret": true },
+      {
+        "name": "SMS_PROVIDER",
+        "default": "mock",
+        "doc": "mock | textlink | twilio. Default 'mock' so a misconfigured appliance doesn't accidentally bill the firm."
+      },
+      { "name": "TEXTLINK_API_KEY", "secret": true },
+      { "name": "TEXTLINK_WEBHOOK_SECRET", "secret": true },
+      { "name": "TWILIO_ACCOUNT_SID", "secret": true },
+      { "name": "TWILIO_AUTH_TOKEN", "secret": true },
+      { "name": "TWILIO_FROM_NUMBER" },
+      { "name": "VAPID_PUBLIC_KEY" },
+      { "name": "VAPID_PRIVATE_KEY", "secret": true },
+      { "name": "VAPID_SUBJECT", "default": "mailto:admin@vibeconnect.local" },
+      { "name": "ALLOWED_ORIGIN", "doc": "Comma-separated CORS allow-list. Empty = reflect-origin." },
+      { "name": "ALLOW_UNSCANNED_UPLOADS", "default": "0" },
+      { "name": "CLAMD_HOST" },
+      { "name": "CLAMD_PORT", "default": "3310" },
+      { "name": "TUS_ORPHAN_TTL_HOURS", "default": "168" },
+      {
+        "name": "DESKTOP_DOWNLOAD_URL",
+        "default": "https://github.com/KisaesDevLab/Vibe-Connect/releases/latest"
+      }
+    ]
+  },
+  "database": { "name": "vibe_connect", "user": "vibe" },
+  "firstLogin": {
+    "type": "self-register-first-firm-on-install",
+    "url": "/install",
+    "note": "First POST /install creates the firm key and returns the 24-word recovery phrase. The phrase is shown ONCE and never stored server-side. The operator MUST capture it; loss of both the recovery phrase and a Postgres backup is unrecoverable. Send the install URL to the firm partner who will manage user provisioning."
+  },
+  "health": "/health",
+  "ping": "/ping",
+  "migrations": {
+    "command": ["sh", "-c", "cd /app/apps/server && npx --no-install knex --knexfile ./knexfile.cjs migrate:latest"],
+    "autoEnvVar": "MIGRATIONS_AUTO",
+    "note": "Set MIGRATIONS_AUTO=false in the appliance overlay so the bootstrap runs migrations centrally instead of each container racing on startup."
+  },
+  "backup": {
+    "volumes": ["postgres-data", "uploads"],
+    "criticalVolumes": ["postgres-data"],
+    "tlsVolumeIsRecoverable": true,
+    "tlsNote": "The /var/lib/vibe/connect/tls bind-mount is intentionally NOT in criticalVolumes. ACME-issued certs are re-derivable; backing them up is fine but losing them just means a re-issue, not data loss. Critical state is the postgres-data volume (firm key + all conversation/vault metadata) and the uploads volume (attachment + vault file ciphertext).",
+    "backupVerification": {
+      "required": true,
+      "warnAfterDays": 7,
+      "blockUploadsAfterDays": 30,
+      "heartbeatEndpoint": "/admin/backup-heartbeat",
+      "heartbeatTokenEnv": "BACKUP_HEARTBEAT_TOKEN",
+      "statusEndpoint": "/admin/key-status"
+    }
+  },
+  "desktopDistribution": {
+    "enabled": true,
+    "downloadPath": "/desktop/",
+    "audience": "staff",
+    "note": "The /desktop/ redirect is mounted only on the staff port (443), NOT the portal port (8443). Clients have no use for the desktop wrapper.",
+    "defaultRedirect": "https://github.com/KisaesDevLab/Vibe-Connect/releases/latest",
+    "envOverride": "DESKTOP_DOWNLOAD_URL"
+  },
+  "outOfScopeForV1": [
+    "Multi-subdomain ingress (connect.firm.com / client.firm.com) — deferred to a follow-on phase. Path-prefix is the canonical shape.",
+    "Code-signed Windows binaries — Phase B v1 ships unsigned MSI/NSIS; SmartScreen warning documented in docs/ops/DESKTOP.md.",
+    "Magic-link client auth — repo uses access codes (email or SMS); not changing.",
+    "Redis / BullMQ — not in the codebase; realtime uses Postgres LISTEN/NOTIFY."
+  ]
+}

@@ -50,12 +50,14 @@
       <details class="advanced">
         <summary>Advanced</summary>
         <p>
-          For local development against an HTTP server (e.g.
-          <code>http://localhost:4000</code>), enable the developer override:
+          Use this only on the office LAN with a server you trust (e.g.
+          <code>http://10.0.0.5:4000</code>) or for local development.
+          Plain HTTP is insecure — credentials may be visible to others
+          on the same network.
         </p>
         <label class="checkbox">
           <input id="allowHttp" type="checkbox" />
-          <span>Allow plain HTTP (development only)</span>
+          <span>Plain HTTP — only on the office LAN</span>
         </label>
       </details>
 

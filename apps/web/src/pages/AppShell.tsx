@@ -11,6 +11,7 @@ import {
 } from '../state/notifications.js';
 import { useCrypto } from '../state/crypto.js';
 import { useRealtime } from '../state/realtime.js';
+import { url } from '../lib/boot.js';
 
 import { useEffect, useRef, useState } from 'react';
 import { useAddToHomeScreen } from '../state/pwa.js';
@@ -79,6 +80,27 @@ function SignOutMenu({
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-72 rounded-md border border-slate-200 bg-white shadow-popover z-30 text-sm overflow-hidden">
+          {/*
+            Download Desktop link. The href is computed via url('/desktop/')
+            so it picks up BASE_PATH at runtime — single-app sees /desktop/,
+            multi-app sees /connect/desktop/. nginx 302s either to GitHub
+            releases or to whatever DESKTOP_DOWNLOAD_URL the operator
+            pinned. target=_blank because the redirect target is off-host
+            and we don't want to navigate the staff app away from itself.
+            Hidden in the portal SPA — this menu only renders in apps/web.
+          */}
+          <a
+            href={url('/desktop/')}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setOpen(false)}
+            className="block w-full text-left px-3 py-2 hover:bg-slate-50 text-slate-700 border-b border-slate-100"
+          >
+            <div className="font-medium">Download Desktop</div>
+            <div className="text-xs text-slate-500">
+              Windows installer for the Vibe Connect desktop app.
+            </div>
+          </a>
           <button
             type="button"
             onClick={() => {

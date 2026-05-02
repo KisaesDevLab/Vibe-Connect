@@ -27,6 +27,19 @@ services:
       SITE_URL: 'https://vibe.local/connect'
       PORTAL_URL: 'https://vibe.local/connect/portal'
       API_URL: 'https://vibe.local/connect'
+      # Migrations are appliance-managed in multi-app mode so the
+      # bootstrap can serialize them across siblings sharing one Postgres
+      # — letting each app's entrypoint race to migrate:latest is how
+      # you get "Migration directory is corrupt" at random.
+      MIGRATIONS_AUTO: 'false'
+      # Backup criticality is mandatory in the appliance shape: the
+      # operator's Duplicati job must POST to /admin/backup-heartbeat
+      # for the gate to clear. Operators must also export a long
+      # BACKUP_HEARTBEAT_TOKEN — the boot check in env.ts refuses to
+      # start if the token is missing or under 32 chars when
+      # BACKUP_REQUIRED is on.
+      BACKUP_REQUIRED: 'true'
+      BACKUP_HEARTBEAT_TOKEN: '${BACKUP_HEARTBEAT_TOKEN:?BACKUP_HEARTBEAT_TOKEN is required when BACKUP_REQUIRED=true}'
     ports: !reset []
     networks:
       - default

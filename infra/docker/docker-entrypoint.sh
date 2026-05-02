@@ -23,13 +23,24 @@ set -e
 
 cd /app/apps/server
 
-echo "[entrypoint] running pending migrations..."
-# `npx --no-install knex` finds the knex CLI in the repo's hoisted
-# node_modules without re-resolving from the registry — the runtime
-# image has yarn install --production already, so knex (a production
-# dep) is on disk. --no-install fails fast if it isn't, instead of
-# trying to fetch from npmjs.org with no network.
-npx --no-install knex --knexfile ./knexfile.cjs migrate:latest
+# MIGRATIONS_AUTO opt-out. Default `true` keeps the standalone first-boot
+# flow working (operator does `docker compose up -d`, server is ready). The
+# Vibe-Appliance overlay sets this to `false` so the appliance bootstrap
+# can serialize migrations across multiple Vibe apps that share one
+# Postgres — running them in parallel from each container's entrypoint
+# races the `knex_migrations` row insert and surfaces as "Migration
+# directory is corrupt" or duplicate-key errors at random.
+if [ "${MIGRATIONS_AUTO:-true}" = "true" ]; then
+  echo "[entrypoint] running pending migrations..."
+  # `npx --no-install knex` finds the knex CLI in the repo's hoisted
+  # node_modules without re-resolving from the registry — the runtime
+  # image has yarn install --production already, so knex (a production
+  # dep) is on disk. --no-install fails fast if it isn't, instead of
+  # trying to fetch from npmjs.org with no network.
+  npx --no-install knex --knexfile ./knexfile.cjs migrate:latest
+else
+  echo "[entrypoint] MIGRATIONS_AUTO=${MIGRATIONS_AUTO} — skipping migrations (appliance-managed)."
+fi
 
 echo "[entrypoint] starting Vibe Connect server..."
 exec node dist/index.js

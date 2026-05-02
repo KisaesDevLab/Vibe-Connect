@@ -196,8 +196,111 @@ should pass exactly once per test cycle.
 ### Updater (optional, requires release infra)
 
 - [ ] App detects a newer version on
-      `releases.vibeconnect.app/{target}/{arch}/{current_version}` and
-      shows the updater dialog.
+      `kisaesdevlab.github.io/Vibe-Connect/{target}/{arch}/{current_version}/latest.json`
+      and shows the updater dialog.
+
+## First-install on Windows (SmartScreen)
+
+The v1 MSI/NSIS bundles are **not** signed with a Microsoft-trusted
+code-signing certificate. SmartScreen will block the first-install with
+a full-screen blue dialog ("Windows protected your PC"). This is
+expected and will go away once we ship a Phase B follow-on with an EV
+cert (see "Code signing rollout" below).
+
+Tell customers to:
+
+1. Click **More info**.
+2. Click **Run anyway**.
+3. The installer launches normally. The warning does NOT reappear after
+   the first install.
+
+**Why we ship unsigned for v1.** SmartScreen reputation accrues with
+total verified downloads of a signed binary. We could buy a regular OV
+cert and wait weeks for reputation to build (during which every customer
+hits the warning anyway), or buy an EV cert (~$300/yr) and skip
+reputation entirely. v1 is a small audience of pilot CPA firms who can
+absorb the warning; v1.x ships with EV-signed binaries to the broader
+market.
+
+If a customer's IT policy forbids running unsigned binaries, they must
+either delay rollout to v1.1 OR install the desktop wrapper from inside
+a Group Policy unblocking exception. There is no in-product workaround.
+
+## Updater signing key rotation
+
+The Tauri auto-updater verifies a `latest.json` payload against an
+ed25519 public key embedded in `apps/desktop/src-tauri/tauri.conf.json`.
+Each release's `latest.json` is signed with the matching private key
+held in the GitHub Actions secret `TAURI_UPDATER_PRIVATE_KEY` (and
+`TAURI_UPDATER_PRIVATE_KEY_PASSWORD` if the keypair was generated with a
+password).
+
+### Generating the keypair (first time)
+
+```sh
+# Run on a trusted dev machine — the private key never leaves it.
+npx --yes @tauri-apps/cli@^2 signer generate -w apps/desktop/.tauri/signing.key
+```
+
+This emits two files:
+
+- `apps/desktop/.tauri/signing.key` — private key. **Add to `.gitignore`
+  immediately if not already.** Copy contents to GitHub repo settings →
+  Secrets and variables → Actions → New repository secret →
+  `TAURI_UPDATER_PRIVATE_KEY`.
+- `apps/desktop/.tauri/signing.key.pub` — public key. Paste this string
+  (the entire base64 blob) into `tauri.conf.json` as
+  `plugins.updater.pubkey`. Commit.
+
+After generating, **delete `apps/desktop/.tauri/signing.key` from disk**.
+The GitHub secret is the only durable copy.
+
+### Rotating the keypair
+
+You only need to rotate if the private key is suspected leaked or after
+a compromised dev machine. Updater rotation is a hard cliff: once a new
+`pubkey` ships in the desktop app, only updates signed by the new
+private key are accepted. Old installs that haven't yet pulled the
+build with the new pubkey will lose the ability to auto-update — they
+must reinstall manually.
+
+Procedure:
+
+1. Generate a new keypair as above.
+2. Build a new release (e.g. `v1.1.5`) embedding the new pubkey. CI
+   signs the `latest.json` with the new private key.
+3. Push the new release. Customers on `v1.1.4` won't auto-update to
+   `v1.1.5` because the signature is verified against the OLD pubkey
+   they have. They must download the new MSI manually from
+   `https://<appliance>/desktop/`.
+4. Rotate the GitHub secret to the new private key (delete the old
+   secret value).
+
+Plan rotations during a customer-facing maintenance window — a "manual
+reinstall" instruction is unavoidable.
+
+### Verifying the published manifest
+
+After a release tag pushes:
+
+```sh
+curl -s https://kisaesdevlab.github.io/Vibe-Connect/windows/x86_64/latest/latest.json | jq .
+```
+
+The `signature` field is the base64-encoded ed25519 signature over the
+bundle download URL. Tauri verifies it against the embedded `pubkey`
+when the user clicks "Update."
+
+## Code signing rollout (deferred)
+
+| Phase | Trigger | Effort |
+| --- | --- | --- |
+| v1 (now) | Pilot CPA firms accept SmartScreen warning | $0 |
+| v1.x | Open beta, > ~20 firms | EV cert procurement (~$300/yr, 5-10 business days) + CI integration (1 PR) |
+| v1.x+1 | Public release | Drop SmartScreen workaround from this doc |
+
+Owner: Kurt. Track in `docs/ops/FEEDBACK_TRACKER.md` once a customer
+hits the SmartScreen wall.
 
 ## Troubleshooting
 

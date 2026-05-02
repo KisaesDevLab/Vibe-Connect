@@ -24,6 +24,9 @@ jobs:
       packages: write   # push to ghcr.io
       id-token: write   # cosign keyless via OIDC
       contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      is_release: ${{ steps.meta.outputs.is_release }}
     steps:
       - uses: actions/checkout@v4
 
@@ -117,3 +120,240 @@ jobs:
           DIGEST: ${{ steps.build_client.outputs.digest }}
         run: |
           cosign sign --yes "ghcr.io/kisaesdevlab/vibe-connect-client@${DIGEST}"
+
+  # ---------- Windows desktop wrapper (Tauri 2) ----------
+  #
+  # Builds an unsigned-by-MSFT MSI + NSIS installer on `windows-latest` for
+  # x86_64. ARM64 deferred. Tauri's own ed25519 update signing is enabled
+  # only when the TAURI_UPDATER_PRIVATE_KEY secret is set — otherwise the
+  # binary still builds but the in-app updater will refuse to apply any
+  # update payload (which is the correct fail-closed behavior).
+  #
+  # Code-signing the MSI itself with a Microsoft-trusted EV cert is a
+  # separate, deferred concern — see docs/ops/DESKTOP.md for the
+  # SmartScreen workaround customers will see in the meantime.
+  build-desktop-windows:
+    runs-on: windows-latest
+    needs: [build-and-push]
+    permissions:
+      contents: write
+    outputs:
+      msi_path: ${{ steps.locate.outputs.msi_path }}
+      nsis_path: ${{ steps.locate.outputs.nsis_path }}
+      updater_path: ${{ steps.locate.outputs.updater_path }}
+      updater_sig_path: ${{ steps.locate.outputs.updater_sig_path }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          # Keying on Cargo.lock so a dep bump invalidates cleanly. The
+          # target dir is not cached because Tauri's wry build emits absolute
+          # paths that don't replay on a new runner — caching it would lead
+          # to "missing crate" link failures more often than wins.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Install workspace deps (production + dev — Tauri build needs Vite)
+        run: yarn install --frozen-lockfile
+
+      - name: Stamp Tauri bundle version from tag
+        # Cargo.toml + tauri.conf.json both carry the desktop version. CI
+        # rewrites them to match the tag so the auto-update manifest's
+        # version comparison and the user-visible "Vibe Connect 1.4.2"
+        # label both reflect what's actually shipping. Run only on real
+        # release tags so a `vX.Y.Z-rc1` doesn't pollute Cargo.lock.
+        if: needs.build-and-push.outputs.is_release == 'true'
+        shell: pwsh
+        run: |
+          $version = "${{ needs.build-and-push.outputs.version }}"
+          $cargo = Get-Content apps/desktop/src-tauri/Cargo.toml -Raw
+          $cargo = $cargo -replace '(?m)^version = "[^"]+"', "version = `"$version`""
+          Set-Content apps/desktop/src-tauri/Cargo.toml -Value $cargo -NoNewline
+          $conf = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw
+          $conf = $conf -replace '"version"\s*:\s*"[^"]+"', "`"version`": `"$version`""
+          Set-Content apps/desktop/src-tauri/tauri.conf.json -Value $conf -NoNewline
+
+      - name: Build Tauri bundle (Windows x86_64)
+        shell: pwsh
+        env:
+          # Empty when secret unset — Tauri builds without a signature in
+          # that case. Builds will still succeed; the updater just won't
+          # accept the produced .sig (which won't exist).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY_PASSWORD }}
+        run: yarn workspace "@vibe-connect/desktop" tauri:build
+
+      - id: locate
+        # Tauri 2 emits MSI / NSIS / updater bundles into predictable
+        # subdirs under target/release/bundle/. Glob for the produced
+        # files so the manifest step doesn't have to know the exact name
+        # (which embeds the version + arch).
+        shell: pwsh
+        run: |
+          $bundle = "apps/desktop/src-tauri/target/release/bundle"
+          $msi = (Get-ChildItem -Path "$bundle/msi" -Filter "*.msi" -File | Select-Object -First 1).FullName
+          $nsis = (Get-ChildItem -Path "$bundle/nsis" -Filter "*.exe" -File | Select-Object -First 1).FullName
+          # Updater bundle = the .nsis.zip / .msi.zip Tauri produces when
+          # createUpdaterArtifacts=true. We prefer the nsis updater bundle
+          # since the per-user installer doesn't trip UAC on update.
+          $upd = (Get-ChildItem -Path "$bundle/nsis" -Filter "*.nsis.zip" -File | Select-Object -First 1).FullName
+          $upd_sig = if ($upd) { "$upd.sig" } else { "" }
+          if ($upd_sig -and -not (Test-Path $upd_sig)) { $upd_sig = "" }
+          echo "msi_path=$msi" >> $env:GITHUB_OUTPUT
+          echo "nsis_path=$nsis" >> $env:GITHUB_OUTPUT
+          echo "updater_path=$upd" >> $env:GITHUB_OUTPUT
+          echo "updater_sig_path=$upd_sig" >> $env:GITHUB_OUTPUT
+
+      - name: Upload MSI artifact
+        if: steps.locate.outputs.msi_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-connect-desktop-msi-${{ needs.build-and-push.outputs.version }}
+          path: ${{ steps.locate.outputs.msi_path }}
+          if-no-files-found: error
+
+      - name: Upload NSIS artifact
+        if: steps.locate.outputs.nsis_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-connect-desktop-nsis-${{ needs.build-and-push.outputs.version }}
+          path: ${{ steps.locate.outputs.nsis_path }}
+          if-no-files-found: error
+
+      - name: Upload updater bundle (signed)
+        if: steps.locate.outputs.updater_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibe-connect-desktop-updater-${{ needs.build-and-push.outputs.version }}
+          path: |
+            ${{ steps.locate.outputs.updater_path }}
+            ${{ steps.locate.outputs.updater_sig_path }}
+          if-no-files-found: warn
+
+      - name: Attach to GitHub release
+        if: needs.build-and-push.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.locate.outputs.msi_path }}
+            ${{ steps.locate.outputs.nsis_path }}
+            ${{ steps.locate.outputs.updater_path }}
+            ${{ steps.locate.outputs.updater_sig_path }}
+          fail_on_unmatched_files: false
+
+  # ---------- Tauri auto-update manifest on GitHub Pages ----------
+  #
+  # Publishes a `latest.json` per-target/per-arch on the gh-pages branch
+  # so the Tauri updater's HTTP poll resolves to a single, immutable
+  # JSON document. Endpoint shape mirrors what's pinned in
+  # `apps/desktop/src-tauri/tauri.conf.json`:
+  #   https://kisaesdevlab.github.io/Vibe-Connect/{target}/{arch}/{current_version}
+  # The `{current_version}` segment is what the running client requests
+  # — we publish at `latest` AND at the exact version so old clients
+  # discover the new version and new clients get the same answer.
+  publish-updater-manifest:
+    runs-on: ubuntu-latest
+    needs: [build-and-push, build-desktop-windows]
+    if: needs.build-and-push.outputs.is_release == 'true' && needs.build-desktop-windows.outputs.updater_path != ''
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          # Allow the workflow to push back to gh-pages.
+          token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Init gh-pages branch if missing
+        # First-time bootstrap: create an orphan branch with a stub README
+        # if the gh-pages ref doesn't exist yet. The checkout above runs
+        # with continue-on-error so a missing branch doesn't fail the job.
+        run: |
+          if [ ! -f "README.md" ]; then
+            git init
+            git checkout --orphan gh-pages
+            echo "# Vibe-Connect Updater Manifest" > README.md
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+            git add README.md
+            git commit -m "chore: bootstrap gh-pages"
+          fi
+
+      - name: Download updater bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: vibe-connect-desktop-updater-${{ needs.build-and-push.outputs.version }}
+          path: ./_updater
+
+      - name: Generate latest.json
+        env:
+          VERSION: ${{ needs.build-and-push.outputs.version }}
+        run: |
+          set -e
+          mkdir -p windows/x86_64/${VERSION} windows/x86_64/latest
+          # Pull the .sig contents (if signed) into the manifest's
+          # `signature` field. Tauri's updater requires a string here;
+          # an empty string means "no signature" which the client will
+          # accept iff the configured pubkey is empty (defense-in-depth
+          # — a populated pubkey + empty signature = client refusal).
+          SIG_FILE=$(find ./_updater -name '*.sig' | head -n1 || true)
+          SIG_CONTENT=""
+          if [ -n "$SIG_FILE" ] && [ -f "$SIG_FILE" ]; then
+            SIG_CONTENT=$(cat "$SIG_FILE")
+          fi
+          BUNDLE_FILE=$(find ./_updater -name '*.nsis.zip' | head -n1)
+          if [ -z "$BUNDLE_FILE" ]; then
+            echo "::error::No updater bundle found in artifact download."
+            exit 1
+          fi
+          BUNDLE_BASENAME=$(basename "$BUNDLE_FILE")
+          DOWNLOAD_URL="https://github.com/KisaesDevLab/Vibe-Connect/releases/download/v${VERSION}/${BUNDLE_BASENAME}"
+
+          cat > "windows/x86_64/latest/latest.json" <<EOF
+          {
+            "version": "${VERSION}",
+            "notes": "See https://github.com/KisaesDevLab/Vibe-Connect/releases/tag/v${VERSION}",
+            "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "windows-x86_64": {
+                "signature": "${SIG_CONTENT}",
+                "url": "${DOWNLOAD_URL}"
+              }
+            }
+          }
+          EOF
+          # Republish at /windows/x86_64/latest/ AND at /windows/x86_64/{version}/
+          # so Tauri's `{{current_version}}`-templated URL resolves for
+          # any installed client. Older clients on, say, 1.0.0 hit
+          # /windows/x86_64/1.0.0 and discover 1.4.2 from there.
+          cp "windows/x86_64/latest/latest.json" "windows/x86_64/${VERSION}/latest.json"
+
+      - name: Commit + push manifest
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add windows/
+          # Only commit if there's a real change; --allow-empty would push
+          # a noisy commit on a re-run with no version bump.
+          if git diff --cached --quiet; then
+            echo "no manifest changes"
+          else
+            git commit -m "chore(updater): publish latest.json for v${{ needs.build-and-push.outputs.version }}"
+            git push origin gh-pages
+          fi

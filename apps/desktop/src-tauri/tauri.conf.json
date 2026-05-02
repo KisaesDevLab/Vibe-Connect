@@ -70,8 +70,12 @@
   "plugins": {
     "updater": {
       "active": true,
-      "endpoints": ["https://releases.vibeconnect.app/{{target}}/{{arch}}/{{current_version}}"],
+      "endpoints": [
+        "https://kisaesdevlab.github.io/Vibe-Connect/{{target}}/{{arch}}/latest/latest.json",
+        "https://kisaesdevlab.github.io/Vibe-Connect/{{target}}/{{arch}}/{{current_version}}/latest.json"
+      ],
       "dialog": true,
+      "$comment_pubkey": "Generate with `npx tauri signer generate -w apps/desktop/.tauri/signing.key` and paste the public half here. Private half goes into the GitHub Actions secret TAURI_UPDATER_PRIVATE_KEY (and the password into TAURI_UPDATER_PRIVATE_KEY_PASSWORD if one was set). See docs/ops/DESKTOP.md.",
       "pubkey": "REPLACE_WITH_ED25519_PUBLIC_KEY_FROM_UPDATE_SIGNING.md"
     },
     "autostart": { "useLauncher": false },

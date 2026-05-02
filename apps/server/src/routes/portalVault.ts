@@ -17,6 +17,7 @@ import { checkVaultEnabledSoft } from '../middleware/vaultEnabled.js';
 import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
 import { auditRepo } from '../repositories/audit.js';
+import { ensureBackupFresh } from '../services/backupGate.js';
 import {
   clientVaultsRepo,
   vaultFilesRepo,
@@ -169,6 +170,7 @@ portalVaultRouter.options(
 portalVaultRouter.post(
   '/portal/vault/uploads',
   asyncHandler(async (req, res) => {
+    if (!(await ensureBackupFresh(res))) return;
     if (isVaultDisabled(req)) {
       res.status(403).json({ error: 'vault_disabled' });
       return;

@@ -33,6 +33,25 @@ class MockProvider implements EmailProvider {
   }
 }
 
+// Explicit "outbound mail disabled" provider. Returns success so caller
+// branches that catch send-errors stay on the silent-success path (the
+// portal /identify route requires that the response shape be
+// indistinguishable across configured / unconfigured providers, so an
+// access-code request never leaks whether the firm has working email).
+// One structured warn-log per send so operators inspecting `docker logs`
+// can see the disabled state instead of wondering why mail isn't arriving.
+class NoneProvider implements EmailProvider {
+  name = 'none';
+  async send(msg: EmailMessage) {
+    logger.warn('email.disabled_send_skipped', {
+      to: msg.to,
+      subject: msg.subject,
+      hint: 'EMAIL_PROVIDER=none — set EMAIL_PROVIDER and provider credentials to enable outbound mail.',
+    });
+    return { id: `none-${Date.now()}`, status: 'sent' as const };
+  }
+}
+
 class PostmarkProvider implements EmailProvider {
   name = 'postmark';
   async send(msg: EmailMessage) {
@@ -113,8 +132,17 @@ class PostfixProvider implements EmailProvider {
 
 /** Admin-selected email provider from firm_settings.email_provider, with a
  *  cleartext env-var fallback (EMAIL_PROVIDER) so installs that predate the
- *  UI-selectable setting keep working until an admin picks one in the UI. */
-async function resolveEmailProviderKind(): Promise<'mock' | 'postmark' | 'postfix'> {
+ *  UI-selectable setting keep working until an admin picks one in the UI.
+ *
+ *  EMAIL_PROVIDER=none short-circuits the DB lookup: "no mail" is an
+ *  appliance-bootstrap concern, not a per-firm runtime toggle. The
+ *  firm_settings.email_provider enum doesn't include 'none' precisely
+ *  because we don't want an admin clicking it off — the appliance
+ *  operator does. */
+async function resolveEmailProviderKind(): Promise<
+  'mock' | 'postmark' | 'postfix' | 'none'
+> {
+  if (env.emailProvider === 'none') return 'none';
   try {
     const { db } = await import('../../db/knex.js');
     const row = await db('firm_settings').where({ id: 1 }).first('email_provider');
@@ -136,6 +164,8 @@ export async function getEmailProvider(): Promise<EmailProvider> {
       return new PostmarkProvider();
     case 'postfix':
       return new PostfixProvider();
+    case 'none':
+      return new NoneProvider();
     case 'mock':
     default:
       return new MockProvider();

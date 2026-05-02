@@ -5,6 +5,8 @@ import rateLimit from 'express-rate-limit';
 import type { Knex } from 'knex';
 import { z } from 'zod';
 import { db } from '../db/knex.js';
+import { env } from '../env.js';
+import { logger } from '../logger.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
 import { auditRepo } from '../repositories/audit.js';
@@ -1509,6 +1511,135 @@ adminRouter.get(
       kdfParams: row.kdf_params,
       rotationVersion: row.rotation_version,
     });
+  }),
+);
+
+// ---------- Backup criticality + key fingerprint ----------
+//
+// Loss of the firm key (DB-resident in firm_keys) without a backup is
+// unrecoverable: every encrypted message and vault file becomes opaque
+// ciphertext forever. The backup heartbeat lets an external runner
+// (Duplicati on the appliance, a cron-driven pg_dump on standalone)
+// signal that a successful capture happened. The admin dashboard reads
+// the staleness back; when BACKUP_REQUIRED is on, the staleness also
+// gates new vault uploads via vaultBackupGate (loaded into the upload
+// routers separately).
+
+adminRouter.get(
+  '/key-status',
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const fk = (await db('firm_keys')
+      .whereNull('retired_at')
+      .first('public_key', 'rotation_version', 'created_at')) as
+      | { public_key: string; rotation_version: number; created_at: Date }
+      | undefined;
+    const settings = (await db('firm_settings')
+      .where({ id: 1 })
+      .first('last_backup_ok_at', 'last_backup_recorded_at', 'last_backup_status')) as
+      | {
+          last_backup_ok_at: Date | null;
+          last_backup_recorded_at: Date | null;
+          last_backup_status: unknown;
+        }
+      | undefined;
+
+    const fingerprint = fk
+      ? createHash('sha256').update(fk.public_key, 'utf8').digest('hex').slice(0, 16)
+      : null;
+
+    const lastOk = settings?.last_backup_ok_at ?? null;
+    const daysSinceBackup = lastOk
+      ? Math.floor((Date.now() - new Date(lastOk).getTime()) / (1000 * 60 * 60 * 24))
+      : null;
+
+    // Distinguish three states the UI cares about:
+    //   - 'ok'      : last backup within warn window
+    //   - 'warn'    : older than warnDays (banner appears)
+    //   - 'blocked' : older than blockDays (vault uploads refused)
+    //   - 'never'   : no heartbeat ever recorded
+    let state: 'ok' | 'warn' | 'blocked' | 'never';
+    if (!lastOk) state = 'never';
+    else if (daysSinceBackup !== null && daysSinceBackup >= env.backupBlockDays)
+      state = 'blocked';
+    else if (daysSinceBackup !== null && daysSinceBackup >= env.backupWarnDays)
+      state = 'warn';
+    else state = 'ok';
+
+    res.json({
+      firmKey: {
+        installed: !!fk,
+        fingerprint,
+        rotationVersion: fk?.rotation_version ?? null,
+        installedAt: fk?.created_at ?? null,
+      },
+      backup: {
+        required: env.backupRequired,
+        warnDays: env.backupWarnDays,
+        blockDays: env.backupBlockDays,
+        lastOkAt: lastOk,
+        lastRecordedAt: settings?.last_backup_recorded_at ?? null,
+        lastStatus: settings?.last_backup_status ?? null,
+        daysSinceBackup,
+        state,
+      },
+    });
+  }),
+);
+
+// Bearer-token-authenticated endpoint for an external backup runner. The
+// staff session model doesn't fit Duplicati — it has no browser, no
+// password reset story, and runs on a cron timer where an interactive
+// re-login is impossible. A long opaque token shipped to the appliance
+// at install time is the right shape: easy to rotate, easy to scope
+// (this token grants nothing else), easy to revoke (clear the env var).
+//
+// Token comparison is timing-safe via Node's `timingSafeEqual` to keep
+// the authentication step from leaking byte-position information through
+// response timing. Empty configured token = endpoint is permanently 401
+// (the appliance must set BACKUP_HEARTBEAT_TOKEN; see env.ts).
+adminRouter.post(
+  '/backup-heartbeat',
+  asyncHandler(async (req, res) => {
+    const auth = req.header('authorization') ?? '';
+    const m = /^Bearer\s+(.+)$/i.exec(auth);
+    const presented = m ? m[1] ?? '' : '';
+    const expected = env.backupHeartbeatToken;
+    if (!expected || presented.length !== expected.length) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const a = Buffer.from(presented);
+    const b = Buffer.from(expected);
+    const { timingSafeEqual } = await import('node:crypto');
+    if (!timingSafeEqual(a, b)) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+
+    const okSchema = z.object({
+      ok: z.boolean(),
+      // Free-form structured detail. Cap roughly via JSON parse limit
+      // upstream (1 MB DEFAULT_BODY in app.ts) — no per-field check.
+      status: z.unknown().optional(),
+    });
+    const parsed = okSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'bad_payload' });
+      return;
+    }
+    const now = new Date();
+    const update: Record<string, unknown> = {
+      last_backup_recorded_at: now,
+      last_backup_status: parsed.data.status ?? null,
+    };
+    if (parsed.data.ok) update.last_backup_ok_at = now;
+    await db('firm_settings').where({ id: 1 }).update(update);
+    logger.info('backup.heartbeat', {
+      ok: parsed.data.ok,
+      hasStatus: parsed.data.status !== undefined,
+    });
+    res.json({ ok: true });
   }),
 );
 

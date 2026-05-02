@@ -98,11 +98,33 @@ image's responsibility, not the operator's.)
 - `/etc/vibe/connect/postgres_password` — Postgres password (mounted as a
   Docker secret, never in env vars)
 
-**Health endpoint**: `GET /health` returns `200 {ok:true,
-service:'vibe-connect-server'}`.
+**Health endpoints**:
 
-**Migrations** run on app boot and tolerate concurrent starts (Knex's
-advisory-lock-backed migrate).
+- `GET /ping` — pure liveness, no DB touch. 200 `{ok:true}`. Use for
+  HAProxy / Caddy fast probes that must succeed when the DB is briefly
+  unavailable.
+- `GET /health` — readiness: probes the DB with a 1.5s ceiling and
+  reports whether the appliance has been through `/install`. 200
+  `{ok:true,service,installed}` when healthy; 503 with structured
+  `{code: 'db_unreachable'|'schema_unmigrated'}` otherwise.
+
+**Migrations** run on app boot by default. The appliance overlay sets
+`MIGRATIONS_AUTO=false` so the bootstrap can serialize migrations
+across Vibe apps that share one Postgres (running them in parallel
+from each container's entrypoint races on `knex_migrations` and
+surfaces as "Migration directory is corrupt"). When auto-run is
+enabled, Knex's advisory-lock-backed migrate tolerates concurrent
+starts.
+
+**Backup criticality** (appliance-only, `BACKUP_REQUIRED=true`): an
+external backup runner (Duplicati on the appliance, a cron job on
+standalone) POSTs to `/admin/backup-heartbeat` after each successful
+capture. The server warns after `BACKUP_WARN_DAYS` of silence and
+refuses new vault uploads after `BACKUP_BLOCK_DAYS`. The admin
+console reads `/admin/key-status` for the firm-key fingerprint and
+days-since-last-backup. See `docs/ops/PERSISTENCE.md` for the
+operator footguns and `.appliance/manifest.json` for the env
+contract.
 
 **Compose files** the installer cares about:
 
@@ -136,7 +158,9 @@ cosign verify ghcr.io/kisaesdevlab/vibe-connect-server:1.4.2 \
 - `CLAUDE.md` — project conventions, grep anchors, crypto rules for Claude Code
 - `docs/THREAT_MODEL.md` — threat model (Phase 16 handoff)
 - `docs/SECURITY_REVIEW_SCOPE.md` — crypto-review scope (Phase 16 handoff)
-- `docs/ops/UPDATE_SIGNING.md` — Tauri updater signing-key procedure
+- `docs/ops/DESKTOP.md` — Tauri thin client, SmartScreen workaround, updater key rotation
+- `docs/ops/PERSISTENCE.md` — what survives `docker compose pull`, operator footguns
+- `docs/ops/UPDATE_SIGNING.md` — Tauri updater signing-key procedure (legacy; superseded by DESKTOP.md)
 - `docs/ops/ROLLOUT.md` — Kisaes internal rollout runbook
 - `docs/ops/BACKUP_RECOVERY.md` — backup + recovery procedure
 - `docs/ops/EMAIL_DNS.md` — SPF / DKIM / DMARC setup for bridge domain

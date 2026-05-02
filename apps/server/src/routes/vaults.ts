@@ -21,6 +21,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { requireVaultEnabled } from '../middleware/vaultEnabled.js';
 import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
+import { ensureBackupFresh } from '../services/backupGate.js';
 import {
   addRecipientSchema,
   addZoneRecipients,
@@ -338,6 +339,7 @@ vaultsRouter.options(
 vaultsRouter.post(
   '/clients/:id/vault/uploads',
   asyncHandler(async (req, res) => {
+    if (!(await ensureBackupFresh(res))) return;
     const userId = req.session.userId!;
     const externalIdentityId = req.params.id!;
     try {

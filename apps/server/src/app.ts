@@ -6,6 +6,7 @@ import session from 'express-session';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import ConnectPgSimple from 'connect-pg-simple';
+import { db } from './db/knex.js';
 import { env } from './env.js';
 import { logger } from './logger.js';
 import { adminRouter, clientsRouter, firmRouter } from './routes/admin.js';
@@ -75,13 +76,39 @@ export function createApp(): Express {
   );
 
   // Appliance CORS. On-prem installs are accessed by the LAN host's IP, a
-  // local DNS name, a LAN-signed cert CN, a reverse-proxy hostname — we can't
-  // enumerate them at build time. Reflect the request origin; actual write
-  // protection comes from the same-site session cookie (SameSite=lax) and
-  // requireAuth middleware on every privileged route, not from CORS.
+  // local DNS name, a LAN-signed cert CN, a reverse-proxy hostname — we
+  // can't enumerate them at build time. Default behavior reflects the
+  // request origin; actual write protection comes from the same-site
+  // session cookie (SameSite=lax) and requireAuth middleware on every
+  // privileged route, not from CORS.
+  //
+  // Operators who want explicit CORS enforcement set ALLOWED_ORIGIN to a
+  // comma-separated list (entries may be literal origins or `regex:<pat>`).
+  // When set, requests from origins not in the list are rejected at the
+  // CORS layer; same-origin requests (no Origin header) always pass since
+  // the SPA bundle and the API ship from the same image.
   app.use(
     cors({
-      origin: (origin, cb) => cb(null, origin ?? true),
+      origin: (origin, cb) => {
+        if (env.allowedOrigin.length === 0) {
+          cb(null, origin ?? true);
+          return;
+        }
+        if (!origin) {
+          // Same-origin requests omit the Origin header. Always allowed —
+          // an attacker can't spoof "no Origin" cross-site.
+          cb(null, true);
+          return;
+        }
+        const allowed = env.allowedOrigin.some((rule) =>
+          rule.kind === 'literal' ? rule.value === origin : rule.value.test(origin),
+        );
+        if (allowed) {
+          cb(null, true);
+          return;
+        }
+        cb(new Error(`CORS: origin ${origin} not in ALLOWED_ORIGIN`));
+      },
       credentials: true,
     }),
   );
@@ -202,10 +229,11 @@ export function createApp(): Express {
       standardHeaders: true,
       legacyHeaders: false,
       // Skip the public, per-page-load endpoints from the global limiter.
-      // /health is a load-balancer probe; /__vibe-boot.js is loaded by the
-      // browser before main.tsx and burning 600/min budget on tab refreshes
-      // would 429 a busy office during normal use.
-      skip: (req) => req.path === '/health' || req.path === '/__vibe-boot.js',
+      // /health and /ping are load-balancer probes; /__vibe-boot.js is loaded
+      // by the browser before main.tsx and burning 600/min budget on tab
+      // refreshes would 429 a busy office during normal use.
+      skip: (req) =>
+        req.path === '/health' || req.path === '/ping' || req.path === '/__vibe-boot.js',
       // Key authenticated users by session userId so the office NAT doesn't
       // cluster every staff member into one rate bucket. Anonymous requests
       // and portal clients (no `userId` in the staff session) fall back to IP
@@ -218,13 +246,63 @@ export function createApp(): Express {
     }),
   );
 
-  app.get('/health', (_req, res) => {
-    // Keep the response minimal — this endpoint is publicly reachable (no
-    // auth, skipped from the global rate-limit) and anything we return here
-    // is fingerprintable by attackers scanning for known-version exploits.
-    // Node version used to be in the payload; it's now moved to the logs
-    // where only an admin with host access can read it.
-    res.json({ ok: true, service: 'vibe-connect-server' });
+  // Liveness probe — pure process-up check, never touches the DB. HAProxy
+  // and Caddy emergency probes hit this so they keep routing traffic even
+  // when the DB is briefly unavailable. Distinct from /health so the
+  // appliance can distinguish "process dead" (replace container) from
+  // "process up, dependency degraded" (page on-call).
+  app.get('/ping', (_req, res) => {
+    res.json({ ok: true });
+  });
+
+  app.get('/health', async (_req, res) => {
+    // Deeper readiness probe. Reports DB reachability and whether the
+    // appliance has been through /install yet. Fresh installs return 200
+    // with installed:false so a load balancer keeps sending traffic to
+    // the operator's first-boot session — failing closed here would
+    // strand them. Real failures (DB unreachable, schema not migrated)
+    // return 503 with a structured code so dashboards can route the
+    // alert to the right runbook.
+    //
+    // Response shape is fingerprintable, so we keep it tight: just `ok`,
+    // `service`, optional `installed` boolean, and on failure a `code`
+    // matching one of a small enum.
+    try {
+      // 1.5s ceiling so a slow/wedged DB doesn't hang the LB probe.
+      const probe = (await Promise.race([
+        db.raw('select 1 as ok'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('db_timeout')), 1500)),
+      ])) as { rows?: Array<{ ok: number }> };
+      if (!probe?.rows?.[0]?.ok) {
+        res.status(503).json({ ok: false, service: 'vibe-connect-server', code: 'db_unreachable' });
+        return;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('health.db_probe_failed', { msg });
+      res.status(503).json({ ok: false, service: 'vibe-connect-server', code: 'db_unreachable' });
+      return;
+    }
+
+    let installed = false;
+    try {
+      const row = await db('firm_keys').whereNull('retired_at').first('id');
+      installed = !!row;
+    } catch (err) {
+      // Schema not migrated yet (e.g. MIGRATIONS_AUTO=false and the
+      // appliance bootstrap hasn't run them yet). Distinguish from the
+      // generic db_unreachable case so the operator knows to run them.
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn('health.schema_probe_failed', { msg });
+      res.status(503).json({
+        ok: false,
+        service: 'vibe-connect-server',
+        code: 'schema_unmigrated',
+      });
+      return;
+    }
+
+    res.json({ ok: true, service: 'vibe-connect-server', installed });
   });
 
   // Distribution-mode bootstrap. Serves /__vibe-boot.js — a tiny script the

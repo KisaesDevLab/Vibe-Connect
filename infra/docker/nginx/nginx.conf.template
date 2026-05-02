@@ -83,6 +83,21 @@ http {
       proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Staff-only download redirect. `https://<host>/desktop/` 302s to the
+    # signed Tauri MSI/NSIS releases page. The link surfaces in the staff
+    # web app's user menu so an operator on a fresh laptop can download
+    # the desktop wrapper without hunting GitHub. Operators on isolated
+    # networks point DESKTOP_DOWNLOAD_URL at an internal mirror.
+    # Intentionally NOT mounted on the portal server block below — clients
+    # have no use for the desktop wrapper, and surfacing the link there
+    # would just confuse them.
+    location = /desktop/ {
+      return 302 ${DESKTOP_DOWNLOAD_URL};
+    }
+    location = /desktop {
+      return 302 ${DESKTOP_DOWNLOAD_URL};
+    }
+
     location /socket.io/ {
       # NOTE: when proxy_pass contains a variable AND a URI suffix
       # (`$app_ws/socket.io/`), nginx stops auto-forwarding the request URI +
@@ -200,6 +215,23 @@ http {
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # /desktop/ — same staff-only contract as the HTTPS staff block. In
+    # internal-TLS mode we 301 to HTTPS so the eventual 302 lands on a
+    # secure URL; in external-TLS mode (Caddy fronts) Caddy has already
+    # terminated TLS and we 302 directly.
+    location = /desktop/ {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      return 302 ${DESKTOP_DOWNLOAD_URL};
+    }
+    location = /desktop {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      return 302 ${DESKTOP_DOWNLOAD_URL};
     }
 
     location /socket.io/ {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { createApp } from './app.js';
 import { db } from './db/knex.js';
@@ -21,6 +22,7 @@ import {
   startVaultRetentionTicker,
   stopVaultRetentionTicker,
 } from './services/vaultRetention.js';
+import { startBackupWatcher, stopBackupWatcher } from './services/backupWatcher.js';
 import { startTlsRenewalTicker, stopTlsRenewalTicker } from './services/tlsAcme.js';
 
 async function main(): Promise<void> {
@@ -59,6 +61,51 @@ async function main(): Promise<void> {
   startRetentionTicker();
   startVaultRetentionTicker();
   startTlsRenewalTicker();
+  startBackupWatcher();
+
+  // Firm-key fingerprint at boot. Logged so an operator inspecting `docker
+  // logs` after a restore can verify "this is the same firm key we backed up"
+  // before users complain about decrypt failures. SHA-256 of the public-key
+  // bytes is safe to expose: it's derived from material the firm key already
+  // hands out to every new device for envelope addressing. We log only the
+  // first 16 hex chars to keep log lines short — collisions on truncated
+  // SHA-256 are not a security concern here, just an operational sanity check.
+  //
+  // Non-fatal on miss: a fresh install hasn't been through POST /install yet,
+  // so firm_keys is empty. Don't block startup — `/health` already reports
+  // installed:false for that case.
+  try {
+    const row = (await db('firm_keys')
+      .whereNull('retired_at')
+      .first('public_key', 'rotation_version')) as
+      | { public_key: string; rotation_version: number }
+      | undefined;
+    if (row) {
+      const fingerprint = createHash('sha256').update(row.public_key, 'utf8').digest('hex').slice(0, 16);
+      logger.info('crypto.firm_key_loaded', {
+        fingerprint,
+        rotation: row.rotation_version,
+      });
+    } else {
+      logger.info('crypto.firm_key_absent', { note: 'awaiting POST /install' });
+    }
+  } catch (err) {
+    // Schema-not-migrated or DB-unreachable. /health surfaces the real cause;
+    // we just note we couldn't probe so the absence of crypto.firm_key_loaded
+    // in logs isn't mistaken for a missing install.
+    logger.warn('crypto.firm_key_probe_failed', {
+      msg: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  if (env.emailProvider === 'none') {
+    // One-shot boot warning — surfaces "outbound mail disabled" without
+    // waiting for the first /identify call to log it. Operators tailing
+    // docker logs see the configuration explicitly.
+    logger.warn('email.provider_none', {
+      hint: 'EMAIL_PROVIDER=none — outbound mail is disabled. Portal access codes still send via SMS if SMS_PROVIDER is configured.',
+    });
+  }
 
   server.listen(env.port, () => {
     logger.info('server.listening', { port: env.port, env: env.nodeEnv });
@@ -94,6 +141,7 @@ async function main(): Promise<void> {
     stopRetentionTicker();
     stopVaultRetentionTicker();
     stopTlsRenewalTicker();
+    stopBackupWatcher();
     // Drain HTTP. server.close stops accepting new connections and fires the
     // callback after all in-flight requests complete. We give that chance up
     // to 10s; if keep-alive connections are idle we nudge them closed so the
