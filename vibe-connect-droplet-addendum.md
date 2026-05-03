@@ -632,7 +632,7 @@ See the **File storage architecture** section above for guidance on choosing bet
 
 Generate VAPID keys:
 ```bash
-docker run --rm node:20-alpine npx web-push generate-vapid-keys
+docker run --rm node:24-alpine npx web-push generate-vapid-keys
 ```
 
 Paste the output into `.env`.

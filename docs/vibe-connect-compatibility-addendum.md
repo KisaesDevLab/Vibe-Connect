@@ -43,7 +43,7 @@ Plus one Connect-specific rule:
 | Item | Today | Target | Notes |
 |---|---|---|---|
 | **License** | **Proprietary** | **ELv2** | **§0 BLOCKER** |
-| Stack | React 18 + TS + Node 20 + Express + Socket.io + PG16 + Redis + libsodium + Tauri 2 desktop | Same | No stack changes |
+| Stack | React 18 + TS + Node 24 + Express + Socket.io + PG16 + Redis + libsodium + Tauri 2 desktop | Same | No stack changes |
 | Standalone install | Existing flow | Unchanged | Audit |
 | GHCR images | Need verification | Multi-arch (amd64 + arm64), three image families: server, web, portal | §5.10 |
 | DB / Redis config | Mixed assumed | `DATABASE_URL` / `REDIS_URL` only | §3 (common) |

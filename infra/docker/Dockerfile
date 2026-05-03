@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage appliance image: server + web + portal in one container, Alpine-based.
 
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++ libc6-compat
 COPY package.json yarn.lock ./
@@ -17,7 +17,7 @@ COPY packages/crypto/package.json packages/crypto/
 # native bindings compile once.
 RUN yarn install --frozen-lockfile
 
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
@@ -27,7 +27,7 @@ RUN yarn workspace @vibe-connect/server build
 RUN yarn workspace @vibe-connect/web build
 RUN yarn workspace @vibe-connect/portal build
 
-FROM node:20-alpine AS runtime
+FROM node:24-alpine AS runtime
 WORKDIR /app
 # Pin the in-container user to a fixed uid/gid (10001:10001) so host
 # bind-mounts under /var/lib/vibe/connect/{uploads,tls,...} have a stable

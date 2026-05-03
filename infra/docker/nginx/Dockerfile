@@ -9,7 +9,7 @@
 # keeps node_modules / .git / .env out of the upload step.
 
 # --- deps -----------------------------------------------------------------
-FROM node:20-alpine AS deps
+FROM node:24-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++ libc6-compat
 COPY package.json yarn.lock ./
@@ -22,7 +22,7 @@ COPY packages/crypto/package.json packages/crypto/
 RUN yarn install --frozen-lockfile
 
 # --- build frontend -------------------------------------------------------
-FROM node:20-alpine AS build
+FROM node:24-alpine AS build
 WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
