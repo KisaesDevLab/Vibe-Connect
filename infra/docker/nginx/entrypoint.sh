@@ -70,47 +70,75 @@ for var in HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT; do
 done
 
 case "${TLS_MODE}" in
-  internal) TLS_MODE_INTERNAL=1 ;;
-  external) TLS_MODE_INTERNAL=0 ;;
+  internal|external) ;;
   *)
     echo "[entrypoint] invalid TLS_MODE='${TLS_MODE}' (expected internal|external)" >&2
     exit 1
     ;;
 esac
 
-export BASE_PATH BASE_PATH_HREF TLS_MODE TLS_MODE_INTERNAL HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT DESKTOP_DOWNLOAD_URL
+export BASE_PATH BASE_PATH_HREF TLS_MODE HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT DESKTOP_DOWNLOAD_URL
 
-echo "[entrypoint] rendering nginx.conf with BASE_PATH=${BASE_PATH} TLS_MODE=${TLS_MODE}"
-# Restrict envsubst to our explicit list — without this, $http_accept,
-# $proxy_add_x_forwarded_for, $request_uri, etc. (nginx runtime variables
-# with leading $) would all get clobbered by env values that don't exist.
-envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${DESKTOP_DOWNLOAD_URL}' \
-  < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+# In TLS_MODE=internal the SSL `server` blocks reference
+# /etc/nginx/tls/{connect,portal}.{crt,key}. On a fresh appliance the
+# in-app ACME ticker hasn't run yet (no firm install, no order), so
+# those files don't exist — nginx -t hard-fails and the container
+# crash-loops, locking the operator out of /install on their own
+# appliance. Detect that case and bootstrap in plain-HTTP rendering
+# (same shape as TLS_MODE=external) until the inotify watcher below
+# sees real certs land, then re-render in internal mode and reload.
+certs_present() {
+  [ -s /etc/nginx/tls/connect.crt ] && [ -s /etc/nginx/tls/connect.key ] \
+    && [ -s /etc/nginx/tls/portal.crt ] && [ -s /etc/nginx/tls/portal.key ]
+}
 
-# In external TLS mode there are no certs on disk to watch — drop the inotify
-# loop entirely so the container doesn't tail an empty/non-existent dir.
+# Render /etc/nginx/nginx.conf for the given effective mode (`internal` or
+# `external`). Internal keeps the SSL server blocks; external strips them
+# via the `# vibe:tls-internal-only:` marker pair. Restrict envsubst to
+# our explicit list — without this, $http_accept, $proxy_add_x_forwarded_for,
+# $request_uri, etc. (nginx runtime variables with leading $) would all
+# get clobbered by env values that don't exist.
+render_config() {
+  effective_mode="$1"
+  case "$effective_mode" in
+    internal) TLS_MODE_INTERNAL=1 ;;
+    external) TLS_MODE_INTERNAL=0 ;;
+  esac
+  export TLS_MODE_INTERNAL
+  envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${DESKTOP_DOWNLOAD_URL}' \
+    < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
+  if [ "$effective_mode" = "external" ]; then
+    sed -i '/# vibe:tls-internal-only:begin/,/# vibe:tls-internal-only:end/d' /etc/nginx/nginx.conf
+  fi
+}
+
+bootstrap_fallback=0
+if [ "${TLS_MODE}" = "internal" ] && ! certs_present; then
+  echo "[entrypoint] internal TLS mode but certs not present in /etc/nginx/tls yet — bootstrapping in plain-HTTP fallback (will promote to HTTPS once ACME provisions)"
+  bootstrap_fallback=1
+  effective_mode="external"
+else
+  effective_mode="${TLS_MODE}"
+fi
+
+echo "[entrypoint] rendering nginx.conf with BASE_PATH=${BASE_PATH} TLS_MODE=${TLS_MODE} effective=${effective_mode}"
+render_config "${effective_mode}"
+# Validate so a bad template (or marker drift) surfaces immediately
+# rather than after nginx is half-started.
+nginx -t
+
+# Pure-external mode (caller asked for it explicitly) doesn't need the
+# inotify watcher — /etc/nginx/tls is never populated when an upstream
+# proxy terminates TLS, so there's nothing to wait for.
 if [ "${TLS_MODE}" = "external" ]; then
-  # External mode: an upstream proxy (Caddy / Cloudflare Tunnel / etc.)
-  # terminates TLS and reverse-proxies plain HTTP into us. /etc/nginx/tls
-  # is not populated, so the SSL `server` blocks in the rendered config
-  # would fail `nginx -t` ("cannot load certificate"). Strip them.
-  #
-  # The template wraps each SSL block in matching markers
-  # (`# vibe:tls-internal-only:begin <name>` / `:end <name>`); we delete
-  # everything between (and including) the marker pair. The plain-HTTP
-  # listener at the bottom of the template stays put and serves all
-  # traffic in this mode.
-  sed -i '/# vibe:tls-internal-only:begin/,/# vibe:tls-internal-only:end/d' /etc/nginx/nginx.conf
-  # Validate so a bad template (or marker drift) surfaces immediately
-  # rather than after nginx is half-started.
-  nginx -t
   exec nginx -g 'daemon off;'
 fi
 
-# Internal TLS mode: in-app ACME drops new certs into /etc/nginx/tls; reload
-# nginx whenever a file lands there. Atomic .tmp + rename means we watch
-# both `close_write` (direct write) and `moved_to` (rename completion).
-nginx -t
+# Internal mode (or internal-with-bootstrap-fallback): start nginx and watch
+# /etc/nginx/tls. The in-app ACME ticker writes new certs there; the watcher
+# either reloads (cert renewal) or promotes from fallback to TLS_MODE=internal
+# (first cert arrival). Atomic .tmp + rename means we watch both `close_write`
+# (direct write) and `moved_to` (rename completion).
 nginx -g 'daemon off;' &
 nginx_pid=$!
 
@@ -120,13 +148,25 @@ sleep 2
 
 (
   while inotifywait -q -e close_write,moved_to,create /etc/nginx/tls/; do
-    echo "[tls-reloader] cert change detected, reloading nginx"
+    # Brief settle BEFORE checking. Without `-m`, inotifywait returns on
+    # the first event and we then race a fresh watch against the writer's
+    # remaining files — a multi-file ACME write (connect+portal × crt+key)
+    # commonly fires once per file, but the watcher sees only the first
+    # because it's not listening during the sleep+reload+rewatch window.
+    # Sleeping here gives the writer a moment to finish all four files
+    # before we evaluate certs_present and decide whether to promote.
+    sleep 1
+    echo "[tls-reloader] cert change detected"
+    if [ "${bootstrap_fallback}" = "1" ] && certs_present; then
+      echo "[tls-reloader] certs now present — promoting from plain-HTTP fallback to TLS_MODE=internal"
+      render_config "internal"
+      bootstrap_fallback=0
+    fi
     if nginx -s reload 2>&1; then
       echo "[tls-reloader] reload ok"
     else
       echo "[tls-reloader] reload failed (nginx may still be starting)"
     fi
-    sleep 1
   done
 ) &
 
