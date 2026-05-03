@@ -5,7 +5,7 @@ Part of the Vibe product family alongside Vibe TB and Vibe MyBooks.
 
 ## What's here
 
-- `apps/server` — Node 20 + Express + Knex + Postgres 16 + Socket.io
+- `apps/server` — Node 24 + Express + Knex + Postgres 16 + Socket.io
 - `apps/web` — Staff app (Vite + React 18 + TypeScript + Tailwind)
 - `apps/portal` — Client portal (Vite + React 18 + TypeScript + Tailwind)
 - `apps/desktop` — Tauri 2.x wrapper around the staff web bundle
@@ -18,7 +18,7 @@ Part of the Vibe product family alongside Vibe TB and Vibe MyBooks.
 
 See `vibe-connect-build-plan.md` for the full plan. Quick summary:
 
-- Node 20, TypeScript strict, yarn workspaces
+- Node 24, TypeScript strict, yarn workspaces
 - PostgreSQL 16 via Docker compose
 - libsodium (`libsodium-wrappers`) for all crypto (XChaCha20-Poly1305 + X25519 + Argon2id)
 - Socket.io + Postgres `LISTEN/NOTIFY` for real-time

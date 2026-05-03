@@ -101,7 +101,7 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
 
 ## Stack pins
 
-- Node 20, TypeScript strict (all strict flags in `tsconfig.base.json`).
+- Node 24, TypeScript strict (all strict flags in `tsconfig.base.json`).
 - yarn workspaces (see `package.json workspaces`).
 - Postgres 16.
 - React 18 + Vite + Tailwind CSS for staff + portal.

@@ -23,7 +23,7 @@ Replace PinkNotes inside Kurt's own firm as an internal-staff communication tool
 ## Stack
 
 - **Frontend:** React 18 + TypeScript + Vite + Tailwind CSS
-- **Backend:** Node.js 20 + Express + Knex.js (plain-JS migrations)
+- **Backend:** Node.js 24 + Express + Knex.js (plain-JS migrations)
 - **Database:** PostgreSQL 16
 - **Real-time:** Socket.io + Postgres `LISTEN/NOTIFY`
 - **File storage:** Local filesystem in appliance volume (S3 driver optional)
