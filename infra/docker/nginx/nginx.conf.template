@@ -56,6 +56,15 @@ http {
   # restricts substitution to HTML — never mangle a JS or JSON response.
 
   # ---- Staff site ----
+  # vibe:tls-internal-only:begin staff
+  # The two SSL server blocks below reference cert paths under
+  # /etc/nginx/tls. In TLS_MODE=external those certs are never
+  # populated (Caddy / Cloudflare Tunnel terminates TLS upstream and
+  # proxies plain HTTP into us), and `nginx -t` fatally errors on the
+  # missing files at startup. The entrypoint sed-strips everything
+  # between this marker and the matching `:end staff` line when
+  # TLS_MODE=external, so external-mode containers boot with only the
+  # plain-HTTP server block at the bottom of this file.
   server {
     listen ${HTTPS_PORT} ssl;
     http2 on;
@@ -138,8 +147,10 @@ http {
       sub_filter_once off;
     }
   }
+  # vibe:tls-internal-only:end staff
 
   # ---- Client portal ----
+  # vibe:tls-internal-only:begin portal
   server {
     listen ${PORTAL_HTTPS_PORT} ssl;
     http2 on;
@@ -184,6 +195,7 @@ http {
       sub_filter_once off;
     }
   }
+  # vibe:tls-internal-only:end portal
 
   # ---- HTTP listener ----
   # Distribution-mode dual purpose: in TLS_MODE=internal this is the LE HTTP-01

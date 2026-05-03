@@ -90,11 +90,19 @@ envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP
 # In external TLS mode there are no certs on disk to watch — drop the inotify
 # loop entirely so the container doesn't tail an empty/non-existent dir.
 if [ "${TLS_MODE}" = "external" ]; then
-  # External mode: HTTPS server blocks in the rendered config still listen
-  # if certs are present (defense-in-depth for an operator who DID populate
-  # /etc/nginx/tls), but the watcher is unnecessary because no in-app ACME
-  # is rotating anything. Validate the config first so a bad template
-  # surfaces immediately rather than after nginx is half-started.
+  # External mode: an upstream proxy (Caddy / Cloudflare Tunnel / etc.)
+  # terminates TLS and reverse-proxies plain HTTP into us. /etc/nginx/tls
+  # is not populated, so the SSL `server` blocks in the rendered config
+  # would fail `nginx -t` ("cannot load certificate"). Strip them.
+  #
+  # The template wraps each SSL block in matching markers
+  # (`# vibe:tls-internal-only:begin <name>` / `:end <name>`); we delete
+  # everything between (and including) the marker pair. The plain-HTTP
+  # listener at the bottom of the template stays put and serves all
+  # traffic in this mode.
+  sed -i '/# vibe:tls-internal-only:begin/,/# vibe:tls-internal-only:end/d' /etc/nginx/nginx.conf
+  # Validate so a bad template (or marker drift) surfaces immediately
+  # rather than after nginx is half-started.
   nginx -t
   exec nginx -g 'daemon off;'
 fi
