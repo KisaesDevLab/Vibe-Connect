@@ -277,10 +277,18 @@ fn main() {
 
             // Capture the bundled-onboarding URL ASAP — before we navigate
             // away from it. We need this for the "Change server…" path.
+            //
+            // Inline the `app.state::<OnboardingUrl>()` lookup into the lock
+            // scrutinee so the State temporary's destructor runs at the end
+            // of the if-let — *not* outliving a `let saved = …` local that
+            // would drop in the same block. The borrow checker (E0597 on
+            // 2021-edition crates) rejects the local-bound shape because
+            // `Result<MutexGuard, PoisonError<MutexGuard>>` carries a borrow
+            // back to `saved.0`, and that borrow is still live when `saved`
+            // is reverse-dropped at the closing brace.
             if let Some(win) = app.get_webview_window("main") {
                 if let Ok(initial) = win.url() {
-                    let saved = app.state::<OnboardingUrl>();
-                    if let Ok(mut guard) = saved.0.lock() {
+                    if let Ok(mut guard) = app.state::<OnboardingUrl>().0.lock() {
                         *guard = Some(initial);
                     }
                 }
