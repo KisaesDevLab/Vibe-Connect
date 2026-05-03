@@ -48,7 +48,7 @@
       "digestAlgorithm": "sha256",
       "timestampUrl": "",
       "nsis": {
-        "installMode": "perUser"
+        "installMode": "currentUser"
       },
       "wix": {
         "language": "en-US"
