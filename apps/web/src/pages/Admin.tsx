@@ -27,8 +27,8 @@ const tabs = [
   { path: 'request-templates', label: 'Templates', requiresRequests: true },
 ] as const;
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, {
+async function json<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(appUrl(path), {
     ...init,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
@@ -3404,7 +3404,7 @@ function AdminTls(): JSX.Element {
           tls_acme_environment: 'staging' | 'production';
           tls_challenge_type: 'http-01' | 'dns-01';
         };
-      }>('/admin/settings'),
+      }>('/admin/settings').then((r) => r.settings),
   });
   // Poll the status endpoint every 2s while an order is in flight so the UI
   // transitions requesting → active (or → error) without a manual refresh.
@@ -3453,7 +3453,7 @@ function AdminTls(): JSX.Element {
   if (!settingsQ.data || !statusQ.data) {
     return <div className="p-4 text-sm text-slate-500">Loading…</div>;
   }
-  const settings = settingsQ.data.settings;
+  const settings = settingsQ.data;
   const status = statusQ.data;
   const cert = status.cert;
   const isActive = Boolean(cert && cert.daysUntilExpiry > 0);
