@@ -124,10 +124,19 @@ jobs:
   # ---------- Windows desktop wrapper (Tauri 2) ----------
   #
   # Builds an unsigned-by-MSFT MSI + NSIS installer on `windows-latest` for
-  # x86_64. ARM64 deferred. Tauri's own ed25519 update signing is enabled
-  # only when the TAURI_UPDATER_PRIVATE_KEY secret is set — otherwise the
-  # binary still builds but the in-app updater will refuse to apply any
-  # update payload (which is the correct fail-closed behavior).
+  # x86_64. ARM64 deferred.
+  #
+  # Tauri's own ed25519 update signing is currently OFF
+  # (`createUpdaterArtifacts: false` in tauri.conf.json) because the
+  # signing keypair has not been generated yet. The MSI/NSIS still ship;
+  # only the in-app auto-updater is disabled — users would download a new
+  # installer manually for now. To turn signing back on: follow
+  # docs/ops/UPDATE_SIGNING.md to generate the keypair, paste the public
+  # half into tauri.conf.json's `plugins.updater.pubkey`, set the GH
+  # secrets `TAURI_UPDATER_PRIVATE_KEY` (+ `..._PASSWORD`), flip
+  # createUpdaterArtifacts back to true, and re-add the
+  # TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD} env vars to the build step
+  # below.
   #
   # Code-signing the MSI itself with a Microsoft-trusted EV cert is a
   # separate, deferred concern — see docs/ops/DESKTOP.md for the
@@ -190,12 +199,11 @@ jobs:
 
       - name: Build Tauri bundle (Windows x86_64)
         shell: pwsh
-        env:
-          # Empty when secret unset — Tauri builds without a signature in
-          # that case. Builds will still succeed; the updater just won't
-          # accept the produced .sig (which won't exist).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY_PASSWORD }}
+        # Updater signing env vars are intentionally NOT passed: a
+        # set-but-malformed value makes Tauri attempt signing and bail
+        # *after* the MSI/NSIS already built, killing the upload. Re-add
+        # them when createUpdaterArtifacts is flipped back on (see job
+        # comment above).
         run: yarn workspace "@vibe-connect/desktop" tauri:build
 
       - id: locate

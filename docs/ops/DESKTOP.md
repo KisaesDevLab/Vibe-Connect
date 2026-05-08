@@ -235,6 +235,18 @@ held in the GitHub Actions secret `TAURI_UPDATER_PRIVATE_KEY` (and
 `TAURI_UPDATER_PRIVATE_KEY_PASSWORD` if the keypair was generated with a
 password).
 
+> **Status (as of 2026-05-08):** updater signing is **OFF**.
+> `tauri.conf.json` has `bundle.createUpdaterArtifacts: false` and
+> `plugins.updater.pubkey` is still the placeholder. The MSI/NSIS
+> installers still ship; only the in-app auto-updater is disabled.
+> Customers manually re-download a new installer from
+> `https://<appliance>/desktop/` to update. To turn signing on,
+> follow the keypair-generation steps below, paste the public key
+> into `plugins.updater.pubkey`, set the GH Actions secrets, flip
+> `createUpdaterArtifacts` back to `true`, and re-add the
+> `TAURI_SIGNING_PRIVATE_KEY{,_PASSWORD}` env vars to the
+> `Build Tauri bundle` step in `.github/workflows/release.yml`.
+
 ### Generating the keypair (first time)
 
 ```sh

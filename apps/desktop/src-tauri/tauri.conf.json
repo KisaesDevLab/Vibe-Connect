@@ -65,7 +65,7 @@
         "depends": ["libwebkit2gtk-4.1-0"]
       }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {
