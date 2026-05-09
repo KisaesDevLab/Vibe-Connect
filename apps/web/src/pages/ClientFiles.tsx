@@ -623,8 +623,8 @@ export function ClientFilesPage(): JSX.Element {
           {error}
         </div>
       )}
-      <div className="flex-1 grid grid-cols-[240px_1fr] overflow-hidden">
-        <aside className="border-r border-slate-200 overflow-auto p-2">
+      <div className="flex-1 grid grid-rows-[auto_1fr] md:grid-rows-1 md:grid-cols-[240px_1fr] overflow-hidden">
+        <aside className="border-b md:border-b-0 md:border-r border-slate-200 overflow-auto p-2 max-h-40 md:max-h-none">
           <div className="text-xs font-semibold text-slate-500 px-2 py-1">Folders</div>
           {visibleFolders.length === 0 && (
             <div className="text-xs text-slate-400 px-2 py-1">No folders yet.</div>

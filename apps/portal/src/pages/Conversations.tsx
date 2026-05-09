@@ -213,15 +213,18 @@ export function ConversationsPage(): JSX.Element {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded bg-brand-600 text-white grid place-items-center font-bold text-sm">
+      <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-8 h-8 rounded bg-brand-600 text-white grid place-items-center font-bold text-sm flex-shrink-0">
             VC
           </div>
-          <span className="font-semibold">Messages from your firm</span>
+          <span className="font-semibold truncate">
+            <span className="hidden sm:inline">Messages from your firm</span>
+            <span className="sm:hidden">Messages</span>
+          </span>
         </div>
-        <div className="text-sm text-slate-600">
-          {me?.displayName} ·{' '}
+        <div className="text-sm text-slate-600 flex items-center gap-2 flex-shrink-0">
+          <span className="hidden sm:inline truncate max-w-[12rem]">{me?.displayName}</span>
           <button
             type="button"
             onClick={() => portalApi.logout().then(() => (window.location.href = buildUrl('/')))}

@@ -50,15 +50,15 @@ export function AdminPage(): JSX.Element {
   );
   return (
     <div className="h-full flex flex-col">
-      <div className="border-b border-slate-200 bg-white px-4">
-        <nav className="flex gap-2">
+      <div className="border-b border-slate-200 bg-white px-4 overflow-x-auto">
+        <nav className="flex gap-2 min-w-max">
           {visibleTabs.map((t) => (
             <NavLink
               key={t.path}
               to={`/admin/${t.path}`}
               className={({ isActive }) =>
                 clsx(
-                  'px-3 py-3 text-sm',
+                  'px-3 py-3 text-sm whitespace-nowrap',
                   isActive || loc.pathname.endsWith(t.path)
                     ? 'border-b-2 border-brand-600 text-brand-800 font-medium'
                     : 'text-slate-600 hover:text-slate-900',
@@ -2667,7 +2667,7 @@ function SplitPhraseForm(): JSX.Element {
           placeholder="word1 word2 word3 …"
         />
       </label>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <label className="block">
           <span className="text-sm text-slate-700">Threshold (K)</span>
           <input

@@ -216,7 +216,13 @@ export function RequestPanel({
   if (!open) return null;
 
   return (
-    <aside className="w-[340px] flex-shrink-0 h-full bg-white border-l border-slate-200 flex flex-col overflow-hidden">
+    <aside
+      className="
+        bg-white border-slate-200 flex flex-col overflow-hidden
+        fixed inset-0 z-40 w-full border-l-0
+        md:static md:z-auto md:w-[340px] md:h-full md:flex-shrink-0 md:border-l
+      "
+    >
       <header className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
         <div>
           <h3 className="font-semibold text-sm text-slate-900">Requests</h3>

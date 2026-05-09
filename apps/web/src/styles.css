@@ -16,6 +16,21 @@ body,
   height: 100%;
 }
 
+/* Mobile table fallback. Most admin/dashboard tables are too wide for a
+ * phone; rather than wrapping each one in a scroll container, force every
+ * <table> at <md breakpoint> to render as a block-level box that
+ * scrolls horizontally. The browser still renders the tabular layout via
+ * anonymous-table boxes, so cells stay aligned — only the outer overflow
+ * mode changes. Desktop layouts are untouched. */
+@media (max-width: 767px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
 /* Consistent focus ring across the app — brand blue, never pink. Use a ring
  * shadow in addition to the outline so the focused element reads clearly on
  * both light and dark surfaces; the translucent halo survives where a flat
