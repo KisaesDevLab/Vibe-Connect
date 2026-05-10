@@ -70,6 +70,7 @@
     "createUpdaterArtifacts": false
   },
   "plugins": {
+    "$comment_plugins": "Only the updater plugin reads config from this file. All other plugins (store, notification, global-shortcut, autostart) are configured entirely via Rust code in src/main.rs. Empty-object entries like `\"store\": {}` are SCHEMA INVALID in current tauri-plugin-store (expects unit, gets map) and cause runtime panic at app startup — that's the bug that silently broke v0.1.7..v0.1.9 launches before the panic hook was added.",
     "updater": {
       "$comment": "Updater is OFF until the ed25519 signing keypair is generated. See docs/ops/UPDATE_SIGNING.md. To re-enable: flip active=true, paste the generated public key into pubkey, set dialog=true, and flip bundle.createUpdaterArtifacts back to true.",
       "active": false,
@@ -79,10 +80,6 @@
       ],
       "dialog": false,
       "pubkey": ""
-    },
-    "autostart": { "useLauncher": false },
-    "global-shortcut": {},
-    "notification": {},
-    "store": {}
+    }
   }
 }
