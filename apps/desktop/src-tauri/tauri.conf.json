@@ -28,14 +28,13 @@
       "capabilities": ["main-capability"]
     },
     "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
+      "iconPath": "icons/icon.ico",
       "menuOnLeftClick": false
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis", "dmg", "app", "appimage", "deb"],
+    "targets": ["msi", "nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -47,8 +46,11 @@
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",
       "timestampUrl": "",
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "displayLanguageSelector": false
       },
       "wix": {
         "language": "en-US"
@@ -69,14 +71,14 @@
   },
   "plugins": {
     "updater": {
-      "active": true,
+      "$comment": "Updater is OFF until the ed25519 signing keypair is generated. See docs/ops/UPDATE_SIGNING.md. To re-enable: flip active=true, paste the generated public key into pubkey, set dialog=true, and flip bundle.createUpdaterArtifacts back to true.",
+      "active": false,
       "endpoints": [
         "https://kisaesdevlab.github.io/Vibe-Connect/{{target}}/{{arch}}/latest/latest.json",
         "https://kisaesdevlab.github.io/Vibe-Connect/{{target}}/{{arch}}/{{current_version}}/latest.json"
       ],
-      "dialog": true,
-      "$comment_pubkey": "Generate with `npx tauri signer generate -w apps/desktop/.tauri/signing.key` and paste the public half here. Private half goes into the GitHub Actions secret TAURI_UPDATER_PRIVATE_KEY (and the password into TAURI_UPDATER_PRIVATE_KEY_PASSWORD if one was set). See docs/ops/DESKTOP.md.",
-      "pubkey": "REPLACE_WITH_ED25519_PUBLIC_KEY_FROM_UPDATE_SIGNING.md"
+      "dialog": false,
+      "pubkey": ""
     },
     "autostart": { "useLauncher": false },
     "global-shortcut": {},

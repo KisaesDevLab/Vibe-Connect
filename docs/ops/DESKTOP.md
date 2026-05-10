@@ -226,6 +226,52 @@ If a customer's IT policy forbids running unsigned binaries, they must
 either delay rollout to v1.1 OR install the desktop wrapper from inside
 a Group Policy unblocking exception. There is no in-product workaround.
 
+## Antivirus blocking — Bitdefender ATD and friends
+
+Mainstream AV products (Bitdefender Advanced Threat Defense, ESET HIPS,
+Kaspersky System Watcher, occasionally Defender ATP) inject DLLs into
+unsigned binaries and, depending on heuristic, fast-fail the process at
+startup with `0xc0000409 (STATUS_STACK_BUFFER_OVERRUN, BEX64)`. From the
+user's perspective: double-click does nothing.
+
+**Confirming the symptom.** Check **Event Viewer → Windows Logs →
+Application** for an entry near the launch time with `Faulting
+application name: vibe-connect-desktop.exe` and exception code
+`0xc0000409`. If the report's `LoadedModule` list contains anything from
+`Bitdefender\…\bdhkm64.dll` / `atcuf64.dll` (or `eset\…\ehdrv.sys`,
+`kaspersky\…\klif.dll`, etc.), that AV is hooking the process.
+
+**Permanent fix.** EV code-signing (see Phase B above). The same
+heuristic that flags unsigned Tauri apps will let signed binaries
+through unmodified.
+
+**Workaround for pilots running before the EV cert lands.** Add a
+per-user folder exclusion in the AV product:
+
+- Bitdefender: Protection → Antivirus → Settings → Manage Exceptions →
+  add `%LOCALAPPDATA%\Vibe Connect\`.
+- ESET: Setup → Detection engine → Exclusions → add the same folder.
+- Kaspersky: Settings → Threats & exclusions → Manage exclusions.
+- Defender: Settings → Update & Security → Virus & threat protection →
+  Manage settings → Add or remove exclusions → Folder.
+
+The exclusion needs to be on the **folder**, not the binary path —
+auto-updates replace the .exe and a path-only exclusion would stop
+applying.
+
+## Diagnostic log
+
+The shell installs a panic hook that appends a timestamped record to
+`%LOCALAPPDATA%\Vibe Connect\panic.log` before the runtime aborts. Ask
+support customers to share this file when they report "nothing happens"
+— the panic message, location, and version land there even on silent
+fast-fails. The file is human-readable plain text. Delete to reset.
+
+The store file at `%APPDATA%\app.vibeconnect.desktop\settings.json`
+carries the chosen appliance URL and the `tray_hint_shown` flag. The
+"Change server…" tray menu item resets the URL; deleting the whole
+folder resets the install to first-run state.
+
 ## Updater signing key rotation
 
 The Tauri auto-updater verifies a `latest.json` payload against an

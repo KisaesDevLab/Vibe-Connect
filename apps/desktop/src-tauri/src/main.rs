@@ -17,6 +17,9 @@
 // the onboarding bundle so the user can pick a new appliance.
 
 use serde_json::json;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -26,10 +29,103 @@ use tauri::{
 use url::Url;
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::ShortcutState;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "settings.json";
 const STORE_KEY_APPLIANCE_URL: &str = "appliance_url";
+const STORE_KEY_TRAY_HINT_SHOWN: &str = "tray_hint_shown";
+
+/// Per-user log directory for panic/diagnostic output. On Windows this lives
+/// at %LOCALAPPDATA%\Vibe Connect\ — same parent as the NSIS install path,
+/// so users helping with support can find both binary + log next to each
+/// other. Returns None when LOCALAPPDATA is unreadable (very rare; only on
+/// stripped-down sandboxes).
+fn panic_log_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("LOCALAPPDATA").map(|s| {
+            let mut p = PathBuf::from(s);
+            p.push("Vibe Connect");
+            p
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|s| {
+            let mut p = PathBuf::from(s);
+            p.push(".vibe-connect");
+            p
+        })
+    }
+}
+
+/// Installs a panic hook that appends a timestamped panic record to
+/// %LOCALAPPDATA%\Vibe Connect\panic.log before the runtime aborts (release
+/// builds set `panic = "abort"` so the process dies immediately after this
+/// hook returns — no chance to recover, but at least the cause is captured).
+/// Without this, a panic anywhere in startup looks identical to the
+/// Bitdefender BEX64 crash: silent fast-fail with no diagnostic anywhere.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(dir) = panic_log_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("panic.log");
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+                let ts = chrono_lite();
+                let location = info
+                    .location()
+                    .map(|l| format!("{}:{}", l.file(), l.line()))
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                let payload = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .map(|s| (*s).to_string())
+                    .or_else(|| info.payload().downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                let _ = writeln!(
+                    f,
+                    "[{ts}] PANIC at {location}: {payload} (version {})",
+                    env!("CARGO_PKG_VERSION"),
+                );
+                // Drop flushes File, but be explicit so abort can't race
+                // the OS buffer flush.
+                let _ = f.flush();
+            }
+        }
+        default_hook(info);
+    }));
+}
+
+/// Minimal ISO-8601-ish UTC timestamp without pulling in the `chrono` crate.
+/// Format: `2026-05-10T13:24:07Z`. Resolution to the second is enough for
+/// support-log triage.
+fn chrono_lite() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Days since 1970-01-01.
+    let days = (secs / 86_400) as i64;
+    let time_of_day = secs % 86_400;
+    let hour = (time_of_day / 3600) as u8;
+    let minute = ((time_of_day % 3600) / 60) as u8;
+    let second = (time_of_day % 60) as u8;
+    // Civil-from-days (Howard Hinnant's algorithm — public-domain).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
 
 /// The bundled onboarding URL captured at startup. Tauri's bundled-asset
 /// scheme differs per platform (`https://tauri.localhost/` on Windows,
@@ -99,20 +195,39 @@ fn navigate_window_to(app: &AppHandle, url_str: &str) -> Result<(), String> {
 
 /// Navigate the main webview back to the bundled onboarding URL captured at
 /// startup. Used by "Change server…".
+///
+/// If the captured URL is unset (rare race where the webview hadn't loaded
+/// when setup() probed `win.url()`), fall back to Tauri's platform-default
+/// custom-scheme origin. Without this fallback, the user clicks
+/// "Change server…" and nothing happens — silent breakage.
 fn navigate_window_to_onboarding(app: &AppHandle) -> Result<(), String> {
-    let saved = app.state::<OnboardingUrl>();
-    let url = saved
-        .0
-        .lock()
-        .map_err(|e| format!("onboarding_url_lock_failed: {e}"))?
-        .clone()
-        .ok_or_else(|| "onboarding_url_unset".to_string())?;
+    let captured = {
+        let saved = app.state::<OnboardingUrl>();
+        let guard = saved
+            .0
+            .lock()
+            .map_err(|e| format!("onboarding_url_lock_failed: {e}"))?;
+        guard.clone()
+    };
+    let url = captured.unwrap_or_else(default_onboarding_url);
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| "no_main_window".to_string())?;
     win.navigate(url)
         .map_err(|e| format!("navigate_failed: {e}"))?;
     Ok(())
+}
+
+/// Tauri 2's bundled-asset origin: `https://tauri.localhost/` on Windows,
+/// `tauri://localhost/` everywhere else. Hardcoded as a last-resort fallback
+/// for `navigate_window_to_onboarding` — the literal parses unconditionally,
+/// so we don't expose a Result.
+fn default_onboarding_url() -> Url {
+    #[cfg(windows)]
+    let raw = "https://tauri.localhost/";
+    #[cfg(not(windows))]
+    let raw = "tauri://localhost/";
+    Url::parse(raw).expect("hardcoded onboarding URL is well-formed")
 }
 
 // ---------- IPC commands ----------
@@ -168,33 +283,60 @@ fn get_desktop_version(version: State<'_, AppVersion>) -> String {
 }
 
 fn main() {
-    tauri::Builder::default()
+    install_panic_hook();
+
+    // Build the global-shortcut plugin separately so a parse failure on the
+    // shortcut string doesn't take the whole app down. `with_shortcuts` only
+    // fails on malformed keybind strings — but if Tauri ever changes its
+    // grammar, that's a recoverable startup error: log it, ship the app
+    // without the hotkey, let the user resize-from-tray and Change Server
+    // instead. Previously this was `.expect("register default shortcut")`
+    // which panic-aborted to BEX64 with no diagnostic.
+    let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcuts(["CmdOrControl+Shift+V"])
+        .map(|b| {
+            b.with_handler(|app, _shortcut, event| {
+                if event.state() != ShortcutState::Pressed {
+                    return;
+                }
+                if let Some(win) = app.get_webview_window("main") {
+                    // Match the tray-icon click handler's default: assume
+                    // hidden when visibility query fails, so the hotkey
+                    // always tries to surface the window (the safer fallback
+                    // — accidentally hiding a visible window is more
+                    // annoying than re-showing one).
+                    if win.is_visible().unwrap_or(false) {
+                        let _ = win.hide();
+                    } else {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+            })
+            .build()
+        });
+
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
+        // Updater plugin stays registered so re-enabling auto-update later
+        // doesn't require a rebuild path change, but the runtime check is
+        // gated by `plugins.updater.active` in tauri.conf.json — currently
+        // disabled because no signing keypair exists. See
+        // docs/ops/UPDATE_SIGNING.md.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![]),
-        ))
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["CmdOrControl+Shift+V"])
-                .expect("register default shortcut")
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() != ShortcutState::Pressed {
-                        return;
-                    }
-                    if let Some(win) = app.get_webview_window("main") {
-                        if win.is_visible().unwrap_or(true) {
-                            let _ = win.hide();
-                        } else {
-                            let _ = win.show();
-                            let _ = win.set_focus();
-                        }
-                    }
-                })
-                .build(),
-        )
+        ));
+    let builder = match shortcut_plugin {
+        Ok(p) => builder.plugin(p),
+        Err(e) => {
+            eprintln!("startup: global-shortcut plugin disabled ({e})");
+            builder
+        }
+    };
+    builder
         .manage(AppVersion(env!("CARGO_PKG_VERSION").to_string()))
         .manage(OnboardingUrl(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
@@ -316,12 +458,49 @@ fn main() {
             Ok(())
         })
         .on_window_event(|win, event| {
-            // Minimize to tray on window close instead of quitting.
+            // Minimize to tray on window close instead of quitting. Users
+            // intuitively think clicking ✕ quits the app — on the first
+            // close, show a one-shot notification so they understand the
+            // tray icon is still there. We persist the dismissal via the
+            // store so the hint never reappears for the same install.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = win.hide();
+                show_tray_hint_once(win.app_handle());
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running Vibe Connect desktop");
+        .unwrap_or_else(|e| {
+            // Funnel the run-failure through the panic hook so the cause
+            // lands in panic.log alongside any startup panics. `panic!` here
+            // is fine — panic = "abort" will still terminate, but our hook
+            // captures the message first.
+            panic!("tauri runtime failed to start: {e}")
+        });
+}
+
+/// Show a tray-balloon notification on the first window-close-to-tray. We
+/// stash a `tray_hint_shown: true` flag in the same store the appliance URL
+/// lives in so the hint never reappears for this install. If the store
+/// read/write fails we silently skip — the hint is convenience, not
+/// load-bearing.
+fn show_tray_hint_once(app: &AppHandle) {
+    let store = match app.store(STORE_FILE) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if matches!(
+        store.get(STORE_KEY_TRAY_HINT_SHOWN).and_then(|v| v.as_bool()),
+        Some(true)
+    ) {
+        return;
+    }
+    let _ = app
+        .notification()
+        .builder()
+        .title("Vibe Connect is still running")
+        .body("The app keeps running in the system tray. Right-click the tray icon to quit.")
+        .show();
+    store.set(STORE_KEY_TRAY_HINT_SHOWN, json!(true));
+    let _ = store.save();
 }
