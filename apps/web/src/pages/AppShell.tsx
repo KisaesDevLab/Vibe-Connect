@@ -13,7 +13,7 @@ import { useCrypto } from '../state/crypto.js';
 import { useRealtime } from '../state/realtime.js';
 import { url } from '../lib/boot.js';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { useAddToHomeScreen } from '../state/pwa.js';
 import { useTheme } from '../state/theme.js';
 
@@ -52,17 +52,33 @@ function ConnectionDot({
   );
 }
 
-function SignOutMenu({ onSignOut }: { onSignOut: (forgetDevice: boolean) => void }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
+// Shared by the two header dropdowns (SignOutMenu, MobileMoreMenu). Listener
+// is only attached while the menu is open so closed menus don't register
+// global mousedown handlers.
+function useOutsideClick(
+  ref: RefObject<HTMLElement | null>,
+  onOutside: () => void,
+  enabled: boolean,
+): void {
   useEffect(() => {
-    if (!open) return;
+    if (!enabled) return;
     function onDocClick(e: MouseEvent): void {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) onOutside();
     }
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
-  }, [open]);
+    // onOutside is recreated each render but only called inside the listener,
+    // so re-binding on identity changes would just churn the document
+    // listener. We deliberately read it via closure instead — `enabled` is
+    // the only signal that should attach/detach.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ref]);
+}
+
+function SignOutMenu({ onSignOut }: { onSignOut: (forgetDevice: boolean) => void }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useOutsideClick(ref, () => setOpen(false), open);
   return (
     <div className="relative" ref={ref}>
       <button
@@ -253,7 +269,7 @@ export function AppShell(): JSX.Element {
       </aside>
       <main
         className="row-start-2 md:col-start-2 overflow-hidden"
-        onClick={() => sidebarOpen && setSidebarOpen(false)}
+        onClick={() => setSidebarOpen(false)}
       >
         <Outlet />
       </main>
@@ -279,14 +295,7 @@ function MobileMoreMenu({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent): void {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
-  }, [open]);
+  useOutsideClick(ref, () => setOpen(false), open);
   return (
     <div className="md:hidden relative" ref={ref}>
       <button
