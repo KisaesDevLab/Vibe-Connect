@@ -319,6 +319,10 @@ fn main() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
+        // Shell opener — used by the staff app's "My intake page" card to
+        // launch the staff's public intake URL in the OS default browser
+        // instead of replacing the appliance webview.
+        .plugin(tauri_plugin_shell::init())
         // Updater plugin stays registered so re-enabling auto-update later
         // doesn't require a rebuild path change, but the runtime check is
         // gated by `plugins.updater.active` in tauri.conf.json — currently

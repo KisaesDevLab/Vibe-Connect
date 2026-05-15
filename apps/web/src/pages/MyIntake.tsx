@@ -81,6 +81,37 @@ function MyIntakeUrlCard(): JSX.Element {
     }
   }
 
+  // Open the intake URL in the user's default browser. In a plain PWA tab
+  // this is just window.open with noopener; in the Tauri desktop shell a
+  // bare `target="_blank"` either replaces the appliance webview or
+  // silently no-ops, so we route through tauri-plugin-shell's `open()`
+  // which delegates to the OS shell. Runtime detection only — the plugin
+  // import is static (small bundle) but the call is gated so non-Tauri
+  // callers never invoke the IPC.
+  async function openExternal(): Promise<void> {
+    if (!myUrl) return;
+    const inTauri =
+      typeof window !== 'undefined' &&
+      // Tauri 2 sets __TAURI_INTERNALS__; v1 used __TAURI__. Check both so
+      // a future webview downgrade or partial migration still routes to the
+      // shell opener instead of clobbering the appliance webview.
+      (Boolean((window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) ||
+        Boolean((window as { __TAURI__?: unknown }).__TAURI__));
+    if (inTauri) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        await open(myUrl);
+        return;
+      } catch {
+        // Plugin invocation failed (capability missing on a stale desktop
+        // build, IPC unavailable, etc.). Fall through to window.open so the
+        // user still gets something — worst case they see the appliance
+        // navigate away, which is the pre-fix behavior.
+      }
+    }
+    window.open(myUrl, '_blank', 'noopener,noreferrer');
+  }
+
   return (
     <div className="p-4 max-w-3xl space-y-4">
       <header className="space-y-1">
@@ -115,14 +146,14 @@ function MyIntakeUrlCard(): JSX.Element {
           >
             {copied ? 'Copied' : 'Copy'}
           </button>
-          <a
-            href={myUrl || '#'}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="rounded-md border border-slate-300 bg-white text-sm font-medium px-3 py-2 hover:bg-slate-50"
+          <button
+            type="button"
+            onClick={() => void openExternal()}
+            disabled={!myUrl}
+            className="rounded-md border border-slate-300 bg-white text-sm font-medium px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
           >
             Open
-          </a>
+          </button>
         </div>
         <p className="text-xs text-slate-500">
           Or share the landing page at{' '}

@@ -15,6 +15,10 @@
     "global-shortcut:default",
     "notification:default",
     "store:default",
-    "updater:default"
+    "updater:default",
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "url": "https://**" }, { "url": "http://**" }]
+    }
   ]
 }
