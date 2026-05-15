@@ -108,9 +108,7 @@ export function verifyUploadToken(token: string): VerifyResult {
   // Verify signature first so we never decode an unauthenticated payload
   // into structured form (defense against type-juggling on attacker-
   // controlled JSON).
-  const expected = createHmac('sha256', signingKey())
-    .update(`${headerB64}.${payloadB64}`)
-    .digest();
+  const expected = createHmac('sha256', signingKey()).update(`${headerB64}.${payloadB64}`).digest();
   let provided: Buffer;
   try {
     provided = base64urlDecode(sigB64);

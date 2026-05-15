@@ -527,12 +527,7 @@ export function Upload(): JSX.Element {
         )}
 
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={!canFinalize}
-            onClick={finalize}
-          >
+          <button type="button" className="btn-primary" disabled={!canFinalize} onClick={finalize}>
             {finalizing
               ? 'Finishing…'
               : anyUploading
@@ -589,9 +584,7 @@ function StatusPill({ row }: { row: UploadRow }): JSX.Element {
     done: 'done',
     error: 'failed',
   }[row.status];
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{label}</span>
-  );
+  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{label}</span>;
 }
 
 function formatBytes(n: number): string {
@@ -608,11 +601,15 @@ export function Done(): JSX.Element {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="max-w-md w-full bg-white rounded shadow-card p-6 space-y-3 text-center">
-        <h1 className="text-lg font-semibold text-slate-900">Thanks — we got your file{n === 1 ? '' : 's'}.</h1>
+        <h1 className="text-lg font-semibold text-slate-900">
+          Thanks — we got your file{n === 1 ? '' : 's'}.
+        </h1>
         <p className="text-sm text-slate-600">
           We sent a confirmation to the contact you provided. You can close this tab.
         </p>
-        <p className="text-xs text-slate-400">Staff recipient: <code>{params.staffId}</code></p>
+        <p className="text-xs text-slate-400">
+          Staff recipient: <code>{params.staffId}</code>
+        </p>
       </div>
     </div>
   );

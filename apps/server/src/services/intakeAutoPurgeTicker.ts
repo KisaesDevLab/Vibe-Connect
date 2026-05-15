@@ -108,11 +108,13 @@ export async function runIntakeAutoPurgeSweep(): Promise<IntakeAutoPurgeResult> 
 
       const files = (await db('intake_files')
         .where({ session_id: sessionId })
-        .select<Array<{ id: string; stored_path: string; size_bytes: string | number }>>(
-          'id',
-          'stored_path',
-          'size_bytes',
-        )) as Array<{ id: string; stored_path: string; size_bytes: string | number }>;
+        .select<
+          Array<{ id: string; stored_path: string; size_bytes: string | number }>
+        >('id', 'stored_path', 'size_bytes')) as Array<{
+        id: string;
+        stored_path: string;
+        size_bytes: string | number;
+      }>;
       const pdf = await db('intake_pdfs').where({ session_id: sessionId }).first<{
         id: string;
         stored_path: string | null;

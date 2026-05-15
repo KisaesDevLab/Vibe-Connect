@@ -68,7 +68,11 @@ exports.up = async function up(knex) {
     t.uuid('id').primary().defaultTo(knex.raw('gen_random_uuid()'));
     // 22 chars = 16 random bytes base64url. Unique-indexed.
     t.string('token', 32).notNullable().unique();
-    t.uuid('created_by_user_id').notNullable().references('id').inTable('users').onDelete('CASCADE');
+    t.uuid('created_by_user_id')
+      .notNullable()
+      .references('id')
+      .inTable('users')
+      .onDelete('CASCADE');
     t.uuid('assigned_staff_id').notNullable().references('id').inTable('users').onDelete('CASCADE');
     t.timestamp('expires_at', { useTz: true }).notNullable();
     t.timestamp('revoked_at', { useTz: true }).nullable();
@@ -151,9 +155,7 @@ exports.up = async function up(knex) {
   await knex.raw(
     `CREATE INDEX idx_intake_sessions_staff ON intake_sessions (staff_id, created_at DESC)`,
   );
-  await knex.raw(
-    `CREATE INDEX idx_intake_sessions_status ON intake_sessions (status, created_at)`,
-  );
+  await knex.raw(`CREATE INDEX idx_intake_sessions_status ON intake_sessions (status, created_at)`);
   await knex.raw(
     `CREATE INDEX idx_intake_sessions_auto_delete
        ON intake_sessions (auto_delete_at)
@@ -266,11 +268,7 @@ exports.up = async function up(knex) {
   // -------- 8. intake_notifications_outbox (client + staff notify tickers) --------
   await knex.schema.createTable('intake_notifications_outbox', (t) => {
     t.uuid('id').primary().defaultTo(knex.raw('gen_random_uuid()'));
-    t.uuid('session_id')
-      .nullable()
-      .references('id')
-      .inTable('intake_sessions')
-      .onDelete('CASCADE');
+    t.uuid('session_id').nullable().references('id').inTable('intake_sessions').onDelete('CASCADE');
     // 'email' | 'sms' (client-side) or 'in_app' (staff-side fanout)
     t.text('channel').notNullable();
     // For email/sms: HKDF hash of the recipient address (never plaintext).
@@ -365,9 +363,7 @@ exports.down = async function down(knex) {
   });
   // Knex's dropChecks isn't reliable across versions; issue raw DROP CONSTRAINT
   // calls too so down-migration succeeds regardless of dialect helper coverage.
-  await knex.raw(
-    `ALTER TABLE firm_settings DROP CONSTRAINT IF EXISTS chk_intake_auto_delete_days`,
-  );
+  await knex.raw(`ALTER TABLE firm_settings DROP CONSTRAINT IF EXISTS chk_intake_auto_delete_days`);
   await knex.raw(`ALTER TABLE firm_settings DROP CONSTRAINT IF EXISTS chk_intake_digest_hour`);
   await knex.raw(
     `ALTER TABLE firm_settings DROP CONSTRAINT IF EXISTS chk_intake_conversion_concurrency`,

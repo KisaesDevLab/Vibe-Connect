@@ -104,10 +104,7 @@ export async function countRotationTargets(): Promise<RotationCounts> {
  *
  * Returns counts + per-check booleans. Does NOT mutate anything.
  */
-export async function dryRunRotation(opts: {
-  oldKey: Uint8Array;
-  newKey: Uint8Array;
-}): Promise<{
+export async function dryRunRotation(opts: { oldKey: Uint8Array; newKey: Uint8Array }): Promise<{
   counts: RotationCounts;
   sample: {
     sessionDecryptOk: boolean | null;
@@ -156,8 +153,7 @@ export async function dryRunRotation(opts: {
     const probeBytes = Buffer.from(probe, 'utf8');
     const encStream = await encryptBufferStreamingWith(probeBytes, opts.newKey);
     const decStream = await decryptBufferStreamingWith(encStream, opts.newKey);
-    if (Buffer.compare(decStream, probeBytes) !== 0)
-      throw new Error('stream round-trip mismatch');
+    if (Buffer.compare(decStream, probeBytes) !== 0) throw new Error('stream round-trip mismatch');
     newKeyRoundTripOk = true;
   } catch {
     newKeyRoundTripOk = false;
@@ -384,11 +380,9 @@ export async function verifyRotation(
   // Sample files. Capped at the same sampleSize for symmetry; covers
   // a different cohort than the sessions sample (random per-row).
   const files = (await db('intake_files')
-    .select<Array<{ id: string; stored_path: string; sha256: string }>>(
-      'id',
-      'stored_path',
-      'sha256',
-    )
+    .select<
+      Array<{ id: string; stored_path: string; sha256: string }>
+    >('id', 'stored_path', 'sha256')
     .orderByRaw('random()')
     .limit(sampleSize)) as Array<{ id: string; stored_path: string; sha256: string }>;
   const storage = attachmentStorage();
@@ -471,17 +465,14 @@ export async function runKeyRotation(job: RotationJob): Promise<void> {
         return;
       }
 
-      const batchQ = db('intake_sessions')
-        .orderBy('id', 'asc')
-        .limit(batchSize)
-        .select<
-          Array<{
-            id: string;
-            client_name_enc: Buffer;
-            client_email_enc: Buffer | null;
-            client_phone_enc: Buffer | null;
-          }>
-        >('id', 'client_name_enc', 'client_email_enc', 'client_phone_enc');
+      const batchQ = db('intake_sessions').orderBy('id', 'asc').limit(batchSize).select<
+        Array<{
+          id: string;
+          client_name_enc: Buffer;
+          client_email_enc: Buffer | null;
+          client_phone_enc: Buffer | null;
+        }>
+      >('id', 'client_name_enc', 'client_email_enc', 'client_phone_enc');
       if (lastSessionId) batchQ.where('id', '>', lastSessionId);
       const batch = await batchQ;
       if (batch.length === 0) break;

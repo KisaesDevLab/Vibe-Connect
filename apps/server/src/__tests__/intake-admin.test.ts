@@ -167,7 +167,7 @@ describe('Phase 28.11 — search', () => {
     expect(ids).toContain(sessId);
   });
 
-  it('does not return a different staff member\'s match (RBAC for non-admin)', async () => {
+  it("does not return a different staff member's match (RBAC for non-admin)", async () => {
     const bobSess = await createSessionFor(bobStaffId, { email: 'rbac-test@example.com' });
     const aliceAgent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
     const r = await aliceAgent
@@ -249,7 +249,7 @@ describe('Phase 28.11 — link / unlink Connect client', () => {
     expect(r.body.error).toBe('unknown_client');
   });
 
-  it('staff cannot link another staff member\'s session', async () => {
+  it("staff cannot link another staff member's session", async () => {
     const sessId = await createSessionFor(bobStaffId);
     const [client] = (await db('external_identities')
       .insert({ email: `cross-${Date.now()}@example.com`, display_name: 'X' })
@@ -274,9 +274,7 @@ describe('Phase 28.11 — POST /admin/intake/sessions/zip (bulk-zip)', () => {
   it('404s when none of the requested sessions are authorised', async () => {
     const bobSess = await createSessionFor(bobStaffId);
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
-    const r = await alice
-      .post('/admin/intake/sessions/zip')
-      .send({ sessionIds: [bobSess] });
+    const r = await alice.post('/admin/intake/sessions/zip').send({ sessionIds: [bobSess] });
     expect(r.status).toBe(404);
     expect(r.body.error).toBe('no_sessions_authorised');
   });

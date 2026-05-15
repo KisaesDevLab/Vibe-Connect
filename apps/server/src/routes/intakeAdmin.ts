@@ -33,10 +33,7 @@ import {
   parseIntakeKey,
   searchHash,
 } from '../services/intakeCrypto.js';
-import {
-  applyRetentionBackfill,
-  clearAllAutoDeleteAt,
-} from '../services/intakeAutoPurgeTicker.js';
+import { applyRetentionBackfill, clearAllAutoDeleteAt } from '../services/intakeAutoPurgeTicker.js';
 import {
   countRotationTargets,
   dryRunRotation,
@@ -72,7 +69,10 @@ const listQuerySchema = z.object({
   fromDate: z.string().optional(), // ISO date or datetime
   toDate: z.string().optional(),
   includeArchived: z.coerce.boolean().optional().default(false),
-  sort: z.enum(['received_at_desc', 'received_at_asc', 'size_desc', 'size_asc']).optional().default('received_at_desc'),
+  sort: z
+    .enum(['received_at_desc', 'received_at_asc', 'size_desc', 'size_asc'])
+    .optional()
+    .default('received_at_desc'),
 });
 
 intakeAdminRouter.get(
@@ -394,10 +394,7 @@ intakeAdminRouter.get(
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Length', String(plaintext.length));
     const ref = createHash('sha256').update(sessionId).digest('hex').slice(0, 8);
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="intake-${ref}.pdf"`,
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="intake-${ref}.pdf"`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(plaintext);
   }),
@@ -602,11 +599,9 @@ intakeAdminRouter.get(
     }
     let q = db('external_identities')
       .whereNull('deactivated_at')
-      .select<Array<{ id: string; display_name: string; email: string | null }>>(
-        'id',
-        'display_name',
-        'email',
-      )
+      .select<
+        Array<{ id: string; display_name: string; email: string | null }>
+      >('id', 'display_name', 'email')
       .orderBy('display_name')
       .limit(20);
     if (parsed.data.q) {
@@ -1110,17 +1105,15 @@ intakeAdminRouter.post(
     // Pre-flight: load all referenced sessions, filter by RBAC, drop
     // ids that don't exist. We do this before opening the response
     // stream so a 404/403 can be returned cleanly.
-    const sessions = await db('intake_sessions')
-      .whereIn('id', parsed.data.sessionIds)
-      .select<
-        Array<{
-          id: string;
-          staff_id: string;
-          client_name_enc: Buffer;
-          finalized_at: string | null;
-          status: string;
-        }>
-      >('id', 'staff_id', 'client_name_enc', 'finalized_at', 'status');
+    const sessions = await db('intake_sessions').whereIn('id', parsed.data.sessionIds).select<
+      Array<{
+        id: string;
+        staff_id: string;
+        client_name_enc: Buffer;
+        finalized_at: string | null;
+        status: string;
+      }>
+    >('id', 'staff_id', 'client_name_enc', 'finalized_at', 'status');
     const authorised = sessions.filter((s) => isAdmin || s.staff_id === me);
     if (authorised.length === 0) {
       res.status(404).json({ error: 'no_sessions_authorised' });
@@ -1176,12 +1169,10 @@ intakeAdminRouter.post(
       });
 
       // Add the assembled PDF if it's ready.
-      const pdf = await db('intake_pdfs')
-        .where({ session_id: session.id })
-        .first<{ stored_path: string | null; conversion_status: string }>(
-          'stored_path',
-          'conversion_status',
-        );
+      const pdf = await db('intake_pdfs').where({ session_id: session.id }).first<{
+        stored_path: string | null;
+        conversion_status: string;
+      }>('stored_path', 'conversion_status');
       if (pdf?.conversion_status === 'done' && pdf.stored_path) {
         try {
           const ct = await storage.get(pdf.stored_path);
@@ -1409,7 +1400,8 @@ intakeAdminRouter.patch(
         // Flip OFF→ON: backfill historical finalized sessions with a
         // 7-day-minimum auto_delete_at. Uses the *new* after_days when
         // present in this same PATCH, otherwise the pre-existing value.
-        const afterDays = patch.intake_auto_delete_after_days ?? before.intake_auto_delete_after_days;
+        const afterDays =
+          patch.intake_auto_delete_after_days ?? before.intake_auto_delete_after_days;
         const { touched } = await applyRetentionBackfill(afterDays);
         backfillTouched = touched;
       } else {
@@ -1506,12 +1498,10 @@ intakeAdminRouter.delete(
       res.status(400).json({ error: 'not_finalized' });
       return;
     }
-    const firm = await db('firm_settings')
-      .where({ id: 1 })
-      .first<{
-        intake_auto_delete_enabled: boolean;
-        intake_auto_delete_after_days: number;
-      }>(['intake_auto_delete_enabled', 'intake_auto_delete_after_days']);
+    const firm = await db('firm_settings').where({ id: 1 }).first<{
+      intake_auto_delete_enabled: boolean;
+      intake_auto_delete_after_days: number;
+    }>(['intake_auto_delete_enabled', 'intake_auto_delete_after_days']);
     let nextAutoDeleteAt: string | null = null;
     if (firm?.intake_auto_delete_enabled) {
       // Same shape as applyRetentionBackfill: at least 7 days of grace
@@ -1599,9 +1589,10 @@ const rotateBodySchema = z
  * Resolve old + new keys from body (preferred) or env (fallback).
  * Throws a typed error string the route converts to a 400.
  */
-function resolveRotationKeys(
-  body: { oldKey?: string; newKey?: string },
-): { oldKey: Uint8Array; newKey: Uint8Array } | { error: string } {
+function resolveRotationKeys(body: {
+  oldKey?: string;
+  newKey?: string;
+}): { oldKey: Uint8Array; newKey: Uint8Array } | { error: string } {
   const oldRaw = body.oldKey ?? env.connectIntakeEncryptionKey;
   const newRaw = body.newKey ?? env.connectIntakeEncryptionKeyNew;
   if (!oldRaw) return { error: 'old_key_required' };

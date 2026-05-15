@@ -144,8 +144,7 @@ export const api = {
       body: JSON.stringify({ items }),
     }),
 
-  getIntakeStatus: () =>
-    json<{ optedIn: number; configured: boolean }>('/admin/intake/status'),
+  getIntakeStatus: () => json<{ optedIn: number; configured: boolean }>('/admin/intake/status'),
 
   // Phase 28.11 — staff received-uploads view.
   listAdminIntakeSessions: (params: {
@@ -313,10 +312,9 @@ export const api = {
       method: 'POST',
     }),
   resendIntakeLink: (id: string) =>
-    json<{ ok: true; send: { email: boolean; sms: boolean } }>(
-      `/admin/intake/links/${id}/resend`,
-      { method: 'POST' },
-    ),
+    json<{ ok: true; send: { email: boolean; sms: boolean } }>(`/admin/intake/links/${id}/resend`, {
+      method: 'POST',
+    }),
 
   // Phase 28.15 — firm-level intake retention settings + per-session
   // retention override.
@@ -334,17 +332,19 @@ export const api = {
         intake_maintenance_mode: boolean;
       };
     }>('/admin/intake/settings'),
-  updateIntakeSettings: (patch: Partial<{
-    intake_auto_delete_enabled: boolean;
-    intake_auto_delete_after_days: number;
-    intake_send_to_both_channels: boolean;
-    intake_max_file_bytes: number;
-    intake_max_session_bytes: number;
-    intake_conversion_concurrency: number;
-    intake_include_cover_page: boolean;
-    intake_digest_hour_local: number;
-    intake_maintenance_mode: boolean;
-  }>) =>
+  updateIntakeSettings: (
+    patch: Partial<{
+      intake_auto_delete_enabled: boolean;
+      intake_auto_delete_after_days: number;
+      intake_send_to_both_channels: boolean;
+      intake_max_file_bytes: number;
+      intake_max_session_bytes: number;
+      intake_conversion_concurrency: number;
+      intake_include_cover_page: boolean;
+      intake_digest_hour_local: number;
+      intake_maintenance_mode: boolean;
+    }>,
+  ) =>
     json<{
       settings: {
         intake_auto_delete_enabled: boolean;

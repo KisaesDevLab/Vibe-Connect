@@ -33,14 +33,18 @@ const PORT = Number(process.env.CLAMAV_E2E_PORT ?? '3310');
 // compliance test detect this 68-byte ASCII pattern as a "virus" even
 // though it's harmless. Defined here as concatenation to avoid any local
 // AV on the test runner flagging the source file at rest.
-const EICAR =
-  'X5O!P%@AP[4\\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
+const EICAR = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
 
 /**
  * Send an INSTREAM scan request directly to clamd. Returns the raw response
  * line (null-byte stripped) so the test can assert on the FOUND signature.
  */
-function scanAtClamd(host: string, port: number, payload: Buffer, timeoutMs = 15_000): Promise<string> {
+function scanAtClamd(
+  host: string,
+  port: number,
+  payload: Buffer,
+  timeoutMs = 15_000,
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const sock = net.createConnection({ host, port });
     sock.setTimeout(timeoutMs);
@@ -81,7 +85,11 @@ describe.skipIf(!ENABLED)('ClamAV sidecar — EICAR detection (integration)', ()
   });
 
   it('returns OK for a plain-text non-malicious buffer', async () => {
-    const line = await scanAtClamd(HOST, PORT, Buffer.from('the quick brown fox jumps over the lazy dog', 'utf8'));
+    const line = await scanAtClamd(
+      HOST,
+      PORT,
+      Buffer.from('the quick brown fox jumps over the lazy dog', 'utf8'),
+    );
     expect(line).toMatch(/\bOK$/);
   });
 });

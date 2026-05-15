@@ -267,8 +267,7 @@ export function enhance(canvas: HTMLCanvasElement, mode: EnhanceMode): HTMLCanva
     let rowSum = 0;
     for (let x = 0; x < w; x++) {
       rowSum += luma[y * w + x]!;
-      integ[(y + 1) * (w + 1) + (x + 1)] =
-        integ[y * (w + 1) + (x + 1)]! + rowSum;
+      integ[(y + 1) * (w + 1) + (x + 1)] = integ[y * (w + 1) + (x + 1)]! + rowSum;
     }
   }
   const block = Math.max(15, Math.floor(Math.min(w, h) / 25));
@@ -308,9 +307,7 @@ export function enhance(canvas: HTMLCanvasElement, mode: EnhanceMode): HTMLCanva
  * <script> tag in the public index.html. We don't bundle OpenCV here
  * because it's ~7 MB and would blow the scanner-chunk size budget.
  */
-export async function tryAutoDetect(
-  img: HTMLImageElement,
-): Promise<Quad | null> {
+export async function tryAutoDetect(img: HTMLImageElement): Promise<Quad | null> {
   // window.cv is the OpenCV.js global. Without it, jscanify throws.
   const w = window as unknown as { cv?: unknown };
   if (!w.cv) return null;
@@ -320,9 +317,12 @@ export async function tryAutoDetect(
     const mod = (await import('jscanify')) as unknown;
     const Scanner = (mod as { default?: new () => unknown }).default ?? mod;
     interface JscanifyApi {
-      getCornerPoints: (
-        img: HTMLImageElement,
-      ) => { topLeftCorner: Point; topRightCorner: Point; bottomRightCorner: Point; bottomLeftCorner: Point };
+      getCornerPoints: (img: HTMLImageElement) => {
+        topLeftCorner: Point;
+        topRightCorner: Point;
+        bottomRightCorner: Point;
+        bottomLeftCorner: Point;
+      };
     }
     const s = new (Scanner as new () => JscanifyApi)();
     const c = s.getCornerPoints(img);

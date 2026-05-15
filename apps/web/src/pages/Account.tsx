@@ -245,9 +245,7 @@ function IntakeCardSettings(): JSX.Element {
         >
           {patchMut.isPending ? 'Saving…' : 'Save title & bio'}
         </button>
-        {patchMut.isSuccess && (
-          <span className="text-xs text-emerald-700">Saved.</span>
-        )}
+        {patchMut.isSuccess && <span className="text-xs text-emerald-700">Saved.</span>}
         {patchMut.isError && (
           <span className="text-xs text-rose-600">Failed: {String(patchMut.error)}</span>
         )}
@@ -260,10 +258,7 @@ function IntakeCardSettings(): JSX.Element {
           digest and in_app_only — they need attention now. */}
       <div className="border-t border-slate-100 pt-3 space-y-2">
         <div>
-          <label
-            htmlFor="intake-notify-mode"
-            className="text-sm font-medium text-slate-700 block"
-          >
+          <label htmlFor="intake-notify-mode" className="text-sm font-medium text-slate-700 block">
             Notify me about new intakes via email
           </label>
           <p className="text-xs text-slate-500">
@@ -282,9 +277,7 @@ function IntakeCardSettings(): JSX.Element {
           className="input max-w-md"
         >
           <option value="realtime">For every intake (default)</option>
-          <option value="digest">
-            Once a day, in a digest at the firm&apos;s configured hour
-          </option>
+          <option value="digest">Once a day, in a digest at the firm&apos;s configured hour</option>
           <option value="in_app_only">Never email me — in-app only</option>
         </select>
       </div>

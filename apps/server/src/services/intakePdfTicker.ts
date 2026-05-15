@@ -88,12 +88,16 @@ export async function tickOnce(): Promise<number> {
 
   const claimed = await claimRows(concurrency);
   if (claimed.length === 0) return 0;
-  await Promise.all(claimed.map((row) => processOne(row).catch((err: unknown) => {
-    logger.error('intake.pdf_process_one_threw', {
-      jobId: row.id,
-      err: err instanceof Error ? err.message : String(err),
-    });
-  })));
+  await Promise.all(
+    claimed.map((row) =>
+      processOne(row).catch((err: unknown) => {
+        logger.error('intake.pdf_process_one_threw', {
+          jobId: row.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }),
+    ),
+  );
   return claimed.length;
 }
 
@@ -222,7 +226,7 @@ async function handleFailure(row: ClaimedRow, err: unknown): Promise<void> {
       error_message: message,
       // Parameterised raw query — `backoffMs` is a numeric we control,
       // not user input, but bind it anyway for hygiene.
-      next_attempt_at: db.raw('NOW() + (? * INTERVAL \'1 millisecond\')', [backoffMs]),
+      next_attempt_at: db.raw("NOW() + (? * INTERVAL '1 millisecond')", [backoffMs]),
     });
   logger.warn('intake.pdf_conversion_retry_scheduled', {
     jobId: row.id,

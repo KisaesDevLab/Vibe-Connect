@@ -140,9 +140,7 @@ describe('Phase 28.14 — GET /api/public/intake/links/:token (resolve)', () => 
     expect(after!.target_id).toBeNull();
 
     // 2) unknown token — valid shape, no row.
-    await request(app).get(
-      `/api/public/intake/links/${randomBytes(16).toString('base64url')}`,
-    );
+    await request(app).get(`/api/public/intake/links/${randomBytes(16).toString('base64url')}`);
     after = await db('audit_log')
       .where({ action: 'intake.token.rejected' })
       .orderBy('created_at', 'desc')
@@ -197,7 +195,9 @@ describe('Phase 28.14 — GET /api/public/intake/links/:token (resolve)', () => 
 
   it('404s when the token doesn’t exist', async () => {
     // Valid shape, no row.
-    const r = await request(app).get(`/api/public/intake/links/${randomBytes(16).toString('base64url')}`);
+    const r = await request(app).get(
+      `/api/public/intake/links/${randomBytes(16).toString('base64url')}`,
+    );
     expect(r.status).toBe(404);
   });
 
@@ -402,10 +402,12 @@ describe('Phase 28.14 — POST /sessions with linkToken', () => {
       // sending unique-enough requests. The 5/15min limit at sessionCreateLimiter
       // would otherwise kick in BEFORE the token-bucket fires — but the
       // test env raises that limit via env.rateLimitIntakeSessionPer15Min.
-      const r = await request(app).post('/api/public/intake/sessions').send({
-        linkToken: link.token,
-        name: `Maria #${i}`,
-      });
+      const r = await request(app)
+        .post('/api/public/intake/sessions')
+        .send({
+          linkToken: link.token,
+          name: `Maria #${i}`,
+        });
       expect(r.status).toBe(201);
     }
     const r11 = await request(app).post('/api/public/intake/sessions').send({

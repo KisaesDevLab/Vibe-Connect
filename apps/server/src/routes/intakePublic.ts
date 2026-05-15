@@ -35,12 +35,7 @@ import {
   intakeSessionsRepo,
   type PublicIntakeCard,
 } from '../repositories/intake.js';
-import {
-  decryptField,
-  encryptField,
-  hashForAudit,
-  searchHash,
-} from '../services/intakeCrypto.js';
+import { decryptField, encryptField, hashForAudit, searchHash } from '../services/intakeCrypto.js';
 import { signUploadToken, verifyUploadToken } from '../services/intakeUploadToken.js';
 
 export const intakePublicRouter = Router();
@@ -132,9 +127,7 @@ async function auditTokenRejected(
     details: {
       reason,
       hashed_ip: req.ip ? hashForAudit(req.ip) : null,
-      ua_hash: req.headers['user-agent']
-        ? hashForAudit(String(req.headers['user-agent']))
-        : null,
+      ua_hash: req.headers['user-agent'] ? hashForAudit(String(req.headers['user-agent'])) : null,
     },
     ipAddress: req.ip ?? null,
   });
@@ -153,17 +146,15 @@ intakePublicRouter.get(
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const link = await db('intake_links')
-      .where({ token })
-      .first<{
-        id: string;
-        assigned_staff_id: string;
-        expires_at: string;
-        revoked_at: string | null;
-        client_email_enc: Buffer | null;
-        client_phone_enc: Buffer | null;
-        note_to_client: string | null;
-      }>();
+    const link = await db('intake_links').where({ token }).first<{
+      id: string;
+      assigned_staff_id: string;
+      expires_at: string;
+      revoked_at: string | null;
+      client_email_enc: Buffer | null;
+      client_phone_enc: Buffer | null;
+      note_to_client: string | null;
+    }>();
     if (!link) {
       await auditTokenRejected(req, 'not_found', null);
       res.status(404).json({ error: 'not_found' });
@@ -225,9 +216,7 @@ intakePublicRouter.get(
       targetId: link.id,
       details: {
         hashed_ip: req.ip ? hashForAudit(req.ip) : null,
-        ua_hash: req.headers['user-agent']
-          ? hashForAudit(String(req.headers['user-agent']))
-          : null,
+        ua_hash: req.headers['user-agent'] ? hashForAudit(String(req.headers['user-agent'])) : null,
       },
       ipAddress: req.ip ?? null,
     });
@@ -301,7 +290,11 @@ const sessionCreateSchema = z
     // staffId = public flow (28.4); linkToken = tokenized flow (28.14).
     staffId: z.string().uuid().optional(),
     linkToken: z.string().regex(TOKEN_PATTERN).optional(),
-    name: z.string().min(1).max(NAME_MAX).transform((s) => s.trim()),
+    name: z
+      .string()
+      .min(1)
+      .max(NAME_MAX)
+      .transform((s) => s.trim()),
     // Email + phone are both optional. For the public flow the post-parse
     // refine still requires at least one. For tokenized links the link's
     // own stored contact is used as a fallback when neither is supplied.
@@ -452,16 +445,14 @@ intakePublicRouter.post(
     const source: 'public' | 'staff_link' = data.linkToken ? 'staff_link' : 'public';
 
     if (data.linkToken) {
-      const link = await db('intake_links')
-        .where({ token: data.linkToken })
-        .first<{
-          id: string;
-          assigned_staff_id: string;
-          expires_at: string;
-          revoked_at: string | null;
-          client_email_enc: Buffer | null;
-          client_phone_enc: Buffer | null;
-        }>();
+      const link = await db('intake_links').where({ token: data.linkToken }).first<{
+        id: string;
+        assigned_staff_id: string;
+        expires_at: string;
+        revoked_at: string | null;
+        client_email_enc: Buffer | null;
+        client_phone_enc: Buffer | null;
+      }>();
       if (!link) {
         res.status(404).json({ error: 'link_not_found' });
         return;
@@ -688,12 +679,10 @@ intakePublicRouter.post(
     // policy flip mid-finalize is a non-issue — the admin PATCH path
     // calls applyRetentionBackfill / clearAllAutoDeleteAt to bring
     // historical rows in line.
-    const firmRetention = await db('firm_settings')
-      .where({ id: 1 })
-      .first<{
-        intake_auto_delete_enabled: boolean;
-        intake_auto_delete_after_days: number;
-      }>(['intake_auto_delete_enabled', 'intake_auto_delete_after_days']);
+    const firmRetention = await db('firm_settings').where({ id: 1 }).first<{
+      intake_auto_delete_enabled: boolean;
+      intake_auto_delete_after_days: number;
+    }>(['intake_auto_delete_enabled', 'intake_auto_delete_after_days']);
     const retentionEnabled = Boolean(firmRetention?.intake_auto_delete_enabled);
     const retentionDays = firmRetention?.intake_auto_delete_after_days ?? 365;
 
@@ -721,9 +710,7 @@ intakePublicRouter.post(
       // same transaction so a finalize-then-crash doesn't leave a state
       // where the session says "finalized" but the counter missed it.
       if (session.source === 'staff_link' && session.token_id) {
-        await trx('intake_links')
-          .where({ id: session.token_id })
-          .increment('use_count', 1);
+        await trx('intake_links').where({ id: session.token_id }).increment('use_count', 1);
       }
       // PDF conversion job (28.9 ticker picks this up).
       await intakePdfsRepo.insertPending(sessionId, fileIds, trx);

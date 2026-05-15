@@ -122,7 +122,10 @@ async function seedOldKeyCorpus(): Promise<{
   // File blob — random 16 KB, encrypt with OLD, persist to attachmentStorage.
   const plaintext = randomBytes(16 * 1024);
   const ciphertext = await encryptBufferStreamingWith(plaintext, oldKey);
-  const storedPath = await attachmentStorage().put(`intake/rotation-test-${sessionId}.bin`, ciphertext);
+  const storedPath = await attachmentStorage().put(
+    `intake/rotation-test-${sessionId}.bin`,
+    ciphertext,
+  );
   const fileRows = (await db('intake_files')
     .insert({
       session_id: sessionId,
@@ -238,9 +241,8 @@ describe('Phase 28.16 — POST /admin/intake/rotate-key', () => {
     // flag before the route handler observes it. The route's atomic
     // `tryClaimRotationActive()` check should 409 the second request
     // even though no DB row says `running`.
-    const { tryClaimRotationActive, releaseRotationActive } = await import(
-      '../services/intakeKeyRotation.js'
-    );
+    const { tryClaimRotationActive, releaseRotationActive } =
+      await import('../services/intakeKeyRotation.js');
     expect(tryClaimRotationActive()).toBe(true);
     try {
       await db('firm_settings').where({ id: 1 }).update({ intake_maintenance_mode: true });
@@ -256,11 +258,13 @@ describe('Phase 28.16 — POST /admin/intake/rotate-key', () => {
   });
 
   it('QA-fix: refuses when firm_settings.intake_max_file_bytes exceeds rotation cap', async () => {
-    await db('firm_settings').where({ id: 1 }).update({
-      intake_maintenance_mode: true,
-      // 512 MiB — twice the rotation safety cap of 256 MiB.
-      intake_max_file_bytes: 512 * 1024 * 1024,
-    });
+    await db('firm_settings')
+      .where({ id: 1 })
+      .update({
+        intake_maintenance_mode: true,
+        // 512 MiB — twice the rotation safety cap of 256 MiB.
+        intake_max_file_bytes: 512 * 1024 * 1024,
+      });
     try {
       const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
       const r = await kurt
@@ -269,9 +273,11 @@ describe('Phase 28.16 — POST /admin/intake/rotate-key', () => {
       expect(r.status).toBe(409);
       expect(r.body.error).toBe('file_cap_too_high_for_rotation');
     } finally {
-      await db('firm_settings').where({ id: 1 }).update({
-        intake_max_file_bytes: 50 * 1024 * 1024,
-      });
+      await db('firm_settings')
+        .where({ id: 1 })
+        .update({
+          intake_max_file_bytes: 50 * 1024 * 1024,
+        });
     }
   });
 });
@@ -472,7 +478,9 @@ describe('Phase 28.16 — verifyRotation post-pass (acceptance criterion)', () =
 
     // Mutate the stored sha to simulate a corruption that was silently
     // accepted at upload.
-    await db('intake_files').where({ id: seed.fileId }).update({ sha256: 'f'.repeat(64) });
+    await db('intake_files')
+      .where({ id: seed.fileId })
+      .update({ sha256: 'f'.repeat(64) });
 
     const verify = await verifyRotation(newKey, 1);
     expect(verify.fileShaMismatches).toBeGreaterThanOrEqual(1);
@@ -545,9 +553,7 @@ describe('Phase 28.16 — runKeyRotation (worker, in-process)', () => {
     // PII decrypts under NEW key but fails under OLD key.
     const afterSession = await db('intake_sessions').where({ id: seed.sessionId }).first();
     expect(await decryptFieldWith(afterSession.client_name_enc, newKey)).toBe('Maria Garcia');
-    expect(await decryptFieldWith(afterSession.client_email_enc, newKey)).toBe(
-      'maria@example.com',
-    );
+    expect(await decryptFieldWith(afterSession.client_email_enc, newKey)).toBe('maria@example.com');
     expect(await decryptFieldWith(afterSession.client_phone_enc, newKey)).toBe('+15551234567');
     await expect(decryptFieldWith(afterSession.client_name_enc, oldKey)).rejects.toThrow();
 
@@ -596,20 +602,22 @@ describe('Phase 28.16 — runKeyRotation (worker, in-process)', () => {
     // Pre-rotate `first` manually so it's already under NEW (simulating a
     // prior partial run).
     const firstRow = await db('intake_sessions').where({ id: first }).first();
-    await db('intake_sessions').where({ id: first }).update({
-      client_name_enc: await encryptFieldWith(
-        await decryptFieldWith(firstRow.client_name_enc, oldKey),
-        newKey,
-      ),
-      client_email_enc: await encryptFieldWith(
-        await decryptFieldWith(firstRow.client_email_enc, oldKey),
-        newKey,
-      ),
-      client_phone_enc: await encryptFieldWith(
-        await decryptFieldWith(firstRow.client_phone_enc, oldKey),
-        newKey,
-      ),
-    });
+    await db('intake_sessions')
+      .where({ id: first })
+      .update({
+        client_name_enc: await encryptFieldWith(
+          await decryptFieldWith(firstRow.client_name_enc, oldKey),
+          newKey,
+        ),
+        client_email_enc: await encryptFieldWith(
+          await decryptFieldWith(firstRow.client_email_enc, oldKey),
+          newKey,
+        ),
+        client_phone_enc: await encryptFieldWith(
+          await decryptFieldWith(firstRow.client_phone_enc, oldKey),
+          newKey,
+        ),
+      });
 
     // Resume marker = first id; worker starts strictly AFTER it.
     const rows = (await db('intake_key_rotations')

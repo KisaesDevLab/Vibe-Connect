@@ -22,7 +22,11 @@ export function clamdEnabled(): boolean {
 
 export type ProbeResult =
   | { ok: true }
-  | { ok: false; reason: 'disabled' | 'timeout' | 'connect_error' | 'bad_response'; message?: string };
+  | {
+      ok: false;
+      reason: 'disabled' | 'timeout' | 'connect_error' | 'bad_response';
+      message?: string;
+    };
 
 /**
  * Send zPING\0 to clamd and expect "PONG" back. Non-fatal: callers (typically

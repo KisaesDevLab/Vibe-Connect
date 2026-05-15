@@ -40,8 +40,8 @@ export function TokenizedIntake(): JSX.Element {
 
   useEffect(() => {
     if (!linkQuery.data) return;
-    setEmail((prev) => (prev ? prev : linkQuery.data.prefillEmail ?? ''));
-    setPhone((prev) => (prev ? prev : linkQuery.data.prefillPhone ?? ''));
+    setEmail((prev) => (prev ? prev : (linkQuery.data.prefillEmail ?? '')));
+    setPhone((prev) => (prev ? prev : (linkQuery.data.prefillPhone ?? '')));
   }, [linkQuery.data]);
 
   const nameOk = name.trim().length >= 1 && name.trim().length <= 120;

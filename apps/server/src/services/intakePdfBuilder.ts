@@ -84,10 +84,9 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
 
   const staff = await db('users')
     .where({ id: session.staff_id })
-    .first<{ display_name: string; intake_card_title: string | null } | undefined>(
-      'display_name',
-      'intake_card_title',
-    );
+    .first<
+      { display_name: string; intake_card_title: string | null } | undefined
+    >('display_name', 'intake_card_title');
   const firm = await db('firm_settings').where({ id: 1 }).first<{
     firm_name: string;
     intake_include_cover_page: boolean;

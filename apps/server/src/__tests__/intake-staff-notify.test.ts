@@ -209,9 +209,7 @@ describe('Phase 28.12 — staff notify ticker', () => {
           .where({ session_id: sessionId })
           .update({ next_attempt_at: db.fn.now() });
       }
-      const row = await db('intake_notifications_outbox')
-        .where({ session_id: sessionId })
-        .first();
+      const row = await db('intake_notifications_outbox').where({ session_id: sessionId }).first();
       expect(row.status).toBe('failed');
       expect(row.attempts).toBe(3);
       const audit = await db('audit_log').where({
@@ -385,9 +383,7 @@ describe('Phase 28.12 — per-staff notification preference (QA-followup)', () =
         action: 'intake.staff_notification.sent',
         target_id: staffId,
       });
-      const digestAudit = audit.find(
-        (a) => (a.details as { mode?: string }).mode === 'digest',
-      );
+      const digestAudit = audit.find((a) => (a.details as { mode?: string }).mode === 'digest');
       expect(digestAudit).toBeDefined();
       expect((digestAudit!.details as { session_count: number }).session_count).toBe(2);
       expect((digestAudit!.details as { file_count: number }).file_count).toBe(7);

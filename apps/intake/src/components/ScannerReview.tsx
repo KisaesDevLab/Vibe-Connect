@@ -91,10 +91,7 @@ export function ScannerReview({
     return () => URL.revokeObjectURL(objectUrl);
   }, [blob]);
 
-  function onCornerDrag(
-    e: ReactPointerEvent<HTMLDivElement>,
-    corner: keyof Quad,
-  ): void {
+  function onCornerDrag(e: ReactPointerEvent<HTMLDivElement>, corner: keyof Quad): void {
     if (!containerRef.current || !displaySize) return;
     e.preventDefault();
     const target = e.currentTarget;

@@ -37,4 +37,3 @@ export function App(): JSX.Element {
     </BrowserRouter>
   );
 }
-

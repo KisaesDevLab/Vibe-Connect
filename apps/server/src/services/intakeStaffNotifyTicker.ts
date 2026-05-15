@@ -107,15 +107,9 @@ export async function tickOnce(): Promise<number> {
   const rows = await db('intake_notifications_outbox')
     .whereIn('id', ids)
     .update({ status: 'sending' })
-    .returning<StaffRow[]>([
-      'id',
-      'session_id',
-      'channel',
-      'template_id',
-      'payload',
-      'attempts',
-      'recipient_hash',
-    ]);
+    .returning<
+      StaffRow[]
+    >(['id', 'session_id', 'channel', 'template_id', 'payload', 'attempts', 'recipient_hash']);
   for (const row of rows) {
     await processOne(row).catch((err: unknown) => {
       logger.error('intake.staff_notify_process_threw', {
@@ -134,13 +128,9 @@ async function processOne(row: StaffRow): Promise<void> {
   // + display_name + intake_notify_mode for the routing decision.
   const user = (await db('users')
     .where({ id: row.recipient_hash })
-    .first<UserRow & { is_active: boolean; intake_notify_mode: string }>([
-      'id',
-      'email',
-      'display_name',
-      'is_active',
-      'intake_notify_mode',
-    ])) as
+    .first<
+      UserRow & { is_active: boolean; intake_notify_mode: string }
+    >(['id', 'email', 'display_name', 'is_active', 'intake_notify_mode'])) as
     | (UserRow & { is_active: boolean; intake_notify_mode: NotifyMode })
     | undefined;
   if (!user) {
@@ -312,7 +302,7 @@ async function scheduleRetry(row: StaffRow, err: unknown): Promise<void> {
       status: 'pending',
       attempts,
       last_error: message,
-      next_attempt_at: db.raw('NOW() + (? * INTERVAL \'1 millisecond\')', [backoffMs]),
+      next_attempt_at: db.raw("NOW() + (? * INTERVAL '1 millisecond')", [backoffMs]),
     });
   logger.warn('intake.staff_notify_retry', {
     rowId: row.id,
@@ -417,28 +407,31 @@ async function flushDigests(): Promise<void> {
     )
     .update({ status: 'sending' });
 
-  const firm = await db('firm_settings')
-    .where({ id: 1 })
-    .first<{ firm_name: string; intake_digest_hour_local: number }>(
-      'firm_name',
-      'intake_digest_hour_local',
-    );
+  const firm = await db('firm_settings').where({ id: 1 }).first<{
+    firm_name: string;
+    intake_digest_hour_local: number;
+  }>('firm_name', 'intake_digest_hour_local');
   const firmName = firm?.firm_name ?? 'Vibe Connect';
 
   for (const [userId, rows] of byRecipient) {
-    const user = await db('users')
-      .where({ id: userId })
-      .first<{ id: string; email: string | null; display_name: string; is_active: boolean }>([
-        'id',
-        'email',
-        'display_name',
-        'is_active',
-      ]);
+    const user = await db('users').where({ id: userId }).first<{
+      id: string;
+      email: string | null;
+      display_name: string;
+      is_active: boolean;
+    }>(['id', 'email', 'display_name', 'is_active']);
     if (!user || !user.email || !user.is_active) {
       // Mark each row failed with a clear reason rather than retrying
       // forever. An admin can see the trail in the audit viewer.
       for (const r of rows) {
-        await markFailed(r as StaffRow, !user ? 'recipient_user_missing' : !user.is_active ? 'recipient_deactivated' : 'staff_user_has_no_email');
+        await markFailed(
+          r as StaffRow,
+          !user
+            ? 'recipient_user_missing'
+            : !user.is_active
+              ? 'recipient_deactivated'
+              : 'staff_user_has_no_email',
+        );
       }
       continue;
     }
@@ -454,9 +447,7 @@ async function flushDigests(): Promise<void> {
       totalFiles += fc;
       if (r.session_id) {
         totalSessions += 1;
-        lines.push(
-          `  • session ${r.session_id.slice(0, 8)} — ${fc} file${fc === 1 ? '' : 's'}`,
-        );
+        lines.push(`  • session ${r.session_id.slice(0, 8)} — ${fc} file${fc === 1 ? '' : 's'}`);
       }
     }
 
@@ -540,11 +531,13 @@ async function flushDigests(): Promise<void> {
 }
 
 async function markFailed(row: StaffRow, reason: string): Promise<void> {
-  await db('intake_notifications_outbox').where({ id: row.id }).update({
-    status: 'failed',
-    attempts: row.attempts + 1,
-    last_error: reason,
-  });
+  await db('intake_notifications_outbox')
+    .where({ id: row.id })
+    .update({
+      status: 'failed',
+      attempts: row.attempts + 1,
+      last_error: reason,
+    });
   await auditRepo
     .write({
       actorUserId: null,

@@ -19,10 +19,7 @@ import { db } from '../db/knex.js';
 import { resetTestDb } from './test-helpers.js';
 import { __resetIntakeCryptoCache } from '../services/intakeCrypto.js';
 import { __resetIntakeUploadTokenCache } from '../services/intakeUploadToken.js';
-import {
-  nextAllowedSendTime,
-  tickOnce,
-} from '../services/intakeClientNotifyTicker.js';
+import { nextAllowedSendTime, tickOnce } from '../services/intakeClientNotifyTicker.js';
 
 let app: Express;
 let staffId: string;
@@ -199,9 +196,11 @@ describe('Phase 28.10 — client notification ticker', () => {
   it('permanent failure flips intake_sessions.notification_failed=true', async () => {
     const { sessionId } = await createSession({ email: 'perma-fail@example.com' });
     // Corrupt the encrypted email column so decryptField throws.
-    await db('intake_sessions').where({ id: sessionId }).update({
-      client_email_enc: Buffer.from('corrupt'),
-    });
+    await db('intake_sessions')
+      .where({ id: sessionId })
+      .update({
+        client_email_enc: Buffer.from('corrupt'),
+      });
     await enqueueAndFinalize(sessionId);
     // 3 ticks → 3 attempts → permanent fail. We have to bump
     // next_attempt_at between ticks because the retry backoff would
@@ -212,9 +211,7 @@ describe('Phase 28.10 — client notification ticker', () => {
         .where({ session_id: sessionId })
         .update({ next_attempt_at: db.fn.now() });
     }
-    const row = await db('intake_notifications_outbox')
-      .where({ session_id: sessionId })
-      .first();
+    const row = await db('intake_notifications_outbox').where({ session_id: sessionId }).first();
     expect(row.status).toBe('failed');
     expect(row.attempts).toBe(3);
     const session = await db('intake_sessions').where({ id: sessionId }).first();

@@ -27,10 +27,7 @@ import {
   type IntakeUploadRow,
 } from '../repositories/intake.js';
 import { verifyUploadToken } from './intakeUploadToken.js';
-import {
-  IntakeFinalizeError,
-  onIntakeUploadFinish,
-} from './intakeUploadService.js';
+import { IntakeFinalizeError, onIntakeUploadFinish } from './intakeUploadService.js';
 import {
   TUS_EXTENSIONS,
   TUS_VERSION,
@@ -95,10 +92,9 @@ export async function intakeTusCreate(req: Request, res: Response): Promise<void
     return;
   }
   // Per-file cap from firm_settings.intake_max_file_bytes.
-  const settings = await db('firm_settings').where({ id: 1 }).first(
-    'intake_max_file_bytes',
-    'intake_max_session_bytes',
-  );
+  const settings = await db('firm_settings')
+    .where({ id: 1 })
+    .first('intake_max_file_bytes', 'intake_max_session_bytes');
   const maxFile = Number(settings?.intake_max_file_bytes ?? 50 * 1024 * 1024);
   const maxSession = Number(settings?.intake_max_session_bytes ?? 250 * 1024 * 1024);
   if (len > maxFile) {

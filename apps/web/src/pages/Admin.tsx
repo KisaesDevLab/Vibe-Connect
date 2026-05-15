@@ -4299,7 +4299,9 @@ function AdminIntakeCards(): JSX.Element {
                   )}
                 </div>
               </td>
-              <td className="p-2 text-slate-600">{c.title ?? <span className="text-slate-400">—</span>}</td>
+              <td className="p-2 text-slate-600">
+                {c.title ?? <span className="text-slate-400">—</span>}
+              </td>
               <td className="p-2">
                 {c.showOnIntakeCard ? (
                   <span className="text-emerald-700">on</span>
@@ -4343,8 +4345,7 @@ function AdminIntakeSessions(): JSX.Element {
   const [openDetailId, setOpenDetailId] = useState<string | null>(null);
   const [searchQ, setSearchQ] = useState('');
   const [searchResults, setSearchResults] = useState<
-    | { id: string; staffId: string; status: string; createdAt: string }[]
-    | null
+    { id: string; staffId: string; status: string; createdAt: string }[] | null
   >(null);
   // Phase 28.11 (QA-followup): bulk-zip selection state. Stored as a
   // Set in component state — cleared on every filter change so a stale
@@ -4388,16 +4389,16 @@ function AdminIntakeSessions(): JSX.Element {
   }
 
   const visibleSessions = searchResults
-    ? listQ.data?.sessions.filter((s) => searchResults.some((r) => r.id === s.id)) ?? []
-    : listQ.data?.sessions ?? [];
+    ? (listQ.data?.sessions.filter((s) => searchResults.some((r) => r.id === s.id)) ?? [])
+    : (listQ.data?.sessions ?? []);
 
   return (
     <div className="p-4 max-w-6xl space-y-4">
       <header className="space-y-1">
         <h2 className="font-semibold text-slate-900">Intake received</h2>
         <p className="text-sm text-slate-600">
-          Walk-up document submissions through the public intake page. Decrypting client info
-          here writes an audit row on every open.
+          Walk-up document submissions through the public intake page. Decrypting client info here
+          writes an audit row on every open.
         </p>
       </header>
 
@@ -4531,8 +4532,7 @@ function AdminIntakeSessions(): JSX.Element {
                 <input
                   type="checkbox"
                   checked={
-                    visibleSessions.length > 0 &&
-                    visibleSessions.every((s) => selected.has(s.id))
+                    visibleSessions.length > 0 && visibleSessions.every((s) => selected.has(s.id))
                   }
                   onChange={(e) => {
                     if (e.target.checked) {
@@ -4825,9 +4825,7 @@ function AdminIntakeDetail({
               )}
             </section>
             <section className="space-y-2">
-              <h4 className="font-medium text-slate-900">
-                Files ({detailQ.data.files.length})
-              </h4>
+              <h4 className="font-medium text-slate-900">Files ({detailQ.data.files.length})</h4>
               <ul className="space-y-1">
                 {detailQ.data.files.map((f) => (
                   <li
@@ -4859,9 +4857,7 @@ function AdminIntakeDetail({
                 <>
                   <div className="text-xs text-slate-600">
                     Auto-delete on{' '}
-                    <strong>
-                      {new Date(detailQ.data.session.autoDeleteAt).toLocaleString()}
-                    </strong>{' '}
+                    <strong>{new Date(detailQ.data.session.autoDeleteAt).toLocaleString()}</strong>{' '}
                     per firm policy.
                   </div>
                   <button
@@ -5023,10 +5019,12 @@ function AdminIntakeLinks(): JSX.Element {
     staleTime: 15_000,
   });
   const [createOpen, setCreateOpen] = useState(false);
-  const [createdLink, setCreatedLink] = useState<
-    | { url: string; expiresAt: string; send: { email: boolean; sms: boolean }; sendError: string | null }
-    | null
-  >(null);
+  const [createdLink, setCreatedLink] = useState<{
+    url: string;
+    expiresAt: string;
+    send: { email: boolean; sms: boolean };
+    sendError: string | null;
+  } | null>(null);
 
   const createMut = useMutation({
     mutationFn: (body: {
@@ -5137,10 +5135,7 @@ function AdminIntakeLinks(): JSX.Element {
                   {l.email && <div className="text-slate-900">{l.email}</div>}
                   {l.phone && <div className="text-slate-600 text-xs">{l.phone}</div>}
                   {l.note && (
-                    <div
-                      className="text-xs text-slate-500 truncate max-w-[20rem]"
-                      title={l.note}
-                    >
+                    <div className="text-xs text-slate-500 truncate max-w-[20rem]" title={l.note}>
                       Note: {l.note}
                     </div>
                   )}
@@ -5339,8 +5334,8 @@ function AdminIntakeSettings(): JSX.Element {
     return (
       <div className="p-4 max-w-lg">
         <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-900 text-sm p-3">
-          Failed to load intake settings. This page is admin-only — if you&apos;re not an admin,
-          ask one to make these changes.
+          Failed to load intake settings. This page is admin-only — if you&apos;re not an admin, ask
+          one to make these changes.
         </div>
       </div>
     );
@@ -5351,7 +5346,9 @@ function AdminIntakeSettings(): JSX.Element {
     <div className="p-4 max-w-2xl space-y-6">
       <header>
         <h2 className="font-semibold text-slate-900">Intake settings</h2>
-        <p className="text-sm text-slate-600">Firm-wide configuration for the public intake feature.</p>
+        <p className="text-sm text-slate-600">
+          Firm-wide configuration for the public intake feature.
+        </p>
       </header>
 
       {s.intake_maintenance_mode && (

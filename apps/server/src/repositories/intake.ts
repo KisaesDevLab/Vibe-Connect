@@ -241,14 +241,9 @@ export const intakeCardsRepo = {
   async getForUser(userId: string, trx?: Knex.Transaction): Promise<IntakeCardFields | null> {
     const row = await (trx ?? db)('users')
       .where({ id: userId })
-      .first<IntakeCardFields | undefined>([
-        'show_on_intake_card',
-        'intake_card_order',
-        'intake_card_bio',
-        'intake_card_headshot_url',
-        'intake_card_title',
-        'intake_notify_mode',
-      ]);
+      .first<
+        IntakeCardFields | undefined
+      >(['show_on_intake_card', 'intake_card_order', 'intake_card_bio', 'intake_card_headshot_url', 'intake_card_title', 'intake_notify_mode']);
     return row ?? null;
   },
 
@@ -411,7 +406,9 @@ export const intakeSessionsRepo = {
    * exactly one row ever matches a given jti.
    */
   byUploadTokenJti(jti: string, trx?: Knex.Transaction) {
-    return (trx ?? db)<IntakeSessionRow>('intake_sessions').where({ upload_token_jti: jti }).first();
+    return (trx ?? db)<IntakeSessionRow>('intake_sessions')
+      .where({ upload_token_jti: jti })
+      .first();
   },
 
   /**
@@ -578,13 +575,12 @@ export const intakePdfsRepo = {
     // ON CONFLICT (session_id) DO NOTHING so finalize is idempotent —
     // re-finalizing a session doesn't create a second pending row. The
     // 28.9 ticker picks up the existing one and retries.
-    await (trx ?? db)
-      .raw(
-        `INSERT INTO intake_pdfs (session_id, source_file_ids, conversion_status)
+    await (trx ?? db).raw(
+      `INSERT INTO intake_pdfs (session_id, source_file_ids, conversion_status)
          VALUES (?, ?::uuid[], 'pending')
          ON CONFLICT (session_id) DO NOTHING`,
-        [sessionId, sourceFileIds],
-      );
+      [sessionId, sourceFileIds],
+    );
   },
 };
 

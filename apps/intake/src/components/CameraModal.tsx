@@ -203,9 +203,9 @@ export function CameraModal({ onCapture, onClose }: CameraModalProps): JSX.Eleme
             <p className="text-xs text-slate-300">{error}</p>
             <p className="text-xs text-slate-300">
               Most browsers ask for camera permission on first use. If you previously denied it,
-              open the site settings (lock icon in the address bar) and re-enable camera, then
-              try again. You can also use the file picker instead — it lets you take a photo with
-              your phone&apos;s camera app and attach it the same way.
+              open the site settings (lock icon in the address bar) and re-enable camera, then try
+              again. You can also use the file picker instead — it lets you take a photo with your
+              phone&apos;s camera app and attach it the same way.
             </p>
             <button type="button" onClick={onClose} className="btn-primary">
               Use file picker instead

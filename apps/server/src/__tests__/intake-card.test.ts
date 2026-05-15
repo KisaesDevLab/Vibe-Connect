@@ -259,8 +259,8 @@ describe('Phase 28.2 — admin intake-cards', () => {
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.cards)).toBe(true);
     expect(r.body.cards.length).toBeGreaterThanOrEqual(2);
-    const kurtRow = r.body.cards.find(
-      (c: { displayName: string }) => c.displayName.toLowerCase().includes('kurt'),
+    const kurtRow = r.body.cards.find((c: { displayName: string }) =>
+      c.displayName.toLowerCase().includes('kurt'),
     );
     expect(kurtRow).toBeDefined();
     expect(typeof kurtRow.isAdmin).toBe('boolean');
@@ -273,9 +273,7 @@ describe('Phase 28.2 — admin intake-cards', () => {
 
   it('POST /admin/intake-cards/reorder requires admin and writes the order', async () => {
     const aliceAgent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
-    const denied = await aliceAgent
-      .post('/admin/intake-cards/reorder')
-      .send({ items: [] });
+    const denied = await aliceAgent.post('/admin/intake-cards/reorder').send({ items: [] });
     expect(denied.status).toBe(403);
 
     const kurtAgent = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');

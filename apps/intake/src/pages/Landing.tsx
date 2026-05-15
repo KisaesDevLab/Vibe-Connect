@@ -154,9 +154,7 @@ function StaffCard({
           )}
           <div className="min-w-0 flex-1">
             <div className="font-medium text-slate-900 truncate">{staff.display_name}</div>
-            {staff.title && (
-              <div className="text-sm text-slate-600 truncate">{staff.title}</div>
-            )}
+            {staff.title && <div className="text-sm text-slate-600 truncate">{staff.title}</div>}
             {staff.bio && (
               <p
                 className="mt-2 text-sm text-slate-500"

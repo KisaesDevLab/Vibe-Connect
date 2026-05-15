@@ -19,10 +19,7 @@ import { PDFDocument } from 'pdf-lib';
 import { randomBytes } from 'node:crypto';
 import { db } from '../db/knex.js';
 import { resetTestDb } from './test-helpers.js';
-import {
-  decryptBufferStreaming,
-  __resetIntakeCryptoCache,
-} from '../services/intakeCrypto.js';
+import { decryptBufferStreaming, __resetIntakeCryptoCache } from '../services/intakeCrypto.js';
 import { __resetIntakeUploadTokenCache } from '../services/intakeUploadToken.js';
 import { attachmentStorage } from '../services/attachmentStorage.js';
 import { processOne, tickOnce } from '../services/intakePdfTicker.js';
@@ -123,9 +120,9 @@ async function makeJpeg(width = 400, height = 300, hex = '#3366aa'): Promise<Buf
 /** Insert a pending intake_pdfs row for the given session and immediately
  *  claim + process it via processOne — bypasses the timer for tests. */
 async function processSession(sessionId: string): Promise<{ id: string }> {
-  const fileIds = (await db('intake_files').where({ session_id: sessionId }).pluck(
-    'id',
-  )) as string[];
+  const fileIds = (await db('intake_files')
+    .where({ session_id: sessionId })
+    .pluck('id')) as string[];
   const rows = (await db('intake_pdfs')
     .insert({
       session_id: sessionId,
@@ -248,9 +245,11 @@ describe('Phase 28.9 — PDF conversion ticker', () => {
     // so to test the failure path we corrupt the session's PII column
     // (set client_name_enc to nonsense bytes that intakeCrypto can't
     // decrypt). The build call then throws every attempt.
-    await db('intake_sessions').where({ id: sessionId }).update({
-      client_name_enc: Buffer.from('not-valid-secretbox-ciphertext'),
-    });
+    await db('intake_sessions')
+      .where({ id: sessionId })
+      .update({
+        client_name_enc: Buffer.from('not-valid-secretbox-ciphertext'),
+      });
     // Insert + claim the pdf row by hand for predictable attempts state.
     const rowsIns = (await db('intake_pdfs')
       .insert({ session_id: sessionId, source_file_ids: db.raw('?::uuid[]', [[]]) })

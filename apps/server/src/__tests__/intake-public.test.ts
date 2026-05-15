@@ -58,9 +58,7 @@ describe('GET /api/public/intake/staff', () => {
     // Sanity: nothing in the list is opted out. We can verify by id —
     // every returned id should have show_on_intake_card=true in the DB.
     const ids = r.body.staff.map((s: { id: string }) => s.id);
-    const optedRows = await db('users')
-      .whereIn('id', ids)
-      .pluck('show_on_intake_card');
+    const optedRows = await db('users').whereIn('id', ids).pluck('show_on_intake_card');
     for (const v of optedRows) expect(v).toBe(true);
   });
 
@@ -141,14 +139,18 @@ describe('GET /api/public/intake/staff', () => {
     await db('users').where({ username: 'alice' }).update({ show_on_intake_card: true });
     __resetIntakeStaffCache();
     const r1 = await request(app).get('/api/public/intake/staff');
-    const namesBefore: string[] = r1.body.staff.map((s: { display_name: string }) => s.display_name);
+    const namesBefore: string[] = r1.body.staff.map(
+      (s: { display_name: string }) => s.display_name,
+    );
     expect(namesBefore.some((n) => n.toLowerCase().includes('alice'))).toBe(true);
 
     // Flip alice OFF, hit the endpoint again — should still show alice
     // because the in-memory cache holds the previous list.
     await db('users').where({ username: 'alice' }).update({ show_on_intake_card: false });
     const r2 = await request(app).get('/api/public/intake/staff');
-    const namesCached: string[] = r2.body.staff.map((s: { display_name: string }) => s.display_name);
+    const namesCached: string[] = r2.body.staff.map(
+      (s: { display_name: string }) => s.display_name,
+    );
     expect(namesCached.some((n) => n.toLowerCase().includes('alice'))).toBe(true);
 
     // Bust the cache → next read reflects the new state.

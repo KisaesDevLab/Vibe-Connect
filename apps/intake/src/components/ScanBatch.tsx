@@ -110,23 +110,20 @@ export function ScanBatch({
     ]);
   }, []);
 
-  const replacePage = useCallback(
-    async (index: number, file: File): Promise<void> => {
-      const thumb = await makeThumbnail(file);
-      setPages((prev) => {
-        const next = prev.slice();
-        if (index < 0 || index >= next.length) return prev;
-        next[index] = {
-          id: next[index]!.id,
-          blob: file,
-          thumb,
-          capturedAt: Date.now(),
-        };
-        return next;
-      });
-    },
-    [],
-  );
+  const replacePage = useCallback(async (index: number, file: File): Promise<void> => {
+    const thumb = await makeThumbnail(file);
+    setPages((prev) => {
+      const next = prev.slice();
+      if (index < 0 || index >= next.length) return prev;
+      next[index] = {
+        id: next[index]!.id,
+        blob: file,
+        thumb,
+        capturedAt: Date.now(),
+      };
+      return next;
+    });
+  }, []);
 
   // Expose imperative handlers to the parent — useImperativeHandle would
   // be cleaner but requires forwardRef wrapping; passing a mutable ref
@@ -209,7 +206,9 @@ export function ScanBatch({
               onDrop={() => onDrop(i)}
               className="bg-white border border-slate-200 rounded-md p-3 flex items-center gap-3 cursor-move"
             >
-              <span className="text-slate-400 select-none" aria-hidden="true">⋮⋮</span>
+              <span className="text-slate-400 select-none" aria-hidden="true">
+                ⋮⋮
+              </span>
               <img
                 src={p.thumb}
                 alt={`Page ${i + 1} of ${pages.length}`}
@@ -218,9 +217,7 @@ export function ScanBatch({
               />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-slate-900">Page {i + 1}</div>
-                <div className="text-xs text-slate-500">
-                  {formatBytes(p.blob.size)}
-                </div>
+                <div className="text-xs text-slate-500">{formatBytes(p.blob.size)}</div>
               </div>
               {confirmDeleteId === p.id ? (
                 <div className="flex items-center gap-2">

@@ -105,11 +105,7 @@ export function IntakeForm(): JSX.Element {
         <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-900 text-sm p-4">
           We couldn&apos;t find that team member. They may no longer be available for intake.
           <div className="mt-3">
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => navigate('/intake')}
-            >
+            <button type="button" className="btn-secondary" onClick={() => navigate('/intake')}>
               Back to the team list
             </button>
           </div>

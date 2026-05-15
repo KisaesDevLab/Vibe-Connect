@@ -51,7 +51,7 @@ function intakeKey(): Uint8Array {
   if (!raw) {
     throw new Error(
       'CONNECT_INTAKE_ENCRYPTION_KEY is required before intake encryption/decryption is invoked. ' +
-        'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"',
+        "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\"",
     );
   }
   let buf: Buffer;
@@ -128,10 +128,7 @@ export async function encryptFieldWith(plaintext: string, key: Uint8Array): Prom
 /**
  * Phase 28.16 — explicit-key decrypt. Mirror of `encryptFieldWith`.
  */
-export async function decryptFieldWith(
-  ct: Buffer | Uint8Array,
-  key: Uint8Array,
-): Promise<string> {
+export async function decryptFieldWith(ct: Buffer | Uint8Array, key: Uint8Array): Promise<string> {
   assertKeyLength(key);
   const { secretboxDecrypt } = await import('@vibe-connect/crypto');
   const buf = Buffer.isBuffer(ct) ? ct : Buffer.from(ct);

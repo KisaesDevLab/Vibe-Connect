@@ -377,7 +377,7 @@ describe('Phase 28.5 — POST /sessions/:id/finalize', () => {
     expect(r.status).toBe(401);
   });
 
-  it('finalize with another session\'s token returns 403', async () => {
+  it("finalize with another session's token returns 403", async () => {
     const a = await createSession();
     const b = await createSession();
     await tusUpload(a.token, Buffer.from('x'), {

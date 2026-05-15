@@ -11,7 +11,13 @@ const rawLevel = (process.env.LOG_LEVEL ?? DEFAULT_LEVEL).toLowerCase() as Level
 // Reject typos at boot rather than silently demoting to a default — a noisy
 // log is recoverable; an accidentally-silent error log is not.
 const threshold: number =
-  rawLevel in LEVELS ? LEVELS[rawLevel] : (() => { throw new Error(`Invalid LOG_LEVEL=${rawLevel}; expected one of ${Object.keys(LEVELS).join(', ')}`); })();
+  rawLevel in LEVELS
+    ? LEVELS[rawLevel]
+    : (() => {
+        throw new Error(
+          `Invalid LOG_LEVEL=${rawLevel}; expected one of ${Object.keys(LEVELS).join(', ')}`,
+        );
+      })();
 
 function log(level: Level, msg: string, meta?: Record<string, unknown>): void {
   if (LEVELS[level] < threshold) return;

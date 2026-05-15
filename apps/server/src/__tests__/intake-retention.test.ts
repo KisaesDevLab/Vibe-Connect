@@ -23,10 +23,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { db } from '../db/knex.js';
 import { resetTestDb } from './test-helpers.js';
-import {
-  __resetIntakeCryptoCache,
-  encryptField,
-} from '../services/intakeCrypto.js';
+import { __resetIntakeCryptoCache, encryptField } from '../services/intakeCrypto.js';
 import { __resetIntakeUploadTokenCache } from '../services/intakeUploadToken.js';
 import {
   runIntakeAutoPurgeSweep,
@@ -388,7 +385,9 @@ describe('Phase 28.15 — PATCH /admin/intake/settings', () => {
     const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
     const g = await alice.get('/admin/intake/settings');
     expect(g.status).toBe(403);
-    const p = await alice.patch('/admin/intake/settings').send({ intake_auto_delete_after_days: 60 });
+    const p = await alice
+      .patch('/admin/intake/settings')
+      .send({ intake_auto_delete_after_days: 60 });
     expect(p.status).toBe(403);
   });
 

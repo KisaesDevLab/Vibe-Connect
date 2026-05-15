@@ -113,15 +113,9 @@ async function claimRows(): Promise<ClaimedNotificationRow[]> {
   const rows = await db('intake_notifications_outbox')
     .whereIn('id', ids)
     .update({ status: 'sending' })
-    .returning<ClaimedNotificationRow[]>([
-      'id',
-      'session_id',
-      'channel',
-      'template_id',
-      'payload',
-      'attempts',
-      'recipient_hash',
-    ]);
+    .returning<
+      ClaimedNotificationRow[]
+    >(['id', 'session_id', 'channel', 'template_id', 'payload', 'attempts', 'recipient_hash']);
   return rows;
 }
 
@@ -156,12 +150,10 @@ async function processOne(row: ClaimedNotificationRow): Promise<void> {
       firm?.sms_quiet_end_hour ?? 21,
     );
     if (next) {
-      await db('intake_notifications_outbox')
-        .where({ id: row.id })
-        .update({
-          status: 'deferred',
-          next_attempt_at: next.toISOString(),
-        });
+      await db('intake_notifications_outbox').where({ id: row.id }).update({
+        status: 'deferred',
+        next_attempt_at: next.toISOString(),
+      });
       logger.info('intake.client_notify_deferred_quiet_hours', {
         rowId: row.id,
         sessionId: row.session_id,
@@ -180,9 +172,7 @@ async function processOne(row: ClaimedNotificationRow): Promise<void> {
       }
       const email = await decryptField(session.client_email_enc);
       const name = await decryptField(session.client_name_enc);
-      const fileCount = Number(
-        (row.payload as { file_count?: number }).file_count ?? 0,
-      );
+      const fileCount = Number((row.payload as { file_count?: number }).file_count ?? 0);
       const provider = await getEmailProvider();
       await provider.send(buildClientEmail(name, fileCount, firm?.firm_name ?? 'Firm', email));
     } else {
@@ -192,9 +182,7 @@ async function processOne(row: ClaimedNotificationRow): Promise<void> {
       }
       const phone = await decryptField(session.client_phone_enc);
       const name = await decryptField(session.client_name_enc);
-      const fileCount = Number(
-        (row.payload as { file_count?: number }).file_count ?? 0,
-      );
+      const fileCount = Number((row.payload as { file_count?: number }).file_count ?? 0);
       const provider = await getSmsProvider();
       await provider.sendMessage(buildClientSms(name, fileCount, firm?.firm_name ?? 'Firm', phone));
     }
@@ -246,7 +234,7 @@ async function scheduleRetry(row: ClaimedNotificationRow, err: unknown): Promise
       status: 'pending',
       attempts,
       last_error: message,
-      next_attempt_at: db.raw('NOW() + (? * INTERVAL \'1 millisecond\')', [backoffMs]),
+      next_attempt_at: db.raw("NOW() + (? * INTERVAL '1 millisecond')", [backoffMs]),
     });
   logger.warn('intake.client_notify_retry', {
     rowId: row.id,
@@ -259,11 +247,13 @@ async function scheduleRetry(row: ClaimedNotificationRow, err: unknown): Promise
 }
 
 async function markFailed(row: ClaimedNotificationRow, reason: string): Promise<void> {
-  await db('intake_notifications_outbox').where({ id: row.id }).update({
-    status: 'failed',
-    attempts: row.attempts + 1,
-    last_error: reason,
-  });
+  await db('intake_notifications_outbox')
+    .where({ id: row.id })
+    .update({
+      status: 'failed',
+      attempts: row.attempts + 1,
+      last_error: reason,
+    });
   // Per-channel detail is in the audit row; the row-level flag on
   // intake_sessions just tells the staff view "at least one notification
   // failed" so they know to check.
@@ -308,11 +298,7 @@ async function markFailed(row: ClaimedNotificationRow, reason: string): Promise<
  * clients have no recorded TZ — falling back to server-local is the
  * deliberate trade-off here.
  */
-export function nextAllowedSendTime(
-  now: Date,
-  startHour: number,
-  endHour: number,
-): Date | null {
+export function nextAllowedSendTime(now: Date, startHour: number, endHour: number): Date | null {
   const hour = now.getHours();
   if (startHour < endHour) {
     // Simple window: e.g. 8..21 — allowed when 8 <= hour < 21.
@@ -383,4 +369,3 @@ function buildClientSms(
   const body = `Hi ${name}, ${firmName} received your ${fileCount} file${fileCount === 1 ? '' : 's'}. Reply STOP to opt out.`;
   return { to, body };
 }
-
