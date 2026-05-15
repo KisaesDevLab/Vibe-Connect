@@ -26,6 +26,11 @@ interface VibeBoot {
   tlsMode: 'internal' | 'external';
   appName: string | null;
   buildVersion: string;
+  // Phase 28.4 — Cloudflare Turnstile site key for the anonymous intake
+  // form. Null when Turnstile isn't configured; the SPA renders no widget
+  // and the server accepts submissions without a token. Site keys are
+  // public by design; the matching secret key stays in env.turnstileSecretKey.
+  turnstileSiteKey: string | null;
 }
 
 // JSON.stringify alone doesn't escape `</script>` or U+2028 / U+2029 in
@@ -69,6 +74,12 @@ bootstrapRouter.get(
       tlsMode: env.tlsMode,
       appName,
       buildVersion: env.buildVersion,
+      // Only surface the site key when BOTH halves are configured. A
+      // half-configured Turnstile (site set, secret blank, or vice versa)
+      // would leave the SPA rendering a widget that fails verification on
+      // the server side — better to silently disable until both land.
+      turnstileSiteKey:
+        env.turnstileSiteKey && env.turnstileSecretKey ? env.turnstileSiteKey : null,
     };
     res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     // 60s revalidation: long enough that tab-switching / soft refreshes don't

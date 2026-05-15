@@ -45,6 +45,21 @@ http {
     "~*text/html"      1;
   }
 
+  # Preserve upstream X-Forwarded-Proto when this nginx sits behind an
+  # additional TLS terminator (Vibe-Appliance: Caddy in front of us; Caddy
+  # → vibe-connect-client is plain HTTP, so a bare `$scheme` here would
+  # overwrite Caddy's `X-Forwarded-Proto: https` with `http`). With
+  # `app.set('trust proxy', 1)` the Node server then reads `req.secure =
+  # false`, and express-session SILENTLY DROPS the Set-Cookie header for
+  # cookies with `secure: true` — login appears to succeed (session row
+  # written to PgStore) but the browser never receives the cookie, so
+  # every subsequent request is 401. Falling back to `$scheme` keeps
+  # single-app dev (no upstream proxy) working unchanged.
+  map $http_x_forwarded_proto $vibe_forwarded_proto {
+    default      $scheme;
+    "~."         $http_x_forwarded_proto;
+  }
+
   # Distribution mode: __BASE_HREF__ is injected into every HTML response so
   # the SPA's <base href> picks up the right prefix at runtime. Single-app
   # mode renders the empty string (browser uses '/'); multi-app renders
@@ -89,7 +104,7 @@ http {
       proxy_pass $app_backend;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
     }
 
     # Staff-only download redirect. `https://<host>/desktop/` 302s to the
@@ -120,7 +135,7 @@ http {
       proxy_set_header Connection "upgrade";
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
       proxy_read_timeout 1h;
     }
 
@@ -135,7 +150,44 @@ http {
       proxy_pass $app_backend;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    # Phase 28.3 — public, anonymous intake API. `^~` makes this take
+    # precedence over the catch-all `/` location below; JSON-only, never
+    # the SPA shell, so no $vibe_wants_spa branch.
+    location ^~ /api/public/intake/ {
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    # Phase 28.3 — anonymous intake SPA (apps/intake bundle). `^~` so this
+    # wins against the catch-all `/` location below for any path starting
+    # with /intake. SPA shell fallback via `try_files ... /intake/index.html`
+    # so a browser refresh on /intake/<staff-id> (28.4) or /intake/t/<token>
+    # (28.14) still renders the React tree from the bundle's root.
+    #
+    # The same __BASE_HREF__ substitution as the staff bundle: single-app
+    # mode renders the empty string ('/'), multi-app renders '/connect'.
+    location ^~ /intake {
+      root /usr/share/nginx/html/intake;
+      # The bundle's own files live at the root, not under /intake/. Rewrite
+      # the URL to strip the /intake prefix before try_files looks the file
+      # up on disk — same trick the portal block doesn't need because
+      # /portal is the SPA's natural prefix there. (try_files alone would
+      # search /usr/share/nginx/html/intake/intake/index.html which doesn't
+      # exist.)
+      rewrite ^/intake/?(.*)$ /$1 break;
+      try_files $uri $uri/ /index.html;
+      # Phase 28.17 — substitute __BASE_HREF__ inside the PWA manifest as
+      # well as the HTML shell, so start_url / scope resolve correctly in
+      # both single-app and multi-app modes from one build.
+      sub_filter_types text/html application/manifest+json;
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
     }
 
     location / {
@@ -172,7 +224,7 @@ http {
       proxy_pass $app_backend;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
     }
 
     location ~ ^/(portal|auth|attachments|notifications|health)(/|$) {
@@ -183,7 +235,7 @@ http {
       proxy_pass $app_backend;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
     }
 
     location / {
@@ -226,7 +278,7 @@ http {
       proxy_pass $app_backend;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
     }
 
     # /desktop/ — same staff-only contract as the HTTPS staff block. In
@@ -257,7 +309,7 @@ http {
       proxy_set_header Connection "upgrade";
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
       proxy_read_timeout 1h;
     }
 
@@ -275,7 +327,33 @@ http {
       proxy_pass $app_backend;
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    # Phase 28.3 — public intake API + SPA bundle on the plain-HTTP listener.
+    # External TLS mode reaches us through Caddy / Cloudflare Tunnel; we
+    # proxy directly. Internal TLS mode 301s to HTTPS so the eventual
+    # response lands behind TLS.
+    location ^~ /api/public/intake/ {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    location ^~ /intake {
+      if ($tls_mode_internal = 1) {
+        return 301 https://$host$request_uri;
+      }
+      root /usr/share/nginx/html/intake;
+      rewrite ^/intake/?(.*)$ /$1 break;
+      try_files $uri $uri/ /index.html;
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
     }
 
     location / {

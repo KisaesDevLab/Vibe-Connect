@@ -29,6 +29,14 @@ import { portalVaultUploadRouter } from './routes/portalVaultUpload.js';
 import { emailBridgeRouter } from './routes/emailBridge.js';
 import { smsBridgeRouter } from './routes/smsBridge.js';
 import { serveAvatarFromDisk, usersRouter } from './routes/users.js';
+import {
+  intakeCardAdminRouter,
+  intakeCardSelfRouter,
+  serveIntakeHeadshotFromDisk,
+} from './routes/intakeCard.js';
+import { intakeAdminRouter } from './routes/intakeAdmin.js';
+import { intakePublicRouter } from './routes/intakePublic.js';
+import { intakeUploadsRouter } from './routes/intakeUploads.js';
 import { requestLog } from './middleware/requestLog.js';
 import { reqContext } from './middleware/reqContext.js';
 import { getHttp01KeyAuthorization } from './services/tlsAcme.js';
@@ -308,6 +316,64 @@ export function createApp(): Express {
 
   app.use('/auth', authRouter);
   app.use('/auth/oidc', oidcRouter);
+  // Phase 28.2 intake-card endpoints split across two specific mounts so
+  // they never share a prefix with the broader users / admin routers below.
+  // (A previous iteration mounted everything at `/` ahead of usersRouter,
+  // which worked but relied on no intakeCard route ever calling next() to
+  // avoid falling through into usersRouter — a future-hazard the split
+  // removes.) Both mounts are still BEFORE the broader routers so route
+  // resolution is unambiguous in either direction.
+  app.use('/users/me/intake-card', intakeCardSelfRouter);
+  app.use('/admin', intakeCardAdminRouter);
+
+  // Phase 28.11 — staff received-uploads view. Mounted under /admin/intake;
+  // self-scoped per-route via session.userId vs is_admin. Same "ahead of
+  // the broader adminRouter" hoist so route resolution wins on the more
+  // specific prefix.
+  app.use('/admin/intake', intakeAdminRouter);
+
+  // Phase 28.3 — public, anonymous intake endpoints. MUST be mounted before
+  // `requestsRouter` (which applies a blanket `requireAuth` at the router
+  // level), and naturally is, since we mount it here near the front of the
+  // route table.
+  app.use('/api/public/intake', intakePublicRouter);
+
+  // Phase 28.5 — tus protocol for intake uploads. Sibling mount (not nested
+  // under intakePublicRouter) so the tus PATCH body in
+  // `application/offset+octet-stream` streams directly to disk without
+  // express.json sniffing it first. Auth is the upload-token JWT in the
+  // Authorization header.
+  app.use('/api/public/intake/uploads', intakeUploadsRouter);
+
+  // Phase 28.2 — public intake-card headshot serving. NO AUTH: the Phase
+  // 28.3 anonymous `/intake` landing displays these to walk-up visitors.
+  // MUST be mounted BEFORE requestsRouter — that router applies a blanket
+  // `requireAuth` via `.use(...)` (routes/requests.ts:122) which would
+  // otherwise reject any unauthenticated GET to /attachments/* before
+  // Express resolves the more specific handler below. The avatar route
+  // does not need this hoist because it self-checks auth and is meant to
+  // be auth-required anyway.
+  //
+  // Filename is strictly validated so this can't be turned into a generic
+  // directory-traversal read. Decryption is server-held secretbox (defense
+  // in depth for an exfiltrated disk), not E2EE.
+  app.get('/attachments/intake-headshots/:name', async (req, res) => {
+    const name = path.basename(req.params.name!);
+    if (!/^[0-9a-fA-F-]{36}\.webp\.enc$/.test(name)) {
+      res.status(400).json({ error: 'bad_name' });
+      return;
+    }
+    const buf = await serveIntakeHeadshotFromDisk(name);
+    if (!buf) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.setHeader('Content-Type', 'image/webp');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60');
+    res.send(buf);
+  });
+
   app.use('/users', usersRouter);
   app.use('/groups', groupsRouter);
   app.use('/conversations', conversationsRouter);

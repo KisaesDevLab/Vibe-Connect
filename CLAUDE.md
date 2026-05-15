@@ -55,6 +55,23 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
   `'vault_file_uploaded'`, `'vault_file_deleted'`. Resumable uploads use tus 1.0.0
   (vault only — message attachments stay multipart). See `docs/ops/VAULT.md` (admin)
   and `docs/ops/VAULT_CLIENT.md` (client).
+- **Phase 28 deliberate exception (Vibe File Transfer / Intake).** Anonymous-friendly
+  client uploads on `/intake`, `/intake/:staffId`, `/intake/t/:token`. **Server-side
+  encryption at rest with a firm-held libsodium key** (`CONNECT_INTAKE_ENCRYPTION_KEY`,
+  32 bytes base64), **NOT E2EE** — see `docs/ADR-028-server-side-encryption-rationale.md`
+  for why. Plaintext touches conversion workers briefly during image-to-PDF assembly
+  (cover page + scanned-image PDF, written to `/tmp/intake-conversion-${jobId}/` and
+  cleaned in `finally`), re-encrypted on disk immediately after. PII columns
+  (`client_name_enc`, `client_email_enc`, `client_phone_enc`) are encrypted via
+  `apps/server/src/services/intakeCrypto.ts`. Deterministic search-hash sidecar
+  columns (`client_email_hash`, etc.) are HKDF-derived from `SESSION_SECRET` with
+  salt `vibe-connect/intake-search/v1` so rotating the intake content key does not
+  invalidate staff search. Distinct from Vault — intake disclosure on `/intake` makes
+  this user-facing. tus 1.0.0 reused via the `services/tusProtocol.ts` module
+  (vault + intake are now two callers). Intake reuses the existing `audit_log` table
+  with action namespace `intake.*` — no per-feature audit table. See
+  `docs/PHASE_28_ADDENDUM.md` for the build plan and `docs/ops/INTAKE.md` (admin) +
+  `docs/ops/INTAKE_FIRM_ADMIN.md` (firm admin) once shipped.
 
 ## Non-goals — do not build these
 
@@ -71,6 +88,12 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
 - `apps/server` — Express + Knex + Socket.io. Single source of truth for API contracts.
 - `apps/web` — Staff app. Tauri webview loads this same bundle.
 - `apps/portal` — Client portal. **No staff features.** Kept intentionally minimal.
+- `apps/intake` — Phase 28 public **unauthenticated** intake SPA. Anonymous client
+  flow lives entirely here — `/intake` (staff card grid), `/intake/:staffId` (intake
+  form), `/intake/t/:token` (tokenized link), plus the in-browser document scanner.
+  Shares no code with `apps/web`; reuses tus client logic adapted from
+  `apps/portal/src/lib/vaultClient.ts` for anonymous upload tokens. Builds to a
+  separate static bundle served by nginx.
 - `apps/desktop` — Tauri 2.x **thin client**. Ships a tiny onboarding HTML
   (`apps/desktop/onboarding/`, built to `apps/desktop/dist/`) that asks the
   user for their firm's appliance URL on first run, then navigates the
@@ -98,6 +121,11 @@ of the Vibe product family (Vibe TB, Vibe MyBooks). See `vibe-connect-build-plan
   See `docs/ops/REQUESTS.md` (admin) and `docs/ops/REQUESTS_CLIENT.md` (client).
 - `Phase 26` / `vault.*` audit actions — Client Vault. See `docs/ops/VAULT.md`
   (admin) and `docs/ops/VAULT_CLIENT.md` (client).
+- `Phase 28` / `intake.*` audit actions — Vibe File Transfer (anonymous intake).
+  Server-side encryption at rest via `CONNECT_INTAKE_ENCRYPTION_KEY`. See
+  `docs/PHASE_28_ADDENDUM.md`, `docs/ADR-028-server-side-encryption-rationale.md`,
+  and `docs/ops/INTAKE.md` (admin) + `docs/ops/INTAKE_FIRM_ADMIN.md` (firm admin)
+  once shipped.
 
 ## Stack pins
 

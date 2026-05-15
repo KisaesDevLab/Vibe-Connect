@@ -20,40 +20,93 @@ export function clamdEnabled(): boolean {
   return Boolean(env.clamdHost);
 }
 
+export type ProbeResult =
+  | { ok: true }
+  | { ok: false; reason: 'disabled' | 'timeout' | 'connect_error' | 'bad_response'; message?: string };
+
+/**
+ * Send zPING\0 to clamd and expect "PONG" back. Non-fatal: callers (typically
+ * the server boot path) just log the outcome. When CLAMD_HOST is unset this
+ * returns `{ok:false, reason:'disabled'}` immediately without opening a socket.
+ *
+ * Phase 28 uses this as a one-shot startup readiness probe so an operator
+ * tailing `docker logs` after a restart sees `clamav.ready` (or the failure
+ * mode) without waiting for the first upload to expose the misconfiguration.
+ */
+export async function probeClamd(timeoutMs = 5_000): Promise<ProbeResult> {
+  if (!clamdEnabled()) return { ok: false, reason: 'disabled' };
+  return new Promise<ProbeResult>((resolve) => {
+    const sock = net.createConnection({ host: env.clamdHost, port: env.clamdPort });
+    let settled = false;
+    const settle = (r: ProbeResult): void => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(r);
+    };
+    sock.setTimeout(timeoutMs);
+    let resp = Buffer.alloc(0);
+    sock.on('data', (chunk: Buffer) => {
+      resp = Buffer.concat([resp, chunk]);
+      // clamd terminates PING with a null byte (z-command framing). Settle
+      // as soon as we see it rather than waiting for `end`.
+      if (resp.includes(0)) {
+        const line = resp.toString('utf8').replace(/\0$/, '').trim();
+        if (line === 'PONG') settle({ ok: true });
+        else settle({ ok: false, reason: 'bad_response', message: line });
+      }
+    });
+    sock.on('timeout', () => settle({ ok: false, reason: 'timeout' }));
+    sock.on('error', (err) => settle({ ok: false, reason: 'connect_error', message: err.message }));
+    sock.on('connect', () => {
+      sock.write('zPING\0');
+    });
+  });
+}
+
 export async function scanBuffer(buffer: Buffer): Promise<ScanResult> {
   if (!clamdEnabled()) return { status: 'clean' };
   return new Promise<ScanResult>((resolve) => {
     const sock = net.createConnection({ host: env.clamdHost, port: env.clamdPort });
     sock.setTimeout(30_000);
 
+    // Single-shot guard so the `end` callback that fires after a manual
+    // `destroy()` can't double-resolve. Same shape as probeClamd; without
+    // it, a timeout/error path resolves and then `end` resolves again.
+    // Promise semantics make the second resolve a no-op, but the
+    // `destroy()` was still missing on the error path — leaked a socket
+    // per failure. Adding it here.
+    let settled = false;
+    const settle = (r: ScanResult): void => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve(r);
+    };
+
     let resp = Buffer.alloc(0);
     sock.on('data', (chunk: Buffer) => {
       resp = Buffer.concat([resp, chunk]);
     });
-    sock.on('timeout', () => {
-      sock.destroy();
-      resolve({ status: 'error', message: 'clamd_timeout' });
-    });
-    sock.on('error', (err) => {
-      resolve({ status: 'error', message: err.message });
-    });
+    sock.on('timeout', () => settle({ status: 'error', message: 'clamd_timeout' }));
+    sock.on('error', (err) => settle({ status: 'error', message: err.message }));
     sock.on('end', () => {
       const line = resp.toString('utf8').replace(/\0$/, '').trim();
       // clamd returns e.g. "stream: OK" or "stream: Eicar-Test-Signature FOUND"
       if (/\bOK$/.test(line)) {
-        resolve({ status: 'clean' });
+        settle({ status: 'clean' });
         return;
       }
       const m = /:\s*(.+)\s+FOUND$/.exec(line);
       if (m) {
-        resolve({ status: 'infected', signature: m[1]! });
+        settle({ status: 'infected', signature: m[1]! });
         return;
       }
       // Everything else — explicit ERROR strings, empty responses, or
       // unrecognised formats — collapses to `error` with the raw line for
       // the caller to log. Fail-closed: callers (upload routes) translate
       // `error` into a 503 so bytes never ship without a verdict.
-      resolve({ status: 'error', message: line });
+      settle({ status: 'error', message: line });
     });
 
     sock.on('connect', () => {

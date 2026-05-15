@@ -41,6 +41,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      clamav:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       DATABASE_URL: 'postgres://vibe:vibe@postgres:5432/vibe_connect'
@@ -53,9 +55,14 @@ services:
       SITE_URL: '${SITE_URL:-http://localhost:4000}'
       PORTAL_URL: '${PORTAL_URL:-http://localhost:4000/portal}'
       API_URL: '${API_URL:-http://localhost:4000}'
-      # ClamAV is opt-out for the dev appliance — without this, the env.ts
-      # boot guard refuses to start in production mode.
-      ALLOW_UNSCANNED_UPLOADS: '1'
+      # Phase 28: ClamAV sidecar is now part of the dev compose. The app
+      # boot guard accepts CLAMD_HOST=clamav, so the previous
+      # ALLOW_UNSCANNED_UPLOADS=1 escape hatch is no longer needed in this
+      # compose. Devs running the server outside compose (`yarn server:dev`
+      # with no sidecar) can still set ALLOW_UNSCANNED_UPLOADS=1 in their
+      # local .env to bypass.
+      CLAMD_HOST: 'clamav'
+      CLAMD_PORT: '3310'
     expose:
       - '4000'
     ports:
@@ -74,6 +81,40 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  clamav:
+    # ClamAV antivirus sidecar (Phase 28). The wire-protocol client at
+    # apps/server/src/services/clamav.ts streams INSTREAM buffers here for
+    # every uploaded message attachment, vault file, and intake upload.
+    #
+    # First boot: the entrypoint runs freshclam to download the signature
+    # DB (~500MB compressed → ~1GB on disk). The start_period below covers
+    # that initial download; the named volume preserves the DB across
+    # restarts so subsequent boots only fetch deltas. The image's
+    # entrypoint keeps freshclam running as a side process for ongoing
+    # signature updates — no host-side cron needed.
+    image: clamav/clamav-debian:stable
+    container_name: vibe-connect-clamav
+    restart: unless-stopped
+    expose:
+      - '3310'
+    ports:
+      # Published in dev so host-side integration tests (CLAMAV_E2E=1
+      # vitest) can talk to the sidecar without joining the compose
+      # network. The prod overlay drops this port — clamd should not be
+      # reachable off the appliance host.
+      - '${CLAMD_PUBLISH_PORT:-3310}:3310'
+    volumes:
+      - clamav_db:/var/lib/clamav
+    healthcheck:
+      # clamdcheck.sh ships in the upstream image and exits 0 once clamd
+      # is accepting connections AND signatures are loaded. start_period
+      # = 5 minutes covers a cold-cache freshclam download on a slow link.
+      test: ['CMD', 'clamdcheck.sh']
+      interval: 60s
+      timeout: 10s
+      retries: 6
+      start_period: 300s
 
   nginx:
     build:
@@ -106,3 +147,7 @@ volumes:
   # can drop fresh certs without a host bind-mount in this dev compose.
   vibe_tls:
     name: vibe_connect_tls
+  # ClamAV signature DB. Survives container restarts so freshclam only
+  # fetches deltas after the initial ~500MB download.
+  clamav_db:
+    name: vibe_connect_clamav_db

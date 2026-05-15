@@ -21,6 +21,24 @@ import { startRetentionTicker, stopRetentionTicker } from './services/retention.
 import { startVaultRetentionTicker, stopVaultRetentionTicker } from './services/vaultRetention.js';
 import { startBackupWatcher, stopBackupWatcher } from './services/backupWatcher.js';
 import { startTlsRenewalTicker, stopTlsRenewalTicker } from './services/tlsAcme.js';
+import { clamdEnabled, probeClamd } from './services/clamav.js';
+import {
+  startIntakePdfConversionTicker,
+  stopIntakePdfConversionTicker,
+} from './services/intakePdfTicker.js';
+import {
+  startIntakeClientNotifyTicker,
+  stopIntakeClientNotifyTicker,
+} from './services/intakeClientNotifyTicker.js';
+import {
+  startIntakeStaffNotifyTicker,
+  stopIntakeStaffNotifyTicker,
+} from './services/intakeStaffNotifyTicker.js';
+import {
+  startIntakeAutoPurgeTicker,
+  stopIntakeAutoPurgeTicker,
+} from './services/intakeAutoPurgeTicker.js';
+import { stopIntakeKeyRotation } from './services/intakeKeyRotation.js';
 
 async function main(): Promise<void> {
   const app = createApp();
@@ -59,6 +77,23 @@ async function main(): Promise<void> {
   startVaultRetentionTicker();
   startTlsRenewalTicker();
   startBackupWatcher();
+  // Phase 28.9 — anonymous intake PDF conversion. Claims pending
+  // `intake_pdfs` rows and assembles the cover sheet + scanned images
+  // into one encrypted PDF.
+  startIntakePdfConversionTicker();
+  // Phase 28.10 — client receipt notifications (email + SMS). Polls
+  // `intake_notifications_outbox` for email/sms rows and dispatches them
+  // through the firm's configured providers.
+  startIntakeClientNotifyTicker();
+  // Phase 28.12 — staff notifications (email + in-app). Tiles with the
+  // client ticker via the template_id LIKE filter so the two never
+  // race on email rows.
+  startIntakeStaffNotifyTicker();
+  // Phase 28.15 — intake retention auto-purge. Hourly sweep of
+  // finalized sessions whose `auto_delete_at` has passed; the audit
+  // row written before each delete survives because it lives in the
+  // shared `audit_log` table with no FK back to intake.
+  startIntakeAutoPurgeTicker();
 
   // Firm-key fingerprint at boot. Logged so an operator inspecting `docker
   // logs` after a restore can verify "this is the same firm key we backed up"
@@ -107,6 +142,31 @@ async function main(): Promise<void> {
     });
   }
 
+  // Phase 28: one-shot ClamAV readiness probe. Non-fatal — even an
+  // unreachable clamd doesn't block boot, since upload routes already
+  // fail-closed at scan time (or open if ALLOW_UNSCANNED_UPLOADS=1 is set).
+  // The whole point is operator visibility: a single `clamav.ready` line in
+  // `docker logs` confirms the sidecar handshake at restart, instead of
+  // discovering misconfiguration on the first user upload.
+  if (clamdEnabled()) {
+    void probeClamd().then((res) => {
+      if (res.ok) {
+        logger.info('clamav.ready', { host: env.clamdHost, port: env.clamdPort });
+      } else {
+        logger.warn('clamav.probe_failed', {
+          host: env.clamdHost,
+          port: env.clamdPort,
+          reason: res.reason,
+          message: res.message,
+        });
+      }
+    });
+  } else {
+    logger.info('clamav.disabled', {
+      hint: 'CLAMD_HOST is unset; uploads will be marked clean. Set ALLOW_UNSCANNED_UPLOADS=1 to bypass the production boot guard.',
+    });
+  }
+
   server.listen(env.port, () => {
     logger.info('server.listening', { port: env.port, env: env.nodeEnv });
   });
@@ -142,6 +202,14 @@ async function main(): Promise<void> {
     stopVaultRetentionTicker();
     stopTlsRenewalTicker();
     stopBackupWatcher();
+    stopIntakePdfConversionTicker();
+    stopIntakeClientNotifyTicker();
+    stopIntakeStaffNotifyTicker();
+    stopIntakeAutoPurgeTicker();
+    // Phase 28.16 — flag an in-flight rotation to pause. The worker
+    // checks this flag between rows and persists status='paused' before
+    // exiting; the row remains resumable via /admin/intake/rotate-key/:id/resume.
+    stopIntakeKeyRotation();
     // Drain HTTP. server.close stops accepting new connections and fires the
     // callback after all in-flight requests complete. We give that chance up
     // to 10s; if keep-alive connections are idle we nudge them closed so the

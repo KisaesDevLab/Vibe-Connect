@@ -8,6 +8,7 @@ Part of the Vibe product family alongside Vibe TB and Vibe MyBooks.
 - `apps/server` — Node 24 + Express + Knex + Postgres 16 + Socket.io
 - `apps/web` — Staff app (Vite + React 18 + TypeScript + Tailwind)
 - `apps/portal` — Client portal (Vite + React 18 + TypeScript + Tailwind)
+- `apps/intake` — Public anonymous file-intake SPA (Phase 28; Vite + React 18)
 - `apps/desktop` — Tauri 2.x wrapper around the staff web bundle
 - `packages/crypto` — libsodium-backed E2EE primitives (shared by server + browser)
 - `packages/shared-types` — TypeScript types shared across server and clients
@@ -165,6 +166,10 @@ cosign verify ghcr.io/kisaesdevlab/vibe-connect-server:1.4.2 \
 - `docs/ops/BACKUP_RECOVERY.md` — backup + recovery procedure
 - `docs/ops/EMAIL_DNS.md` — SPF / DKIM / DMARC setup for bridge domain
 - `docs/ops/SMS_PROVIDERS.md` — TextLink + Twilio setup
+- `docs/ops/INTAKE.md` — Phase 28 anonymous file intake; operator runbook (env vars, key rotation, maintenance mode)
+- `docs/ops/INTAKE_FIRM_ADMIN.md` — Phase 28 firm-admin guide (staff cards, links, retention, audit reference)
+- `docs/ops/VAULT.md` / `docs/ops/VAULT_CLIENT.md` — Phase 26 client vault
+- `docs/ops/REQUESTS.md` / `docs/ops/REQUESTS_CLIENT.md` — Phase 24 client requests
 
 ## License
 

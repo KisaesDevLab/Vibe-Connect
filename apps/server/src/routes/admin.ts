@@ -380,9 +380,12 @@ adminRouter.get(
     };
 
     if (format === 'csv') {
-      const rows = await applyFilters(
-        db('audit_log').orderBy('created_at', 'desc').limit(limit).offset(offset),
-      );
+      // Phase 28.17 — true row-by-row streaming via Knex's `.stream()`,
+      // which under-the-hood uses pg's Cursor/streaming-row mode. The
+      // result set is NEVER fully materialized in Node memory: rows
+      // land one at a time, get CSV-encoded, and write through to the
+      // response with backpressure honored. A 100k-row export uses
+      // O(1) memory regardless of payload size.
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader(
         'Content-Disposition',
@@ -396,25 +399,61 @@ adminRouter.get(
         const s = typeof v === 'string' ? v : JSON.stringify(v);
         return `"${s.replace(/"/g, '""')}"`;
       };
-      for (const r of rows) {
-        res.write(
-          [
-            encode(new Date(r.created_at as string).toISOString()),
-            encode(r.action),
-            encode(r.actor_user_id),
-            encode(r.actor_external_identity_id),
-            encode(r.target_type),
-            encode(r.target_id),
-            encode(r.ip_address),
-            encode(redactAuditDetailsForExport(r.action, r.details)),
-          ].join(',') + '\r\n',
-        );
+      // Apply SQL LIMIT so pg only streams what we'll consume; offset
+      // honored too. orderBy keeps deterministic ordering across
+      // chunked reads from the same connection.
+      const stream = applyFilters(
+        db('audit_log').orderBy('created_at', 'desc').limit(limit).offset(offset),
+      ).stream();
+      let rowCount = 0;
+      let aborted = false;
+      const onClose = (): void => {
+        aborted = true;
+        // Detach from the pg cursor so the underlying connection is
+        // released promptly if the client closed mid-stream.
+        if (typeof (stream as unknown as { destroy?: () => void }).destroy === 'function') {
+          (stream as unknown as { destroy: () => void }).destroy();
+        }
+      };
+      res.on('close', onClose);
+      try {
+        for await (const r of stream as AsyncIterable<{
+          created_at: string;
+          action: string;
+          actor_user_id: string | null;
+          actor_external_identity_id: string | null;
+          target_type: string;
+          target_id: string | null;
+          ip_address: string | null;
+          details: unknown;
+        }>) {
+          if (aborted) break;
+          const line =
+            [
+              encode(new Date(r.created_at).toISOString()),
+              encode(r.action),
+              encode(r.actor_user_id),
+              encode(r.actor_external_identity_id),
+              encode(r.target_type),
+              encode(r.target_id),
+              encode(r.ip_address),
+              encode(redactAuditDetailsForExport(r.action, r.details)),
+            ].join(',') + '\r\n';
+          // Honor backpressure: if the socket buffer is full, wait for
+          // it to drain before pulling the next row from the cursor.
+          if (!res.write(line)) {
+            await new Promise<void>((resolve) => res.once('drain', resolve));
+          }
+          rowCount += 1;
+        }
+      } finally {
+        res.off('close', onClose);
       }
       await auditRepo.write({
         actorUserId: req.session.userId!,
         action: 'admin.audit_export',
         targetType: 'audit_log',
-        details: { action, actorUserId, rowCount: rows.length, format },
+        details: { action, actorUserId, rowCount, format, aborted },
       });
       res.end();
       return;

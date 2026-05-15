@@ -41,6 +41,11 @@ apps/desktop/src-tauri/gen/
 infra/docker/data/
 infra/docker/mail/
 infra/docker/uploads/
+# Host-side dev workflows (yarn server:dev, vitest run from apps/server)
+# default ATTACHMENT_LOCAL_DIR to ./infra/docker/uploads which resolves
+# relative to the workspace's cwd, producing apps/server/infra/docker/uploads.
+# Same pattern, different anchor — ignore the whole apps/server/infra tree.
+apps/server/infra/
 
 # TLS material — never commit private keys. Certs stay out too so the pair
 # moves together; ACME issuance lives in apps/server/src/services/tlsAcme.ts.

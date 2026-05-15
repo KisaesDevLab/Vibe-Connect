@@ -1,9 +1,10 @@
 // Self-service account page: change password, set avatar, view your own enrolled
 // devices. All endpoints are already server-implemented; this just wires UI.
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api.js';
 import { PasswordStrengthBar } from '../components/PasswordStrengthBar.js';
+import { url as appUrl } from '../lib/boot.js';
 import { useAuth } from '../state/auth.js';
 
 /** Small relative-time helper. Keeps the device table readable without
@@ -42,9 +43,252 @@ export function AccountPage(): JSX.Element {
           void qc.invalidateQueries({ queryKey: ['users'] });
         }}
       />
+      <IntakeCardSettings />
       <ChangePasswordCard />
       <MyDevicesCard />
     </div>
+  );
+}
+
+/**
+ * Phase 28.2 — Staff self-service intake-card panel.
+ *
+ * One card alongside the other Account sections; no new tabs. Toggle =
+ * opt-in to the public `/intake` page; bio/title/headshot drive what
+ * walk-up clients see. Server enforces length caps (60 / 280) so the
+ * counters here are advisory.
+ */
+function IntakeCardSettings(): JSX.Element {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ['me', 'intake-card'],
+    queryFn: () => api.getMyIntakeCard(),
+    staleTime: 30_000,
+  });
+
+  const patchMut = useMutation({
+    mutationFn: (patch: {
+      showOnIntakeCard?: boolean;
+      bio?: string | null;
+      title?: string | null;
+      notifyMode?: 'realtime' | 'digest' | 'in_app_only';
+    }) => api.patchMyIntakeCard(patch),
+    onSuccess: (data) => {
+      qc.setQueryData(['me', 'intake-card'], data);
+    },
+  });
+
+  const headshotMut = useMutation({
+    mutationFn: (file: File) => api.uploadIntakeCardHeadshot(file),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['me', 'intake-card'] });
+    },
+  });
+
+  // Local form state — mirrors server values once loaded but lets the user
+  // type without round-tripping every keystroke. Submit batches a PATCH.
+  const [titleDraft, setTitleDraft] = useState<string>('');
+  const [bioDraft, setBioDraft] = useState<string>('');
+  // Sync drafts from server data once, after the first successful fetch.
+  // The ref guards against clobbering in-progress edits when the query
+  // refetches (e.g. after a headshot upload invalidates ['me','intake-card']).
+  // useEffect (not state-during-render) avoids React's setState-during-
+  // render warning + the corresponding infinite-re-render footgun if TQ
+  // returns a fresh `data` reference on each refetch.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    if (q.data && !hydratedRef.current) {
+      hydratedRef.current = true;
+      setTitleDraft(q.data.title ?? '');
+      setBioDraft(q.data.bio ?? '');
+    }
+  }, [q.data]);
+
+  if (q.isLoading) {
+    return (
+      <section className="bg-white rounded shadow-card p-4 space-y-3">
+        <h3 className="font-medium text-slate-900">Intake card</h3>
+        <div className="text-sm text-slate-500">Loading…</div>
+      </section>
+    );
+  }
+  if (!q.data) {
+    return (
+      <section className="bg-white rounded shadow-card p-4 space-y-3">
+        <h3 className="font-medium text-slate-900">Intake card</h3>
+        <div className="text-sm text-rose-600">Could not load intake card settings.</div>
+      </section>
+    );
+  }
+
+  const TITLE_MAX = 60;
+  const BIO_MAX = 280;
+  const titleRemaining = TITLE_MAX - titleDraft.length;
+  const bioRemaining = BIO_MAX - bioDraft.length;
+
+  function onToggle(showOnIntakeCard: boolean): void {
+    patchMut.mutate({ showOnIntakeCard });
+  }
+
+  function onSaveText(): void {
+    patchMut.mutate({
+      title: titleDraft.trim() === '' ? null : titleDraft.trim(),
+      bio: bioDraft.trim() === '' ? null : bioDraft.trim(),
+    });
+  }
+
+  function onHeadshotChange(e: ChangeEvent<HTMLInputElement>): void {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    headshotMut.mutate(f);
+    e.target.value = '';
+  }
+
+  const data = q.data;
+  return (
+    <section className="bg-white rounded shadow-card p-4 space-y-3">
+      <h3 className="font-medium text-slate-900">Intake card</h3>
+      <p className="text-xs text-slate-500">
+        Your card appears on the public <code className="text-slate-700">/intake</code> page that
+        walk-up clients see when they upload files. Toggle off to hide.
+      </p>
+
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={data.showOnIntakeCard}
+          onChange={(e) => onToggle(e.target.checked)}
+          disabled={patchMut.isPending}
+        />
+        <span className="text-sm text-slate-700">Show me on the public intake page</span>
+      </label>
+
+      <div className="flex items-center gap-3">
+        {data.headshotUrl ? (
+          <img
+            src={appUrl(data.headshotUrl)}
+            alt="Your intake card headshot"
+            className="w-20 h-20 rounded-full object-cover border border-slate-200"
+          />
+        ) : (
+          <div className="w-20 h-20 rounded-full bg-slate-100 border border-slate-200 grid place-items-center text-slate-400 text-xs">
+            No photo
+          </div>
+        )}
+        <div className="flex-1 space-y-1">
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={onHeadshotChange}
+            disabled={headshotMut.isPending}
+            className="text-sm"
+          />
+          <p className="text-xs text-slate-500">
+            PNG, JPG, WebP, or GIF up to 5 MB. Resized to 400×400 WebP on the server.
+          </p>
+          {headshotMut.isPending && <div className="text-xs text-slate-500">Uploading…</div>}
+          {headshotMut.isError && (
+            <div className="text-xs text-rose-600">
+              {(headshotMut.error as { status?: number } | null)?.status === 400
+                ? 'That file isn’t a readable image.'
+                : 'Upload failed.'}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <label className="block">
+        <span className="text-sm text-slate-700">Title</span>
+        <input
+          type="text"
+          value={titleDraft}
+          onChange={(e) => setTitleDraft(e.target.value.slice(0, TITLE_MAX))}
+          placeholder="e.g. Senior Tax Manager"
+          className="input"
+          disabled={patchMut.isPending}
+        />
+        <div
+          className={`text-xs ${titleRemaining < 10 ? 'text-amber-600' : 'text-slate-400'}`}
+          aria-live="polite"
+        >
+          {titleRemaining} characters left
+        </div>
+      </label>
+
+      <label className="block">
+        <span className="text-sm text-slate-700">Bio</span>
+        <textarea
+          value={bioDraft}
+          onChange={(e) => setBioDraft(e.target.value.slice(0, BIO_MAX))}
+          placeholder="A line or two clients see when they pick you on the intake page."
+          rows={3}
+          className="input"
+          disabled={patchMut.isPending}
+        />
+        <div
+          className={`text-xs ${bioRemaining < 20 ? 'text-amber-600' : 'text-slate-400'}`}
+          aria-live="polite"
+        >
+          {bioRemaining} characters left
+        </div>
+      </label>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onSaveText}
+          disabled={
+            patchMut.isPending ||
+            (titleDraft.trim() === (data.title ?? '') && bioDraft.trim() === (data.bio ?? ''))
+          }
+        >
+          {patchMut.isPending ? 'Saving…' : 'Save title & bio'}
+        </button>
+        {patchMut.isSuccess && (
+          <span className="text-xs text-emerald-700">Saved.</span>
+        )}
+        {patchMut.isError && (
+          <span className="text-xs text-rose-600">Failed: {String(patchMut.error)}</span>
+        )}
+      </div>
+
+      {/* Phase 28.12 (QA-followup) — notification preference. The in-app
+          unread badge always updates regardless of this choice; it only
+          controls the email channel. Admin-escalation emails (PDF
+          conversion failures) always send immediately, bypassing both
+          digest and in_app_only — they need attention now. */}
+      <div className="border-t border-slate-100 pt-3 space-y-2">
+        <div>
+          <label
+            htmlFor="intake-notify-mode"
+            className="text-sm font-medium text-slate-700 block"
+          >
+            Notify me about new intakes via email
+          </label>
+          <p className="text-xs text-slate-500">
+            The in-app unread indicator always updates regardless of this setting.
+          </p>
+        </div>
+        <select
+          id="intake-notify-mode"
+          value={data.notifyMode}
+          onChange={(e) =>
+            patchMut.mutate({
+              notifyMode: e.target.value as 'realtime' | 'digest' | 'in_app_only',
+            })
+          }
+          disabled={patchMut.isPending}
+          className="input max-w-md"
+        >
+          <option value="realtime">For every intake (default)</option>
+          <option value="digest">
+            Once a day, in a digest at the firm&apos;s configured hour
+          </option>
+          <option value="in_app_only">Never email me — in-app only</option>
+        </select>
+      </div>
+    </section>
   );
 }
 

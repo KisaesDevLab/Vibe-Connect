@@ -1,10 +1,10 @@
 // Phase 26 — Minimal tus 1.0.0 server for the Client Vault upload pipeline.
 //
-// We implement the protocol inline (rather than pulling in @tus/server) for
-// three reasons: (1) the appliance image stays small, (2) the security
-// surface stays auditable, (3) we want tight control over how the upload
-// finalize hook integrates with our existing scanBuffer + attachmentStorage
-// flow. Total tus surface in this file is well under 300 lines.
+// Wire protocol primitives (constants, header guards, metadata parser,
+// stream-append loop, partial-file path helpers) live in
+// `services/tusProtocol.ts` — shared with `intakeTusServer.ts` (Phase 28).
+// This file holds the vault-specific composition: auth model, repo
+// adapter, create-context validation, and finalize hook.
 //
 // Protocol coverage:
 //   Tus-Version       1.0.0
@@ -29,7 +29,7 @@
 // message-attachment scanning).
 import type { Request, Response } from 'express';
 import fs from 'node:fs/promises';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -37,61 +37,25 @@ import { env } from '../env.js';
 import { logger } from '../logger.js';
 import { vaultUploadsRepo, type VaultUploadRow } from '../repositories/vaults.js';
 import { onTusUploadFinish, type TusFinishContext } from './vaultUploadService.js';
+import {
+  TUS_VERSION,
+  TUS_EXTENSIONS,
+  applyTusBaseHeaders,
+  checkPatchContentType,
+  checkTusVersion,
+  ensureIncomingDir,
+  parseUploadMetadata,
+  partFilePath,
+  streamAppendToPart,
+  tusIncomingDir,
+} from './tusProtocol.js';
 
-const TUS_VERSION = '1.0.0';
-const TUS_EXTENSIONS = 'creation,creation-with-upload,termination';
 const UPLOAD_TTL_SECONDS = 60 * 60 * 24; // 24h
 
-function tusIncomingDir(): string {
-  return path.resolve(env.attachmentLocalDir, 'tus-incoming');
-}
-
-async function ensureIncomingDir(): Promise<string> {
-  const dir = tusIncomingDir();
-  await fs.mkdir(dir, { recursive: true });
-  return dir;
-}
-
-function partFilePath(uploadId: string): string {
-  // uploadId is hex-only (32 bytes) so no escaping needed.
-  return path.join(tusIncomingDir(), `${uploadId}.part`);
-}
-
-function applyTusBaseHeaders(res: Response): void {
-  res.setHeader('Tus-Resumable', TUS_VERSION);
-}
-
-/**
- * Decode an Upload-Metadata header. tus encodes it as comma-separated
- * `key base64Value` pairs (single-space separated). Values are utf-8
- * base64; keys are ASCII tokens. Empty value (key with no space) means
- * the metadata key is set with empty string.
- *
- * Returns lowercased keys → decoded utf-8 strings. Returns null on parse
- * failure so the caller can 400.
- */
-export function parseUploadMetadata(header: string | undefined): Record<string, string> | null {
-  if (!header) return {};
-  const out: Record<string, string> = {};
-  for (const raw of header.split(',')) {
-    const part = raw.trim();
-    if (!part) continue;
-    const sp = part.indexOf(' ');
-    const key = sp === -1 ? part : part.slice(0, sp);
-    const val = sp === -1 ? '' : part.slice(sp + 1).trim();
-    if (!/^[A-Za-z0-9_-]+$/.test(key)) return null;
-    if (val) {
-      try {
-        out[key] = Buffer.from(val, 'base64').toString('utf8');
-      } catch {
-        return null;
-      }
-    } else {
-      out[key] = '';
-    }
-  }
-  return out;
-}
+// Re-export so existing call sites (tests, other modules) that imported
+// `parseUploadMetadata` from `tusServer` keep working without a fan-out
+// edit. New code should import from `tusProtocol.js` directly.
+export { parseUploadMetadata };
 
 export interface TusCreateAuth {
   /** Exactly one of these must be set. */
@@ -129,10 +93,7 @@ export async function tusCreate(
   maxSize: number,
 ): Promise<void> {
   applyTusBaseHeaders(res);
-  if (req.header('Tus-Resumable') !== TUS_VERSION) {
-    res.status(412).json({ error: 'tus_version_mismatch' });
-    return;
-  }
+  if (!checkTusVersion(req, res)) return;
   const len = Number(req.header('Upload-Length'));
   if (!Number.isFinite(len) || len <= 0 || len !== Math.floor(len)) {
     res.status(400).json({ error: 'upload_length_required' });
@@ -169,10 +130,7 @@ export async function tusCreate(
 
 export async function tusHead(req: Request, res: Response, uploadId: string): Promise<void> {
   applyTusBaseHeaders(res);
-  if (req.header('Tus-Resumable') !== TUS_VERSION) {
-    res.status(412).json({ error: 'tus_version_mismatch' });
-    return;
-  }
+  if (!checkTusVersion(req, res)) return;
   const row = await vaultUploadsRepo.byUploadUrlId(uploadId);
   if (!row) {
     res.status(404).end();
@@ -194,14 +152,8 @@ export async function tusPatch(
   finishContext: Omit<TusFinishContext, 'upload' | 'metadata' | 'ciphertextBuffer'>,
 ): Promise<void> {
   applyTusBaseHeaders(res);
-  if (req.header('Tus-Resumable') !== TUS_VERSION) {
-    res.status(412).json({ error: 'tus_version_mismatch' });
-    return;
-  }
-  if (req.header('Content-Type') !== 'application/offset+octet-stream') {
-    res.status(415).json({ error: 'invalid_content_type' });
-    return;
-  }
+  if (!checkTusVersion(req, res)) return;
+  if (!checkPatchContentType(req, res)) return;
   const row = await vaultUploadsRepo.byUploadUrlId(uploadId);
   if (!row) {
     res.status(404).end();
@@ -218,26 +170,10 @@ export async function tusPatch(
     return;
   }
   const expectedSize = Number(row.expected_size);
-  // Append bytes to the partial file. Stream-based to handle 250 MB without
-  // buffering the whole chunk in memory.
-  await ensureIncomingDir();
   const partPath = partFilePath(uploadId);
-  let written = 0;
-  const writeStream = createWriteStream(partPath, { flags: 'a' });
+  let written: number;
   try {
-    await new Promise<void>((resolve, reject) => {
-      req.on('data', (chunk: Buffer) => {
-        written += chunk.length;
-        // Hard cap: refuse to exceed Upload-Length.
-        if (written + expected > expectedSize) {
-          req.destroy(new Error('exceeds_upload_length'));
-        }
-      });
-      req.on('error', reject);
-      writeStream.on('error', reject);
-      writeStream.on('finish', resolve);
-      req.pipe(writeStream);
-    });
+    written = await streamAppendToPart(req, uploadId, expected, expectedSize);
   } catch (err) {
     res.status(400).json({ error: 'write_failed', detail: (err as Error).message });
     return;
@@ -293,10 +229,7 @@ export async function tusDelete(
   auth: TusCreateAuth,
 ): Promise<void> {
   applyTusBaseHeaders(res);
-  if (req.header('Tus-Resumable') !== TUS_VERSION) {
-    res.status(412).json({ error: 'tus_version_mismatch' });
-    return;
-  }
+  if (!checkTusVersion(req, res)) return;
   const row = await vaultUploadsRepo.byUploadUrlId(uploadId);
   if (!row) {
     res.status(404).end();
@@ -375,7 +308,9 @@ export class TusFinalizeError extends Error {
   }
 }
 
-// Re-export for upload service tests.
+// Re-export for upload service tests and external callers that imported
+// these from `tusServer` before the tusProtocol extraction. New code
+// should import from `tusProtocol.js` directly.
 export { tusIncomingDir, partFilePath };
 // Eslint: streaming pipeline import is reserved for future use (S3 multipart driver).
 void pipeline;

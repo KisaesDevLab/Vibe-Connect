@@ -199,6 +199,18 @@ export function attachRealtime(httpServer: HttpServer): IOServer {
           rotationVersion: event.rotationVersion,
         });
         break;
+      case 'intake.session.received':
+        // Phase 28.12: notify the assigned staff's own sockets only.
+        // Payload carries metadata (session id + file count); the staff
+        // SPA refetches the audited /admin/intake/sessions/:id detail
+        // to surface the client name. Other staff don't see the event —
+        // intake sessions are scoped per-staff.
+        io.to(`user:${event.userId}`).emit('intake.session.received', {
+          sessionId: event.sessionId,
+          fileCount: event.fileCount,
+          createdAt: event.createdAt,
+        });
+        break;
       default:
         logger.warn('unhandled_realtime_event', { event });
     }

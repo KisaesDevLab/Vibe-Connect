@@ -15,6 +15,7 @@ export interface VibeBoot {
   tlsMode: 'internal' | 'external';
   appName: string | null;
   buildVersion: string;
+  turnstileSiteKey: string | null;
 }
 
 declare global {
@@ -30,6 +31,7 @@ const FALLBACK: VibeBoot = {
   tlsMode: 'internal',
   appName: null,
   buildVersion: 'dev',
+  turnstileSiteKey: null,
 };
 
 /** Returns the runtime config injected by the server, or a safe fallback if

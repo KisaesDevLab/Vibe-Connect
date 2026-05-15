@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -6,6 +6,7 @@ import { splitRecoveryPhrase, combineRecoveryShares } from '@vibe-connect/crypto
 import { url as appUrl } from '../lib/boot.js';
 import type { VaultFolderTemplate } from '@vibe-connect/shared-types';
 import { api } from '../api.js';
+import { useAuth } from '../state/auth.js';
 import { InviteClientModal } from '../components/InviteClientModal.js';
 import { PasswordStrengthBar } from '../components/PasswordStrengthBar.js';
 import { useCrypto } from '../state/crypto.js';
@@ -25,6 +26,14 @@ const tabs = [
   { path: 'message-history', label: 'Message history' },
   { path: 'recovery', label: 'Recovery' },
   { path: 'request-templates', label: 'Templates', requiresRequests: true },
+  { path: 'intake-cards', label: 'Intake cards' },
+  { path: 'intake', label: 'Intake' },
+  { path: 'intake-links', label: 'Intake links' },
+  // Admin-only — the backend gates these on req.session.isAdmin and a
+  // non-admin who navigates here would 403. Hide the tabs from the
+  // nav so the affordance only appears for users who can use it.
+  { path: 'intake-settings', label: 'Intake settings', requiresAdmin: true },
+  { path: 'intake-audit', label: 'Intake audit', requiresAdmin: true },
 ] as const;
 
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
@@ -39,15 +48,19 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function AdminPage(): JSX.Element {
   const loc = useLocation();
+  const { user } = useAuth();
   const policyQ = useQuery({
     queryKey: ['security-policy'],
     queryFn: () => api.getSecurityPolicy(),
     staleTime: 60_000,
   });
   const requestsEnabled = policyQ.data?.requestsEnabled !== false;
-  const visibleTabs = tabs.filter(
-    (t) => !('requiresRequests' in t && t.requiresRequests) || requestsEnabled,
-  );
+  const isAdmin = Boolean(user?.isAdmin);
+  const visibleTabs = tabs.filter((t) => {
+    if ('requiresRequests' in t && t.requiresRequests && !requestsEnabled) return false;
+    if ('requiresAdmin' in t && t.requiresAdmin && !isAdmin) return false;
+    return true;
+  });
   return (
     <div className="h-full flex flex-col">
       <div className="border-b border-slate-200 bg-white px-4 overflow-x-auto">
@@ -87,6 +100,11 @@ export function AdminPage(): JSX.Element {
           <Route path="message-history" element={<AdminMessageHistory />} />
           <Route path="recovery" element={<AdminRecovery />} />
           <Route path="request-templates" element={<AdminRequestTemplates />} />
+          <Route path="intake-cards" element={<AdminIntakeCards />} />
+          <Route path="intake" element={<AdminIntakeSessions />} />
+          <Route path="intake-links" element={<AdminIntakeLinks />} />
+          <Route path="intake-settings" element={<AdminIntakeSettings />} />
+          <Route path="intake-audit" element={<AdminIntakeAudit />} />
           <Route index element={<AdminUsers />} />
         </Routes>
       </div>
@@ -4136,6 +4154,1601 @@ function TemplateEditor({
           {saving ? 'Saving…' : templateId ? 'Save changes' : 'Create template'}
         </button>
       </footer>
+    </div>
+  );
+}
+
+/**
+ * Phase 28.2 — admin reorder + visibility surface for staff intake cards.
+ *
+ * Shows every active staff user. Admins toggle `Show on /intake` and drag
+ * to reorder. The order is persisted batch-style on drop. We avoid pulling
+ * in `@dnd-kit` for one screen — native HTML5 drag-and-drop is enough for
+ * this list size (a CPA firm has tens of staff, not thousands).
+ *
+ * Optional: an admin can also flip showOnIntakeCard for a colleague even
+ * though Phase 28.2 self-serve UI is per-user. We deliberately don't expose
+ * that toggle from the admin surface in this iteration — the plan calls
+ * out admin-driven *order* as the canonical override, with the per-user
+ * toggle being self-managed. Adding the toggle here later is mechanical.
+ */
+function AdminIntakeCards(): JSX.Element {
+  const qc = useQueryClient();
+  const listQ = useQuery({
+    queryKey: ['admin', 'intake-cards'],
+    queryFn: () => api.listAdminIntakeCards(),
+    staleTime: 30_000,
+  });
+  // Local copy of the listing so drag-and-drop feels instant. Re-sync from
+  // server data through a useEffect (NOT state-during-render — that ran
+  // setState in the render body which trips React's "setState during render"
+  // warning and risked an infinite re-render if TanStack Query returned a
+  // fresh `data` reference on each refetch).
+  type Card = NonNullable<typeof listQ.data>['cards'][number];
+  const [draft, setDraft] = useState<Card[] | null>(null);
+  useEffect(() => {
+    if (listQ.data) setDraft(listQ.data.cards);
+  }, [listQ.data]);
+
+  const reorderMut = useMutation({
+    mutationFn: (items: Array<{ userId: string; order: number | null }>) =>
+      api.reorderIntakeCards(items),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'intake-cards'] }),
+    onError: () => {
+      // Revert the optimistic drag-reorder. Without this, the UI keeps a
+      // stale ordering after the server rejects (e.g. 400 unknown_or_inactive_users
+      // from a stale draft that included a since-deactivated coworker), and
+      // the admin has no path back to the correct state without a refresh.
+      if (listQ.data) setDraft(listQ.data.cards);
+    },
+  });
+
+  const cards = draft ?? listQ.data?.cards ?? [];
+
+  const dragFromRef = useRef<number | null>(null);
+
+  function onDragStart(index: number): void {
+    dragFromRef.current = index;
+  }
+  function onDragOver(e: React.DragEvent): void {
+    // Default prevention is what tells the browser the drop target accepts.
+    e.preventDefault();
+  }
+  function onDrop(targetIndex: number): void {
+    const from = dragFromRef.current;
+    dragFromRef.current = null;
+    if (from === null || from === targetIndex) return;
+    const next = [...cards];
+    const [moved] = next.splice(from, 1);
+    if (!moved) return;
+    next.splice(targetIndex, 0, moved);
+    setDraft(next);
+    // Re-derive order from position. Persist as 0..N-1 so the public
+    // listing's `ORDER BY intake_card_order NULLS LAST` returns rows in
+    // exactly this sequence.
+    const items = next.map((c, i) => ({ userId: c.userId, order: i }));
+    reorderMut.mutate(items);
+  }
+
+  if (listQ.isLoading) {
+    return <div className="p-4 text-sm text-slate-500">Loading…</div>;
+  }
+  if (listQ.isError) {
+    return <div className="p-4 text-sm text-rose-600">Failed to load intake cards.</div>;
+  }
+  const optedIn = cards.filter((c) => c.showOnIntakeCard);
+
+  return (
+    <div className="p-4 max-w-3xl space-y-4">
+      <header>
+        <h2 className="font-semibold text-slate-900">Intake cards</h2>
+        <p className="text-sm text-slate-600">
+          Drag rows to set the order staff appear on the public{' '}
+          <code className="text-slate-700">/intake</code> page. Each staff member toggles their own
+          visibility from their Account page; admins can&apos;t flip the toggle for someone else
+          here.
+        </p>
+      </header>
+
+      {optedIn.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-900 text-sm rounded p-3">
+          No staff have opted in yet. Walk-up visitors to{' '}
+          <code className="text-amber-900">/intake</code> will see an empty-state message until at
+          least one staff toggles &quot;Show me on the public intake page&quot; on their Account
+          page.
+        </div>
+      )}
+
+      <table className="w-full text-sm border border-slate-200 rounded overflow-hidden">
+        <thead className="bg-slate-50">
+          <tr className="text-left text-slate-600">
+            <th className="p-2 w-8" aria-label="drag handle" />
+            <th className="p-2">Name</th>
+            <th className="p-2">Title</th>
+            <th className="p-2">Visible</th>
+            <th className="p-2">Order</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cards.map((c, i) => (
+            <tr
+              key={c.userId}
+              draggable
+              onDragStart={() => onDragStart(i)}
+              onDragOver={onDragOver}
+              onDrop={() => onDrop(i)}
+              className="border-t border-slate-100 hover:bg-slate-50 cursor-move"
+            >
+              <td className="p-2 text-slate-400" aria-hidden="true">
+                ⋮⋮
+              </td>
+              <td className="p-2 text-slate-900">
+                <div className="flex items-center gap-2">
+                  {c.headshotUrl && (
+                    <img
+                      src={appUrl(c.headshotUrl)}
+                      alt=""
+                      className="w-6 h-6 rounded-full object-cover"
+                    />
+                  )}
+                  <span>{c.displayName}</span>
+                  {c.isAdmin && (
+                    <span className="text-[10px] uppercase tracking-wide text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                      admin
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className="p-2 text-slate-600">{c.title ?? <span className="text-slate-400">—</span>}</td>
+              <td className="p-2">
+                {c.showOnIntakeCard ? (
+                  <span className="text-emerald-700">on</span>
+                ) : (
+                  <span className="text-slate-400">off</span>
+                )}
+              </td>
+              <td className="p-2 text-slate-500 font-mono text-xs">{c.order ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {reorderMut.isPending && <div className="text-xs text-slate-500">Saving order…</div>}
+      {reorderMut.isError && (
+        <div className="text-xs text-rose-600">
+          Save failed: {String(reorderMut.error)}. Refresh to re-sync.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 28.11 — Staff received-uploads view.
+ *
+ * Three surfaces: filterable list (staff sees own; admin sees all),
+ * detail drawer (decryption-on-view audit fires server-side on every
+ * open), link-to-Connect-client modal.
+ *
+ * Deferred to 28.17 polish: inline preview iframes,
+ * mark-as-read state. Bulk-zip streaming download ships as the
+ * `bulkZipMut` below (QA-followup). The build-plan acceptance criteria
+ * here are RBAC + decrypt-on-view audit + per-file download + link/unlink.
+ */
+function AdminIntakeSessions(): JSX.Element {
+  const qc = useQueryClient();
+  const [status, setStatus] = useState<'' | 'open' | 'finalized' | 'expired' | 'abandoned'>('');
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const [staffFilter, setStaffFilter] = useState<string>('');
+  const [page, setPage] = useState(1);
+  const [openDetailId, setOpenDetailId] = useState<string | null>(null);
+  const [searchQ, setSearchQ] = useState('');
+  const [searchResults, setSearchResults] = useState<
+    | { id: string; staffId: string; status: string; createdAt: string }[]
+    | null
+  >(null);
+  // Phase 28.11 (QA-followup): bulk-zip selection state. Stored as a
+  // Set in component state — cleared on every filter change so a stale
+  // selection from a different page can't accidentally bulk-export
+  // the wrong sessions.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    // Reset selection on any filter / page change.
+    setSelected(new Set());
+  }, [status, includeArchived, staffFilter, page]);
+
+  const listQ = useQuery({
+    queryKey: ['admin', 'intake', 'sessions', { status, includeArchived, staffFilter, page }],
+    queryFn: () =>
+      api.listAdminIntakeSessions({
+        page,
+        pageSize: 50,
+        status: status || undefined,
+        staffId: staffFilter || undefined,
+        includeArchived,
+      }),
+    staleTime: 15_000,
+  });
+
+  const archiveMut = useMutation({
+    mutationFn: (id: string) => api.archiveIntakeSession(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'intake', 'sessions'] }),
+  });
+
+  async function runSearch(): Promise<void> {
+    if (!searchQ.trim()) {
+      setSearchResults(null);
+      return;
+    }
+    try {
+      const r = await api.searchAdminIntakeSessions(searchQ.trim());
+      setSearchResults(r.sessions);
+    } catch {
+      setSearchResults([]);
+    }
+  }
+
+  const visibleSessions = searchResults
+    ? listQ.data?.sessions.filter((s) => searchResults.some((r) => r.id === s.id)) ?? []
+    : listQ.data?.sessions ?? [];
+
+  return (
+    <div className="p-4 max-w-6xl space-y-4">
+      <header className="space-y-1">
+        <h2 className="font-semibold text-slate-900">Intake received</h2>
+        <p className="text-sm text-slate-600">
+          Walk-up document submissions through the public intake page. Decrypting client info
+          here writes an audit row on every open.
+        </p>
+      </header>
+
+      <div className="flex flex-wrap gap-2 items-center text-sm">
+        <input
+          type="text"
+          placeholder="Search by name, email, or phone…"
+          value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void runSearch();
+          }}
+          className="input max-w-xs"
+        />
+        <button type="button" onClick={() => void runSearch()} className="btn-secondary text-xs">
+          Search
+        </button>
+        {searchResults !== null && (
+          <button
+            type="button"
+            onClick={() => {
+              setSearchResults(null);
+              setSearchQ('');
+            }}
+            className="text-xs text-slate-500 hover:text-slate-700"
+          >
+            Clear
+          </button>
+        )}
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value as typeof status)}
+          className="input max-w-[10rem]"
+          aria-label="Status filter"
+        >
+          <option value="">All statuses</option>
+          <option value="open">Open</option>
+          <option value="finalized">Finalized</option>
+          <option value="expired">Expired</option>
+          <option value="abandoned">Abandoned</option>
+        </select>
+        <input
+          type="text"
+          placeholder="Filter by staff id (admin)"
+          value={staffFilter}
+          onChange={(e) => setStaffFilter(e.target.value)}
+          className="input max-w-[20rem]"
+          aria-label="Filter by staff id"
+        />
+        <label className="text-xs text-slate-600 inline-flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={includeArchived}
+            onChange={(e) => setIncludeArchived(e.target.checked)}
+          />
+          Include archived
+        </label>
+      </div>
+
+      {/* Phase 28.11 (QA-followup) bulk-zip toolbar — visible once the
+          user has selected at least one row. The download itself is a
+          POST that the browser navigates via a hidden form, so the
+          response can stream a binary blob without going through the
+          fetch JSON pipeline. */}
+      {selected.size > 0 && (
+        <div className="flex items-center gap-3 bg-brand-50 border border-brand-200 rounded px-3 py-2 text-sm">
+          <span className="text-brand-900">
+            <strong>{selected.size}</strong> selected
+          </span>
+          <button
+            type="button"
+            className="btn-primary text-xs"
+            onClick={() => {
+              // Submit a real form so the browser handles the binary
+              // response. tanstack-query / fetch JSON helpers would
+              // try to .json() the body and fail.
+              const form = document.createElement('form');
+              form.method = 'POST';
+              form.action = api.bulkZipIntakeSessionsUrl();
+              form.enctype = 'application/json';
+              // The server route accepts a JSON body; for that we use
+              // a fetch + Blob download dance instead of a form POST.
+              void (async () => {
+                const res = await fetch(api.bulkZipIntakeSessionsUrl(), {
+                  method: 'POST',
+                  credentials: 'include',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ sessionIds: Array.from(selected) }),
+                });
+                if (!res.ok) {
+                  alert(`Bulk download failed: ${res.status}`);
+                  return;
+                }
+                const blob = await res.blob();
+                const url2 = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url2;
+                a.download = `intake-bulk-${new Date().toISOString().slice(0, 10)}.zip`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url2);
+              })();
+            }}
+          >
+            Download {selected.size} as zip
+          </button>
+          <button
+            type="button"
+            className="text-xs text-slate-500 hover:text-slate-800"
+            onClick={() => setSelected(new Set())}
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
+      {listQ.isLoading ? (
+        <div className="text-sm text-slate-500">Loading…</div>
+      ) : listQ.isError ? (
+        <div className="text-sm text-rose-600">Failed to load intake sessions.</div>
+      ) : visibleSessions.length === 0 ? (
+        <div className="text-sm text-slate-500 italic">
+          {searchResults !== null ? 'No sessions match your search.' : 'No intake sessions yet.'}
+        </div>
+      ) : (
+        <table className="w-full text-sm border border-slate-200 rounded overflow-hidden">
+          <thead className="bg-slate-50">
+            <tr className="text-left text-slate-600">
+              <th className="p-2 w-8">
+                <input
+                  type="checkbox"
+                  checked={
+                    visibleSessions.length > 0 &&
+                    visibleSessions.every((s) => selected.has(s.id))
+                  }
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelected(new Set(visibleSessions.map((s) => s.id)));
+                    } else {
+                      setSelected(new Set());
+                    }
+                  }}
+                  aria-label="Select all visible sessions"
+                />
+              </th>
+              <th className="p-2">Received</th>
+              <th className="p-2">Staff</th>
+              <th className="p-2">Status</th>
+              <th className="p-2">Files</th>
+              <th className="p-2">Size</th>
+              <th className="p-2">Expires</th>
+              <th className="p-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleSessions.map((s) => (
+              <tr
+                key={s.id}
+                className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                onClick={() => setOpenDetailId(s.id)}
+              >
+                <td className="p-2" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(s.id)}
+                    onChange={(e) => {
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(s.id);
+                        else next.delete(s.id);
+                        return next;
+                      });
+                    }}
+                    aria-label={`Select session ${s.id.slice(0, 8)}`}
+                  />
+                </td>
+                <td className="p-2 text-slate-700">
+                  {new Date(s.createdAt).toLocaleString()}
+                  {s.linkedConnectClientId && (
+                    <span className="ml-2 text-[10px] uppercase text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                      linked
+                    </span>
+                  )}
+                  {s.archivedAt && (
+                    <span className="ml-2 text-[10px] uppercase text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                      archived
+                    </span>
+                  )}
+                  {s.notificationFailed && (
+                    <span className="ml-2 text-[10px] uppercase text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                      notify failed
+                    </span>
+                  )}
+                </td>
+                <td className="p-2 text-slate-600">{s.staffDisplayName ?? '—'}</td>
+                <td className="p-2">
+                  <IntakeStatusPill status={s.status} />
+                </td>
+                <td className="p-2 text-slate-600">{s.fileCount}</td>
+                <td className="p-2 text-slate-600">{formatIntakeBytes(s.totalBytes)}</td>
+                <td className="p-2 text-slate-600 text-xs">
+                  <IntakeExpiresCell autoDeleteAt={s.autoDeleteAt} />
+                </td>
+                <td className="p-2 text-right">
+                  <button
+                    type="button"
+                    className="text-xs text-slate-500 hover:text-rose-600"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      archiveMut.mutate(s.id);
+                    }}
+                  >
+                    {s.archivedAt ? 'Unarchive' : 'Archive'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {listQ.data && listQ.data.total > listQ.data.pageSize && searchResults === null && (
+        <div className="flex items-center gap-3 text-sm">
+          <button
+            type="button"
+            disabled={page <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            className="btn-secondary text-xs"
+          >
+            ← Prev
+          </button>
+          <span className="text-slate-600">
+            Page {page} of {Math.ceil(listQ.data.total / listQ.data.pageSize)}
+          </span>
+          <button
+            type="button"
+            disabled={page * listQ.data.pageSize >= listQ.data.total}
+            onClick={() => setPage((p) => p + 1)}
+            className="btn-secondary text-xs"
+          >
+            Next →
+          </button>
+        </div>
+      )}
+
+      {openDetailId && (
+        <AdminIntakeDetail
+          sessionId={openDetailId}
+          onClose={() => setOpenDetailId(null)}
+          onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'intake', 'sessions'] })}
+        />
+      )}
+    </div>
+  );
+}
+
+function IntakeStatusPill({ status }: { status: string }): JSX.Element {
+  const cls =
+    status === 'finalized'
+      ? 'bg-emerald-50 text-emerald-700'
+      : status === 'open'
+        ? 'bg-blue-50 text-blue-700'
+        : 'bg-slate-100 text-slate-600';
+  return <span className={`text-xs px-2 py-0.5 rounded ${cls}`}>{status}</span>;
+}
+
+function formatIntakeBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/**
+ * Phase 28.15 — "Expires" column renderer for the intake sessions list.
+ * Shows the date when `autoDeleteAt` is set, an em-dash when not, and a
+ * "soon" warning chip when within 7 days of purge.
+ */
+function IntakeExpiresCell({ autoDeleteAt }: { autoDeleteAt: string | null }): JSX.Element {
+  if (!autoDeleteAt) return <span className="text-slate-400">—</span>;
+  const t = new Date(autoDeleteAt).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const delta = t - Date.now();
+  // Past-due: the auto-purge ticker hasn't claimed this row yet (next
+  // sweep will). Distinct visual treatment so admins notice a stuck
+  // session, separate from the "soon" warning for upcoming purges.
+  const overdue = delta < 0;
+  // 7-day soon-window: strictly future but within a week. Negative
+  // deltas (past dates) fall into the `overdue` branch above, not here.
+  const inSevenDays = delta >= 0 && delta < 7 * dayMs;
+  const cls = overdue
+    ? 'text-rose-700 font-medium'
+    : inSevenDays
+      ? 'text-amber-700 font-medium'
+      : 'text-slate-600';
+  return (
+    <span className={cls}>
+      {new Date(autoDeleteAt).toLocaleDateString()}
+      {overdue && (
+        <span
+          className="ml-1 text-[10px] uppercase text-rose-800 bg-rose-100 px-1 py-0.5 rounded"
+          title="Auto-delete time has passed — next sweep will purge"
+        >
+          overdue
+        </span>
+      )}
+      {inSevenDays && (
+        <span
+          className="ml-1 text-[10px] uppercase text-amber-800 bg-amber-100 px-1 py-0.5 rounded"
+          title="Within 7 days of auto-delete"
+        >
+          soon
+        </span>
+      )}
+    </span>
+  );
+}
+
+function AdminIntakeDetail({
+  sessionId,
+  onClose,
+  onChanged,
+}: {
+  sessionId: string;
+  onClose: () => void;
+  onChanged: () => void;
+}): JSX.Element {
+  const qc = useQueryClient();
+  const detailQ = useQuery({
+    queryKey: ['admin', 'intake', 'session', sessionId],
+    queryFn: () => api.getAdminIntakeSession(sessionId),
+  });
+  const [showLinkModal, setShowLinkModal] = useState(false);
+
+  const linkMut = useMutation({
+    mutationFn: (clientId: string) => api.linkIntakeSessionClient(sessionId, clientId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'session', sessionId] });
+      onChanged();
+      setShowLinkModal(false);
+    },
+  });
+  const unlinkMut = useMutation({
+    mutationFn: () => api.unlinkIntakeSessionClient(sessionId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'session', sessionId] });
+      onChanged();
+    },
+  });
+  // Phase 28.15 — admin-only "keep indefinitely" / "revert to firm policy"
+  // toggles. The server enforces RBAC; staff who can see this surface but
+  // aren't admin will hit a 403 which surfaces as a mutation error.
+  const keepIndefMut = useMutation({
+    mutationFn: () => api.keepIntakeSessionIndefinitely(sessionId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'session', sessionId] });
+      onChanged();
+    },
+  });
+  const revertRetentionMut = useMutation({
+    mutationFn: () => api.revertIntakeSessionRetention(sessionId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'session', sessionId] });
+      onChanged();
+    },
+  });
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-40 bg-black/30 flex justify-end"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl bg-white h-full overflow-y-auto shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between p-4 border-b border-slate-200">
+          <h3 className="font-semibold text-slate-900">Intake session</h3>
+          <button type="button" onClick={onClose} className="btn-secondary text-xs">
+            Close
+          </button>
+        </div>
+
+        {detailQ.isLoading ? (
+          <div className="p-4 text-sm text-slate-500">Loading…</div>
+        ) : detailQ.isError || !detailQ.data ? (
+          <div className="p-4 text-sm text-rose-600">Failed to load this session.</div>
+        ) : (
+          <div className="p-4 space-y-5 text-sm">
+            <section className="space-y-2">
+              <h4 className="font-medium text-slate-900">Client</h4>
+              <dl className="grid grid-cols-3 gap-2 text-xs">
+                <dt className="text-slate-500">Name</dt>
+                <dd className="col-span-2">{detailQ.data.session.clientName ?? '(unavailable)'}</dd>
+                <dt className="text-slate-500">Email</dt>
+                <dd className="col-span-2">{detailQ.data.session.clientEmail ?? '—'}</dd>
+                <dt className="text-slate-500">Phone</dt>
+                <dd className="col-span-2">{detailQ.data.session.clientPhone ?? '—'}</dd>
+              </dl>
+            </section>
+            <section className="space-y-2">
+              <h4 className="font-medium text-slate-900">Linked Connect client</h4>
+              {detailQ.data.session.linkedClient ? (
+                <div className="flex items-center justify-between">
+                  <span>{detailQ.data.session.linkedClient.displayName}</span>
+                  <button
+                    type="button"
+                    onClick={() => unlinkMut.mutate()}
+                    className="text-xs text-rose-600 hover:text-rose-700"
+                  >
+                    Unlink
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowLinkModal(true)}
+                  className="btn-secondary text-xs"
+                >
+                  Link to a client
+                </button>
+              )}
+            </section>
+            <section className="space-y-2">
+              <h4 className="font-medium text-slate-900">
+                Files ({detailQ.data.files.length})
+              </h4>
+              <ul className="space-y-1">
+                {detailQ.data.files.map((f) => (
+                  <li
+                    key={f.id}
+                    className="flex items-center justify-between border border-slate-100 rounded p-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-slate-900">{f.originalFilename}</div>
+                      <div className="text-xs text-slate-500">
+                        {f.kind === 'scanned_image' ? 'Scanned image' : 'File'} ·{' '}
+                        {formatIntakeBytes(f.sizeBytes)}
+                      </div>
+                    </div>
+                    <a
+                      href={appUrl(`/admin/intake/sessions/${sessionId}/files/${f.id}`)}
+                      className="text-xs text-brand-700 hover:text-brand-800"
+                      download
+                    >
+                      Download
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+            {/* Phase 28.15 — retention status + admin override. */}
+            <section className="space-y-2">
+              <h4 className="font-medium text-slate-900">Retention</h4>
+              {detailQ.data.session.autoDeleteAt ? (
+                <>
+                  <div className="text-xs text-slate-600">
+                    Auto-delete on{' '}
+                    <strong>
+                      {new Date(detailQ.data.session.autoDeleteAt).toLocaleString()}
+                    </strong>{' '}
+                    per firm policy.
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary text-xs"
+                    onClick={() => keepIndefMut.mutate()}
+                    disabled={keepIndefMut.isPending}
+                  >
+                    {keepIndefMut.isPending ? 'Saving…' : 'Keep this session indefinitely'}
+                  </button>
+                  {keepIndefMut.isError && (
+                    <div className="text-xs text-rose-600" role="alert">
+                      Couldn&apos;t save:{' '}
+                      {keepIndefMut.error instanceof Error
+                        ? keepIndefMut.error.message
+                        : 'request failed'}
+                      . Admin role required.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="text-xs text-slate-600">
+                    Kept indefinitely — auto-delete is disabled for this session.
+                  </div>
+                  {detailQ.data.session.status === 'finalized' && (
+                    <button
+                      type="button"
+                      className="btn-secondary text-xs"
+                      onClick={() => revertRetentionMut.mutate()}
+                      disabled={revertRetentionMut.isPending}
+                    >
+                      {revertRetentionMut.isPending ? 'Saving…' : 'Revert to firm policy'}
+                    </button>
+                  )}
+                  {revertRetentionMut.isError && (
+                    <div className="text-xs text-rose-600" role="alert">
+                      Couldn&apos;t save:{' '}
+                      {revertRetentionMut.error instanceof Error
+                        ? revertRetentionMut.error.message
+                        : 'request failed'}
+                      . Admin role required.
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+            {detailQ.data.pdf && (
+              <section className="space-y-2">
+                <h4 className="font-medium text-slate-900">Assembled PDF</h4>
+                <div className="text-xs text-slate-600">
+                  Status: <strong>{detailQ.data.pdf.status}</strong>
+                  {detailQ.data.pdf.pageCount !== null && ` · ${detailQ.data.pdf.pageCount} pages`}
+                  {detailQ.data.pdf.sizeBytes !== null &&
+                    ` · ${formatIntakeBytes(detailQ.data.pdf.sizeBytes)}`}
+                </div>
+                {detailQ.data.pdf.status === 'done' && (
+                  <a
+                    href={appUrl(`/admin/intake/sessions/${sessionId}/pdf`)}
+                    className="btn-primary text-xs inline-block"
+                    download
+                  >
+                    Download PDF
+                  </a>
+                )}
+                {detailQ.data.pdf.status === 'failed' && detailQ.data.pdf.errorMessage && (
+                  <div className="text-xs text-rose-600">{detailQ.data.pdf.errorMessage}</div>
+                )}
+              </section>
+            )}
+          </div>
+        )}
+
+        {showLinkModal && (
+          <LinkClientModal
+            onClose={() => setShowLinkModal(false)}
+            onChoose={(clientId) => linkMut.mutate(clientId)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LinkClientModal({
+  onClose,
+  onChoose,
+}: {
+  onClose: () => void;
+  onChoose: (clientId: string) => void;
+}): JSX.Element {
+  const [q, setQ] = useState('');
+  const searchQ = useQuery({
+    queryKey: ['admin', 'intake', 'client-search', q],
+    queryFn: () => api.searchAdminIntakeClients(q),
+    staleTime: 30_000,
+  });
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-lg shadow max-w-md w-full p-5 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="font-semibold text-slate-900">Link to a client</h3>
+        <input
+          type="text"
+          placeholder="Search by name or email…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          className="input"
+          autoFocus
+        />
+        {searchQ.isLoading ? (
+          <div className="text-sm text-slate-500">Loading…</div>
+        ) : (
+          <ul className="max-h-72 overflow-y-auto space-y-1">
+            {(searchQ.data?.clients ?? []).map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => onChoose(c.id)}
+                  className="w-full text-left px-3 py-2 rounded border border-slate-200 hover:border-brand-500 hover:bg-brand-50"
+                >
+                  <div className="text-sm font-medium text-slate-900">{c.displayName}</div>
+                  {c.email && <div className="text-xs text-slate-500">{c.email}</div>}
+                </button>
+              </li>
+            ))}
+            {searchQ.data && searchQ.data.clients.length === 0 && (
+              <li className="text-sm text-slate-500 italic">No matching clients.</li>
+            )}
+          </ul>
+        )}
+        <div className="flex justify-end">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phase 28.13 — Send-a-link generator.
+ *
+ * Two panes:
+ *   - Create form: contact (email/phone, at least one), expiration preset,
+ *     optional note. Submits POST /admin/intake/links and shows the
+ *     resulting URL + per-channel send status.
+ *   - List with active/expired/revoked/all filter. Per-row revoke + resend.
+ */
+function AdminIntakeLinks(): JSX.Element {
+  const qc = useQueryClient();
+  const [filter, setFilter] = useState<'active' | 'expired' | 'revoked' | 'all'>('active');
+  const listQ = useQuery({
+    queryKey: ['admin', 'intake', 'links', filter],
+    queryFn: () => api.listIntakeLinks({ filter }),
+    staleTime: 15_000,
+  });
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createdLink, setCreatedLink] = useState<
+    | { url: string; expiresAt: string; send: { email: boolean; sms: boolean }; sendError: string | null }
+    | null
+  >(null);
+
+  const createMut = useMutation({
+    mutationFn: (body: {
+      email?: string;
+      phone?: string;
+      expiresIn?: '24h' | '7d' | '30d' | string;
+      note?: string;
+    }) => api.createIntakeLink(body),
+    onSuccess: (data) => {
+      setCreatedLink({
+        url: data.link.url,
+        expiresAt: data.link.expiresAt,
+        send: data.link.send,
+        sendError: data.link.sendError,
+      });
+      void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'links'] });
+    },
+  });
+  const revokeMut = useMutation({
+    mutationFn: (id: string) => api.revokeIntakeLink(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'links'] }),
+  });
+  const resendMut = useMutation({
+    mutationFn: (id: string) => api.resendIntakeLink(id),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['admin', 'intake', 'links'] }),
+  });
+
+  return (
+    <div className="p-4 max-w-6xl space-y-4">
+      <header className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold text-slate-900">Intake links</h2>
+          <p className="text-sm text-slate-600">
+            Send a tokenized intake URL bound to a specific client contact.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => {
+            setCreatedLink(null);
+            setCreateOpen(true);
+          }}
+        >
+          + New link
+        </button>
+      </header>
+
+      <div className="flex flex-wrap gap-2 text-sm">
+        {(['active', 'expired', 'revoked', 'all'] as const).map((f) => (
+          <button
+            key={f}
+            type="button"
+            onClick={() => setFilter(f)}
+            className={clsx(
+              'px-3 py-1 rounded',
+              filter === f
+                ? 'bg-slate-900 text-white'
+                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50',
+            )}
+          >
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      {createdLink && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded p-3 text-sm space-y-2">
+          <div className="font-medium text-emerald-900">Link created</div>
+          <div className="break-all">
+            <code className="text-xs">{createdLink.url}</code>
+          </div>
+          <div className="text-xs text-slate-700">
+            Sent: {createdLink.send.email && 'email '}
+            {createdLink.send.sms && 'SMS'}
+            {!createdLink.send.email && !createdLink.send.sms && '(nothing — no channel)'}
+            {createdLink.sendError && (
+              <span className="text-rose-700 ml-2">(send error: {createdLink.sendError})</span>
+            )}
+          </div>
+          <div className="text-xs text-slate-600">
+            Expires {new Date(createdLink.expiresAt).toLocaleString()}
+          </div>
+        </div>
+      )}
+
+      {listQ.isLoading ? (
+        <div className="text-sm text-slate-500">Loading…</div>
+      ) : listQ.isError ? (
+        <div className="text-sm text-rose-600">Failed to load.</div>
+      ) : !listQ.data || listQ.data.links.length === 0 ? (
+        <div className="text-sm text-slate-500 italic">No links in this view.</div>
+      ) : (
+        <table className="w-full text-sm border border-slate-200 rounded overflow-hidden">
+          <thead className="bg-slate-50">
+            <tr className="text-left text-slate-600">
+              <th className="p-2">Contact</th>
+              <th className="p-2">Assigned</th>
+              <th className="p-2">Expires</th>
+              <th className="p-2">Uses</th>
+              <th className="p-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {listQ.data.links.map((l) => (
+              <tr key={l.id} className="border-t border-slate-100 hover:bg-slate-50">
+                <td className="p-2">
+                  {l.email && <div className="text-slate-900">{l.email}</div>}
+                  {l.phone && <div className="text-slate-600 text-xs">{l.phone}</div>}
+                  {l.note && (
+                    <div
+                      className="text-xs text-slate-500 truncate max-w-[20rem]"
+                      title={l.note}
+                    >
+                      Note: {l.note}
+                    </div>
+                  )}
+                </td>
+                <td className="p-2 text-slate-600">{l.assignedStaffName ?? '—'}</td>
+                <td className="p-2 text-slate-600">
+                  {l.revokedAt ? (
+                    <span className="text-rose-700">revoked</span>
+                  ) : new Date(l.expiresAt).getTime() < Date.now() ? (
+                    <span className="text-slate-500">expired</span>
+                  ) : (
+                    new Date(l.expiresAt).toLocaleString()
+                  )}
+                </td>
+                <td className="p-2 text-slate-600">{l.useCount}</td>
+                <td className="p-2 text-right">
+                  <button
+                    type="button"
+                    className="text-xs text-slate-700 hover:text-slate-900 mr-2"
+                    onClick={() => navigator.clipboard?.writeText(l.url)}
+                  >
+                    Copy URL
+                  </button>
+                  {!l.revokedAt && new Date(l.expiresAt).getTime() > Date.now() && (
+                    <button
+                      type="button"
+                      className="text-xs text-brand-700 hover:text-brand-800 mr-2"
+                      onClick={() => resendMut.mutate(l.id)}
+                      disabled={resendMut.isPending}
+                    >
+                      Resend
+                    </button>
+                  )}
+                  {!l.revokedAt && (
+                    <button
+                      type="button"
+                      className="text-xs text-rose-600 hover:text-rose-700"
+                      onClick={() => revokeMut.mutate(l.id)}
+                      disabled={revokeMut.isPending}
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {createOpen && (
+        <CreateLinkModal
+          onClose={() => setCreateOpen(false)}
+          onSubmit={(body) => {
+            createMut.mutate(body);
+            setCreateOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateLinkModal({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void;
+  onSubmit: (body: {
+    email?: string;
+    phone?: string;
+    expiresIn?: '24h' | '7d' | '30d';
+    note?: string;
+  }) => void;
+}): JSX.Element {
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [expiresIn, setExpiresIn] = useState<'24h' | '7d' | '30d'>('7d');
+  const [note, setNote] = useState('');
+  const canSubmit = email.trim().length > 0 || phone.trim().length > 0;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow max-w-md w-full p-5 space-y-3"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="font-semibold text-slate-900">Send a new intake link</h3>
+        <label className="block">
+          <span className="text-sm text-slate-700">Email</span>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="input"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-slate-700">Phone</span>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="+1 555 123 4567"
+            className="input"
+          />
+        </label>
+        <label className="block">
+          <span className="text-sm text-slate-700">Expires</span>
+          <select
+            value={expiresIn}
+            onChange={(e) => setExpiresIn(e.target.value as typeof expiresIn)}
+            className="input"
+          >
+            <option value="24h">in 24 hours</option>
+            <option value="7d">in 7 days</option>
+            <option value="30d">in 30 days</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-sm text-slate-700">
+            Note <span className="text-slate-400">(optional, 500 chars)</span>
+          </span>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value.slice(0, 500))}
+            rows={3}
+            className="input"
+          />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={!canSubmit}
+            onClick={() =>
+              onSubmit({
+                email: email.trim() || undefined,
+                phone: phone.trim() || undefined,
+                expiresIn,
+                note: note.trim() || undefined,
+              })
+            }
+          >
+            Create &amp; send
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Phase 28.15 — Intake settings (admin-only).
+//
+// Firm-wide knobs for the intake feature: retention policy, channel
+// selection, size caps, conversion concurrency, cover page, digest hour,
+// maintenance mode. PATCH is debounced via onBlur so a numeric field
+// doesn't fire a request per keystroke. RBAC is enforced server-side;
+// the page surfaces the 403 if a non-admin somehow reaches this route.
+// =============================================================================
+
+function AdminIntakeSettings(): JSX.Element {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ['admin', 'intake-settings'],
+    queryFn: () => api.getIntakeSettings().then((r) => r.settings),
+    retry: false,
+  });
+  const mut = useMutation({
+    mutationFn: (
+      patch: Partial<{
+        intake_auto_delete_enabled: boolean;
+        intake_auto_delete_after_days: number;
+        intake_send_to_both_channels: boolean;
+        intake_max_file_bytes: number;
+        intake_max_session_bytes: number;
+        intake_conversion_concurrency: number;
+        intake_include_cover_page: boolean;
+        intake_digest_hour_local: number;
+        intake_maintenance_mode: boolean;
+      }>,
+    ) => api.updateIntakeSettings(patch),
+    onSuccess: (r) => qc.setQueryData(['admin', 'intake-settings'], r.settings),
+  });
+
+  if (q.isLoading) return <div className="p-4 text-sm text-slate-500">Loading…</div>;
+  if (q.isError || !q.data) {
+    return (
+      <div className="p-4 max-w-lg">
+        <div className="rounded-md border border-rose-200 bg-rose-50 text-rose-900 text-sm p-3">
+          Failed to load intake settings. This page is admin-only — if you&apos;re not an admin,
+          ask one to make these changes.
+        </div>
+      </div>
+    );
+  }
+  const s = q.data;
+
+  return (
+    <div className="p-4 max-w-2xl space-y-6">
+      <header>
+        <h2 className="font-semibold text-slate-900">Intake settings</h2>
+        <p className="text-sm text-slate-600">Firm-wide configuration for the public intake feature.</p>
+      </header>
+
+      {s.intake_maintenance_mode && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 text-amber-900 text-xs px-3 py-2">
+          Maintenance mode is <strong>on</strong>. Public intake routes return 503 to walk-up
+          visitors. Turn this off below to resume accepting submissions.
+        </div>
+      )}
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-slate-900">Retention</h3>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={s.intake_auto_delete_enabled}
+            onChange={(e) => mut.mutate({ intake_auto_delete_enabled: e.target.checked })}
+          />
+          Automatically delete finalized intake sessions after a fixed time.
+        </label>
+        <NumericSetting
+          label="Delete after (days)"
+          value={s.intake_auto_delete_after_days}
+          min={30}
+          max={3650}
+          disabled={!s.intake_auto_delete_enabled}
+          help="Range: 30–3650. Audit log entries are preserved even after a session is purged."
+          onCommit={(n) => mut.mutate({ intake_auto_delete_after_days: n })}
+        />
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-slate-900">Notifications</h3>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={s.intake_send_to_both_channels}
+            onChange={(e) => mut.mutate({ intake_send_to_both_channels: e.target.checked })}
+          />
+          When a client provides both email and SMS, send receipt on both channels.
+        </label>
+        <NumericSetting
+          label="Staff daily-digest hour (local time, 0–23)"
+          value={s.intake_digest_hour_local}
+          min={0}
+          max={23}
+          onCommit={(n) => mut.mutate({ intake_digest_hour_local: n })}
+        />
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-slate-900">PDF assembly</h3>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={s.intake_include_cover_page}
+            onChange={(e) => mut.mutate({ intake_include_cover_page: e.target.checked })}
+          />
+          Prepend a cover page with the client&apos;s contact info to assembled PDFs.
+        </label>
+        <NumericSetting
+          label="Concurrent conversion workers (1–16)"
+          value={s.intake_conversion_concurrency}
+          min={1}
+          max={16}
+          onCommit={(n) => mut.mutate({ intake_conversion_concurrency: n })}
+        />
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-slate-900">Size limits</h3>
+        <NumericSetting
+          label="Per-file cap (MB)"
+          value={Math.round(s.intake_max_file_bytes / (1024 * 1024))}
+          min={1}
+          max={5120}
+          onCommit={(mb) => mut.mutate({ intake_max_file_bytes: mb * 1024 * 1024 })}
+        />
+        <NumericSetting
+          label="Per-session cap (MB)"
+          value={Math.round(s.intake_max_session_bytes / (1024 * 1024))}
+          min={1}
+          max={51200}
+          onCommit={(mb) => mut.mutate({ intake_max_session_bytes: mb * 1024 * 1024 })}
+        />
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-slate-900">Maintenance</h3>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            checked={s.intake_maintenance_mode}
+            onChange={(e) => mut.mutate({ intake_maintenance_mode: e.target.checked })}
+          />
+          Maintenance mode (public intake routes return 503 — useful during a 28.16 key rotation).
+        </label>
+      </section>
+
+      {mut.isError && (
+        <div className="text-xs text-rose-600">
+          Failed to save: {mut.error instanceof Error ? mut.error.message : 'unknown error'}.
+          Refresh and try again.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Controlled numeric input with snap-back on invalid blur, error surface,
+ * and server-value reseeding via the useEffect-on-value pattern. Used by
+ * AdminIntakeSettings so a successful PATCH that adjusts the server-side
+ * value re-renders the input correctly, and an empty/out-of-range input
+ * snaps back rather than silently no-opping.
+ */
+function NumericSetting({
+  label,
+  value,
+  min,
+  max,
+  disabled,
+  help,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  disabled?: boolean;
+  help?: string;
+  onCommit: (n: number) => void;
+}): JSX.Element {
+  // Local input state — string so empty/intermediate values during typing
+  // don't snap back. Reseed when the server value changes (after a PATCH).
+  const [draft, setDraft] = useState(String(value));
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => {
+    setDraft(String(value));
+    setInvalid(false);
+  }, [value]);
+  return (
+    <label className="block">
+      <span className="text-sm text-slate-700">{label}</span>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={draft}
+        disabled={disabled}
+        aria-invalid={invalid}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          const n = Number(draft);
+          if (!Number.isFinite(n) || n < min || n > max) {
+            // Snap back to the server-confirmed value + flag the input so
+            // the user knows their last keystroke was rejected.
+            setDraft(String(value));
+            setInvalid(true);
+            return;
+          }
+          setInvalid(false);
+          if (n !== value) onCommit(n);
+        }}
+        className={clsx(
+          'mt-1 w-32 rounded-md border px-3 py-2 text-sm',
+          invalid ? 'border-rose-400' : 'border-slate-300',
+        )}
+      />
+      {invalid && (
+        <p className="text-xs text-rose-600 mt-1">
+          Enter a value between {min} and {max}.
+        </p>
+      )}
+      {help && <p className="text-xs text-slate-500 mt-1">{help}</p>}
+    </label>
+  );
+}
+
+// =============================================================================
+// Phase 28.17 — Intake audit viewer (admin-only).
+//
+// Filtered view over the global `audit_log` table with `action LIKE 'intake.%'`
+// applied at the server. Reuses the existing `/admin/audit` endpoint's
+// wildcard-suffix support (action="intake.*"). A second select drills
+// down to one specific event (e.g. `intake.session.created`); the date
+// range and CSV export work the same as the general audit page.
+// =============================================================================
+
+const INTAKE_AUDIT_ACTIONS = [
+  { value: 'intake.*', label: 'All intake events' },
+  { value: 'intake.session.created', label: 'Session created' },
+  { value: 'intake.session.finalized', label: 'Session finalized' },
+  { value: 'intake.session.decrypted_on_view', label: 'Session viewed (PII decrypted)' },
+  { value: 'intake.session.client_linked', label: 'Linked to client' },
+  { value: 'intake.session.client_unlinked', label: 'Unlinked from client' },
+  { value: 'intake.session.archived', label: 'Session archived' },
+  { value: 'intake.session.unarchived', label: 'Session unarchived' },
+  { value: 'intake.session.auto_purged', label: 'Auto-purged (retention)' },
+  { value: 'intake.session.retention_overridden', label: 'Retention override toggled' },
+  { value: 'intake.file.downloaded', label: 'File downloaded' },
+  { value: 'intake.pdf.downloaded', label: 'PDF downloaded' },
+  { value: 'intake.link.created', label: 'Link created' },
+  { value: 'intake.link.sent', label: 'Link sent' },
+  { value: 'intake.link.send_failed', label: 'Link send failed' },
+  { value: 'intake.link.resent', label: 'Link re-sent' },
+  { value: 'intake.link.resend_failed', label: 'Link re-send failed' },
+  { value: 'intake.link.revoked', label: 'Link revoked' },
+  { value: 'intake.token.validated', label: 'Token validated (anonymous)' },
+  { value: 'intake.token.rejected', label: 'Token rejected (bad/expired/revoked)' },
+  { value: 'intake.settings.updated', label: 'Settings updated' },
+  { value: 'intake.maintenance.toggled', label: 'Maintenance mode toggled' },
+  { value: 'intake.key_rotation.dry_run', label: 'Key rotation dry-run' },
+  { value: 'intake.key_rotation.started', label: 'Key rotation started' },
+  { value: 'intake.key_rotation.paused', label: 'Key rotation paused' },
+  { value: 'intake.key_rotation.resumed', label: 'Key rotation resumed' },
+  { value: 'intake.key_rotation.completed', label: 'Key rotation completed' },
+  { value: 'intake.key_rotation.failed', label: 'Key rotation failed' },
+  { value: 'intake.client_notification.sent', label: 'Client notification sent' },
+  { value: 'intake.staff_notification.sent', label: 'Staff notification sent' },
+  { value: 'intake.client_notification.failed', label: 'Client notification failed' },
+  { value: 'intake.staff_notification.failed', label: 'Staff notification failed' },
+  { value: 'intake.pdf.conversion_failed', label: 'PDF conversion failed' },
+  { value: 'intake.card.updated', label: 'Staff card updated' },
+  { value: 'intake.card.headshot_updated', label: 'Staff headshot updated' },
+  { value: 'intake.card.order_changed', label: 'Staff card order changed' },
+] as const;
+
+const INTAKE_AUDIT_PAGE = 50;
+
+function AdminIntakeAudit(): JSX.Element {
+  const [offset, setOffset] = useState(0);
+  const [action, setAction] = useState<string>('intake.*');
+  const [since, setSince] = useState('');
+  const [until, setUntil] = useState('');
+  const q = useQuery({
+    queryKey: ['admin', 'intake-audit', offset, action, since, until],
+    queryFn: () => {
+      const p = new URLSearchParams({
+        offset: String(offset),
+        limit: String(INTAKE_AUDIT_PAGE),
+        action,
+      });
+      if (since) p.set('since', new Date(since).toISOString());
+      if (until) p.set('until', new Date(until).toISOString());
+      return json<{
+        hasMore: boolean;
+        limit: number;
+        offset: number;
+        rows: Array<{
+          id: string;
+          action: string;
+          targetType: string;
+          targetId: string | null;
+          createdAt: string;
+          actorUserId: string | null;
+          details: unknown;
+          ipAddress: string | null;
+        }>;
+      }>(`/admin/audit?${p.toString()}`);
+    },
+    placeholderData: (previous) => previous,
+  });
+  const rows = q.data?.rows ?? [];
+  const hasMore = q.data?.hasMore ?? false;
+
+  const exportHref = (() => {
+    const p = new URLSearchParams({ format: 'csv', action });
+    if (since) p.set('since', new Date(since).toISOString());
+    if (until) p.set('until', new Date(until).toISOString());
+    return `/admin/audit?${p.toString()}`;
+  })();
+
+  return (
+    <div className="p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="font-semibold text-slate-900">Intake audit log</h2>
+        <a
+          href={exportHref}
+          download
+          className="btn-ghost text-xs"
+          title="Download up to 10 000 matching rows as CSV"
+        >
+          Export CSV
+        </a>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 mb-3 text-xs text-slate-600">
+        <label className="flex items-center gap-2">
+          Event
+          <select
+            value={action}
+            onChange={(e) => {
+              setAction(e.target.value);
+              setOffset(0);
+            }}
+            className="rounded-md border border-slate-300 text-xs px-2 py-1"
+          >
+            {INTAKE_AUDIT_ACTIONS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          From
+          <input
+            type="datetime-local"
+            value={since}
+            onChange={(e) => {
+              setSince(e.target.value);
+              setOffset(0);
+            }}
+            className="rounded-md border border-slate-300 text-xs px-2 py-1"
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          To
+          <input
+            type="datetime-local"
+            value={until}
+            onChange={(e) => {
+              setUntil(e.target.value);
+              setOffset(0);
+            }}
+            className="rounded-md border border-slate-300 text-xs px-2 py-1"
+          />
+        </label>
+        {(since || until) && (
+          <button
+            type="button"
+            onClick={() => {
+              setSince('');
+              setUntil('');
+              setOffset(0);
+            }}
+            className="text-slate-500 hover:text-slate-800"
+          >
+            Clear range
+          </button>
+        )}
+      </div>
+      <table className="w-full text-xs bg-white rounded shadow-card">
+        <thead>
+          <tr className="text-left text-slate-500 border-b border-slate-200">
+            <th className="p-2">Time</th>
+            <th className="p-2">Action</th>
+            <th className="p-2">Actor</th>
+            <th className="p-2">Target</th>
+            <th className="p-2">IP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} className="border-b border-slate-100">
+              <td className="p-2 whitespace-nowrap">{new Date(r.createdAt).toLocaleString()}</td>
+              <td className="p-2 font-mono">{r.action}</td>
+              <td className="p-2 text-slate-600">{r.actorUserId?.slice(0, 8) ?? '—'}</td>
+              <td className="p-2 text-slate-600">
+                {r.targetType}
+                {r.targetId ? ' · ' + r.targetId.slice(0, 8) : ''}
+              </td>
+              <td className="p-2 text-slate-500 whitespace-nowrap">{r.ipAddress ?? '—'}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && !q.isLoading && (
+            <tr>
+              <td className="p-3 text-slate-500" colSpan={5}>
+                No audit rows match this filter.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <div className="flex items-center justify-between mt-3 text-xs text-slate-600">
+        <span>
+          Showing {offset + 1}–{offset + rows.length}
+          {q.isFetching && <span className="ml-2 text-slate-400">loading…</span>}
+        </span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setOffset((o) => Math.max(0, o - INTAKE_AUDIT_PAGE))}
+            disabled={offset === 0 || q.isFetching}
+            className="btn-ghost"
+          >
+            ‹ Previous
+          </button>
+          <button
+            type="button"
+            onClick={() => setOffset((o) => o + INTAKE_AUDIT_PAGE)}
+            disabled={!hasMore || q.isFetching}
+            className="btn-ghost"
+          >
+            Next ›
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

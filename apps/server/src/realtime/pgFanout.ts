@@ -114,6 +114,19 @@ export type RealtimeEvent =
       vaultId: string;
       zone: 'shared' | 'staff_only';
       rotationVersion: number;
+    }
+  | {
+      // Phase 28.12: anonymous intake session received. Carries the
+      // assigned staff's userId so the SPA realtime listener can target
+      // the right tab (the same user could be logged in on multiple
+      // devices — the event fires for all of them). NO PII in the
+      // payload; the SPA refetches the session detail through the
+      // already-audited /admin/intake/sessions/:id endpoint.
+      type: 'intake.session.received';
+      userId: string;
+      sessionId: string;
+      fileCount: number;
+      createdAt: string;
     };
 
 type Listener = (event: RealtimeEvent) => void;

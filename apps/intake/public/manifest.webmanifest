@@ -1,0 +1,21 @@
+{
+  "name": "Document intake",
+  "short_name": "Intake",
+  "description": "Send files to a member of our team.",
+  "start_url": "__BASE_HREF__/intake",
+  "scope": "__BASE_HREF__/intake",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#1e3a8a",
+  "background_color": "#f8fafc",
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

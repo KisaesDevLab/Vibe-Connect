@@ -16,6 +16,7 @@ function setBoot(boot: Partial<VibeBoot>): void {
       tlsMode: 'internal',
       appName: null,
       buildVersion: 'test',
+      turnstileSiteKey: null,
       ...boot,
     },
   };

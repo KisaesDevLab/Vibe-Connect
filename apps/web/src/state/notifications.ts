@@ -86,9 +86,26 @@ export function useRealtimeNotifications(): void {
       notify(evt.urgent ? 'Urgent message' : 'New message', 'Tap to open Vibe Connect', evt.urgent);
       qc.invalidateQueries({ queryKey: ['conversations'] });
     }
+    // Phase 28.12 — anonymous intake landed. The server already targets
+    // this event to the assigned staff's userId, so any socket holding
+    // a session for that user receives it. We bump the admin-intake
+    // sessions query to refresh the list + ring the standard desktop
+    // notification (non-urgent) so a staff member with the staff app
+    // in another tab sees the indicator.
+    function onIntake(evt: { sessionId: string; fileCount: number }) {
+      qc.invalidateQueries({ queryKey: ['admin', 'intake', 'sessions'] });
+      if (document.hasFocus()) return;
+      notify(
+        'New intake',
+        `${evt.fileCount} file${evt.fileCount === 1 ? '' : 's'} just submitted via the intake page.`,
+        false,
+      );
+    }
     socket.on('message:new', onNew);
+    socket.on('intake.session.received', onIntake);
     return () => {
       socket.off('message:new', onNew);
+      socket.off('intake.session.received', onIntake);
     };
   }, [socket, notify, qc]);
 }

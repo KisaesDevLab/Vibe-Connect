@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Phase 28.3 — Public intake SPA. NO auth, NO Connect chrome.
+      `__BASE_HREF__` is substituted by nginx's sub_filter at request time;
+      single-app mode resolves to "/", multi-app to "/connect". The SPA's
+      Router reads BASE_PATH back from window.__VIBE_BOOT__ in boot.ts.
+    -->
+    <base href="__BASE_HREF__/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#1e3a8a" />
+    <!--
+      Intake is a private appliance feature: keep search engines out and
+      don't generate link-preview cards. ADR-028's user-facing disclosure
+      lives in the page body, not in meta — it must be visible to a
+      human, not just a crawler.
+    -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <!--
+      Phase 28.17 — PWA manifest. start_url/scope use the same __BASE_HREF__
+      placeholder as the SPA shell so single-app + multi-app modes both
+      produce a usable manifest from one build. The nginx block for /intake
+      adds `application/manifest+json` to sub_filter_types so the
+      placeholder is substituted at request time.
+    -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <title>Send files</title>
+    <script src="__vibe-boot.js"></script>
+  </head>
+  <body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

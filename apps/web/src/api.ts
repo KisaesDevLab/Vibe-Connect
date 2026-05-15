@@ -73,6 +73,305 @@ export const api = {
     if (!r.ok) throw new Error(`avatar_upload_${r.status}`);
     return (await r.json()) as { avatarUrl: string };
   },
+
+  // Phase 28.2 — staff intake-card settings + headshot upload.
+  // Phase 28.12 (QA-followup) extends with `notifyMode`.
+  getMyIntakeCard: () =>
+    json<{
+      showOnIntakeCard: boolean;
+      bio: string | null;
+      title: string | null;
+      headshotUrl: string | null;
+      order: number | null;
+      notifyMode: 'realtime' | 'digest' | 'in_app_only';
+    }>('/users/me/intake-card'),
+
+  patchMyIntakeCard: (patch: {
+    showOnIntakeCard?: boolean;
+    bio?: string | null;
+    title?: string | null;
+    notifyMode?: 'realtime' | 'digest' | 'in_app_only';
+  }) =>
+    json<{
+      showOnIntakeCard: boolean;
+      bio: string | null;
+      title: string | null;
+      headshotUrl: string | null;
+      order: number | null;
+      notifyMode: 'realtime' | 'digest' | 'in_app_only';
+    }>('/users/me/intake-card', { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  uploadIntakeCardHeadshot: async (file: File): Promise<{ headshotUrl: string }> => {
+    const form = new FormData();
+    form.set('headshot', file);
+    const r = await fetch(url('/users/me/intake-card/headshot'), {
+      method: 'POST',
+      credentials: 'include',
+      body: form,
+    });
+    if (!r.ok) {
+      // Surface specific 400 codes from the server so the UI can show
+      // a useful message (rather than a bare HTTP status). The avatar
+      // helper just throws; intake cards get more text-input feedback
+      // because non-image rejects are user-correctable.
+      const body = await r.text().catch(() => '');
+      throw Object.assign(new Error(`intake_headshot_${r.status}`), {
+        status: r.status,
+        body,
+      });
+    }
+    return (await r.json()) as { headshotUrl: string };
+  },
+
+  // Admin — Phase 28.2 reorder + listing + status.
+  listAdminIntakeCards: () =>
+    json<{
+      cards: Array<{
+        userId: string;
+        displayName: string;
+        isAdmin: boolean;
+        showOnIntakeCard: boolean;
+        order: number | null;
+        bio: string | null;
+        title: string | null;
+        headshotUrl: string | null;
+      }>;
+    }>('/admin/intake-cards'),
+
+  reorderIntakeCards: (items: Array<{ userId: string; order: number | null }>) =>
+    json<{ ok: true; touched: number }>('/admin/intake-cards/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
+
+  getIntakeStatus: () =>
+    json<{ optedIn: number; configured: boolean }>('/admin/intake/status'),
+
+  // Phase 28.11 — staff received-uploads view.
+  listAdminIntakeSessions: (params: {
+    page?: number;
+    pageSize?: number;
+    status?: 'open' | 'finalized' | 'expired' | 'abandoned';
+    staffId?: string;
+    includeArchived?: boolean;
+    sort?: 'received_at_desc' | 'received_at_asc' | 'size_desc' | 'size_asc';
+  }) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const qs = q.toString();
+    return json<{
+      sessions: Array<{
+        id: string;
+        staffId: string;
+        staffDisplayName: string | null;
+        status: 'open' | 'finalized' | 'expired' | 'abandoned';
+        source: 'public' | 'staff_link';
+        contactMethod: 'email' | 'sms' | 'both';
+        createdAt: string;
+        finalizedAt: string | null;
+        notificationFailed: boolean;
+        linkedConnectClientId: string | null;
+        fileCount: number;
+        totalBytes: number;
+        archivedAt: string | null;
+        autoDeleteAt: string | null;
+      }>;
+      page: number;
+      pageSize: number;
+      total: number;
+    }>(`/admin/intake/sessions${qs ? '?' + qs : ''}`);
+  },
+  getAdminIntakeSession: (id: string) =>
+    json<{
+      session: {
+        id: string;
+        staffId: string;
+        source: string;
+        status: string;
+        contactMethod: string;
+        createdAt: string;
+        finalizedAt: string | null;
+        expiresAt: string | null;
+        autoDeleteAt: string | null;
+        notificationFailed: boolean;
+        ipAddress: string | null;
+        clientName: string | null;
+        clientEmail: string | null;
+        clientPhone: string | null;
+        linkedClient: { id: string; displayName: string } | null;
+        linkedAt: string | null;
+      };
+      files: Array<{
+        id: string;
+        originalFilename: string;
+        mimeType: string;
+        sizeBytes: number;
+        sha256: string;
+        kind: 'file' | 'scanned_image';
+        orderIndex: number;
+        virusScanStatus: string;
+        createdAt: string;
+      }>;
+      pdf: {
+        id: string;
+        status: string;
+        pageCount: number | null;
+        sizeBytes: number | null;
+        errorMessage: string | null;
+      } | null;
+    }>(`/admin/intake/sessions/${id}`),
+  searchAdminIntakeSessions: (q: string) =>
+    json<{
+      sessions: Array<{ id: string; staffId: string; status: string; createdAt: string }>;
+    }>('/admin/intake/sessions/search', {
+      method: 'POST',
+      body: JSON.stringify({ q }),
+    }),
+  archiveIntakeSession: (id: string) =>
+    json<{ ok: true }>(`/admin/intake/sessions/${id}/archive`, { method: 'POST' }),
+  /**
+   * Phase 28.11 (QA-followup) bulk-zip download. Returns the URL the
+   * caller should fetch (browser-driven download via a form POST or
+   * generated <a> click). We don't expose the zip directly through
+   * fetch because tanstack-query JSON shapes don't suit binary streams.
+   */
+  bulkZipIntakeSessionsUrl: (): string => url('/admin/intake/sessions/zip'),
+  unarchiveIntakeSession: (id: string) =>
+    json<{ ok: true }>(`/admin/intake/sessions/${id}/archive`, { method: 'DELETE' }),
+  linkIntakeSessionClient: (id: string, clientId: string) =>
+    json<{ ok: true; client: { id: string; displayName: string } }>(
+      `/admin/intake/sessions/${id}/link-client`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ clientId }),
+      },
+    ),
+  unlinkIntakeSessionClient: (id: string) =>
+    json<{ ok: true }>(`/admin/intake/sessions/${id}/link-client`, { method: 'DELETE' }),
+  searchAdminIntakeClients: (q: string) => {
+    const qs = q ? `?q=${encodeURIComponent(q)}` : '';
+    return json<{ clients: Array<{ id: string; displayName: string; email: string | null }> }>(
+      `/admin/intake/clients${qs}`,
+    );
+  },
+
+  // Phase 28.13 — Send-a-link generator.
+  createIntakeLink: (body: {
+    email?: string;
+    phone?: string;
+    expiresIn?: '24h' | '7d' | '30d' | string;
+    note?: string;
+    assignedStaffId?: string;
+  }) =>
+    json<{
+      link: {
+        id: string;
+        token: string;
+        url: string;
+        expiresAt: string;
+        send: { email: boolean; sms: boolean };
+        sendError: string | null;
+      };
+    }>('/admin/intake/links', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  listIntakeLinks: (params: {
+    filter?: 'active' | 'expired' | 'revoked' | 'all';
+    staffId?: string;
+    page?: number;
+  }) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+    }
+    const qs = q.toString();
+    return json<{
+      links: Array<{
+        id: string;
+        url: string;
+        assignedStaffId: string;
+        assignedStaffName: string | null;
+        createdByUserId: string;
+        createdByName: string | null;
+        expiresAt: string;
+        revokedAt: string | null;
+        useCount: number;
+        email: string | null;
+        phone: string | null;
+        note: string | null;
+        createdAt: string;
+      }>;
+      page: number;
+      pageSize: number;
+    }>(`/admin/intake/links${qs ? '?' + qs : ''}`);
+  },
+  revokeIntakeLink: (id: string) =>
+    json<{ ok: true; alreadyRevoked?: boolean }>(`/admin/intake/links/${id}/revoke`, {
+      method: 'POST',
+    }),
+  resendIntakeLink: (id: string) =>
+    json<{ ok: true; send: { email: boolean; sms: boolean } }>(
+      `/admin/intake/links/${id}/resend`,
+      { method: 'POST' },
+    ),
+
+  // Phase 28.15 — firm-level intake retention settings + per-session
+  // retention override.
+  getIntakeSettings: () =>
+    json<{
+      settings: {
+        intake_auto_delete_enabled: boolean;
+        intake_auto_delete_after_days: number;
+        intake_send_to_both_channels: boolean;
+        intake_max_file_bytes: number;
+        intake_max_session_bytes: number;
+        intake_conversion_concurrency: number;
+        intake_include_cover_page: boolean;
+        intake_digest_hour_local: number;
+        intake_maintenance_mode: boolean;
+      };
+    }>('/admin/intake/settings'),
+  updateIntakeSettings: (patch: Partial<{
+    intake_auto_delete_enabled: boolean;
+    intake_auto_delete_after_days: number;
+    intake_send_to_both_channels: boolean;
+    intake_max_file_bytes: number;
+    intake_max_session_bytes: number;
+    intake_conversion_concurrency: number;
+    intake_include_cover_page: boolean;
+    intake_digest_hour_local: number;
+    intake_maintenance_mode: boolean;
+  }>) =>
+    json<{
+      settings: {
+        intake_auto_delete_enabled: boolean;
+        intake_auto_delete_after_days: number;
+        intake_send_to_both_channels: boolean;
+        intake_max_file_bytes: number;
+        intake_max_session_bytes: number;
+        intake_conversion_concurrency: number;
+        intake_include_cover_page: boolean;
+        intake_digest_hour_local: number;
+        intake_maintenance_mode: boolean;
+      };
+    }>('/admin/intake/settings', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+  keepIntakeSessionIndefinitely: (id: string) =>
+    json<{ ok: true; autoDeleteAt: string | null }>(
+      `/admin/intake/sessions/${id}/keep-indefinitely`,
+      { method: 'POST' },
+    ),
+  revertIntakeSessionRetention: (id: string) =>
+    json<{ ok: true; autoDeleteAt: string | null }>(
+      `/admin/intake/sessions/${id}/keep-indefinitely`,
+      { method: 'DELETE' },
+    ),
+
   me: () => json<{ user: PublicUser }>('/auth/me'),
   // Self-service profile patch. Either field can be `null` to clear, or
   // omitted to leave alone. Server normalizes phone to E.164.

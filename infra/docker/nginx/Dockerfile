@@ -16,6 +16,7 @@ COPY package.json yarn.lock ./
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
 COPY apps/portal/package.json apps/portal/
+COPY apps/intake/package.json apps/intake/
 COPY apps/desktop/package.json apps/desktop/
 COPY packages/shared-types/package.json packages/shared-types/
 COPY packages/crypto/package.json packages/crypto/
@@ -31,6 +32,7 @@ RUN cd packages/shared-types && npx --no-install tsc -b --force && ls dist | hea
 RUN cd packages/crypto && npx --no-install tsc && ls dist | head -3
 RUN yarn workspace @vibe-connect/web build
 RUN yarn workspace @vibe-connect/portal build
+RUN yarn workspace @vibe-connect/intake build
 
 # --- nginx runtime --------------------------------------------------------
 FROM nginx:1.27-alpine
@@ -44,4 +46,5 @@ RUN chmod +x /entrypoint.sh
 # ./static because that path is now a build artefact, not a tracked dir.
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html/web
 COPY --from=build /app/apps/portal/dist /usr/share/nginx/html/portal
+COPY --from=build /app/apps/intake/dist /usr/share/nginx/html/intake
 ENTRYPOINT ["/entrypoint.sh"]

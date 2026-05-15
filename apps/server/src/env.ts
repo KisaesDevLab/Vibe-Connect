@@ -178,6 +178,10 @@ export const env = {
   rateLimitLoginPerMin: num('RATE_LIMIT_LOGIN_PER_MIN', 5),
   rateLimitPortalCodePer10Min: num('RATE_LIMIT_PORTAL_CODE_PER_10MIN', 3),
   rateLimitGlobalPerMin: num('RATE_LIMIT_GLOBAL_PER_MIN', 600),
+  // Phase 28.4 — anonymous intake submissions per IP per 15 min. Default
+  // matches the build plan (5). Tests override to a large number so they
+  // don't exhaust the budget in a single suite.
+  rateLimitIntakeSessionPer15Min: num('RATE_LIMIT_INTAKE_SESSION_PER_15MIN', 5),
   // Bridge-inbound limiters. Shared-secret webhook auth already keeps random
   // callers out, but a misconfigured provider or leaked secret could flood
   // the appliance. These cap the surge per source IP.
@@ -190,6 +194,40 @@ export const env = {
 
   clamdHost: str('CLAMD_HOST', ''),
   clamdPort: num('CLAMD_PORT', 3310),
+
+  // Phase 28 — Vibe File Transfer (Intake).
+  //
+  // 32-byte libsodium secretbox key in base64 form (i.e. 44 chars). Used by
+  // services/intakeCrypto.ts to seal every intake field (PII columns) and
+  // file body on disk. Distinct from SESSION_SECRET per ADR-028: rotating
+  // the intake key via the Phase 28.16 admin route must NOT invalidate
+  // user sessions, sealed provider creds, or ACME state — and rotating
+  // SESSION_SECRET must NOT silently re-key every intake blob.
+  //
+  // Empty in dev = intakeCrypto throws on first encrypt call; intake
+  // routes aren't mounted until 28.4 anyway so the boot path stays green.
+  // Production enforcement lives in intakeCrypto.ts at first use.
+  connectIntakeEncryptionKey: str('CONNECT_INTAKE_ENCRYPTION_KEY', ''),
+
+  // Phase 28.16 — Intake key rotation. Set this alongside the existing
+  // CONNECT_INTAKE_ENCRYPTION_KEY for the duration of a rotation run; the
+  // `/admin/intake/rotate-key` worker reads both, decrypts every row with
+  // the old key, re-encrypts with the new key, and persists progress to
+  // `intake_key_rotations`. After completion the operator swaps env vars
+  // (the new key becomes the current `CONNECT_INTAKE_ENCRYPTION_KEY` and
+  // this var is removed) and restarts. While both vars are set in dev,
+  // intake at-rest reads continue against the OLD key (current); the NEW
+  // key is reachable only via the rotation worker.
+  connectIntakeEncryptionKeyNew: str('CONNECT_INTAKE_ENCRYPTION_KEY_NEW', ''),
+
+  // Phase 28.4 — Optional Cloudflare Turnstile keys for the anonymous
+  // intake form (POST /api/public/intake/sessions). Both keys must be set
+  // for Turnstile to engage; the SITE key is exposed to the public SPA via
+  // window.__VIBE_BOOT__, the SECRET key stays server-side for the verify
+  // round-trip against challenges.cloudflare.com. Leave both blank to
+  // disable Turnstile (the route then accepts submissions without a token).
+  turnstileSiteKey: str('TURNSTILE_SITE_KEY', ''),
+  turnstileSecretKey: str('TURNSTILE_SECRET_KEY', ''),
   // Fail-safe override. When CLAMD_HOST is empty, scanBuffer() returns 'clean'
   // as a documented dev fallback. In production that means every attachment
   // ships unscanned. An operator who genuinely wants that (e.g., an isolated
