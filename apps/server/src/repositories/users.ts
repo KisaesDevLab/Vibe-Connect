@@ -13,6 +13,7 @@ export interface UserRow {
   is_active: boolean;
   status: UserStatus;
   last_seen_at: string | null;
+  show_on_intake_card: boolean;
   created_at: string;
   updated_at: string;
 }

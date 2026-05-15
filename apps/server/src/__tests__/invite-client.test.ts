@@ -382,6 +382,39 @@ describe('POST /clients/invite', () => {
   });
 });
 
+describe('GET /admin/clients — staff-readable, admin-writable', () => {
+  it('non-admin staff can read the clients list', async () => {
+    const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+    const r = await alice.get('/admin/clients');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.clients)).toBe(true);
+  });
+
+  it('non-admin staff cannot deactivate, reactivate, or forget', async () => {
+    // Seed a client so the routes have a real target id (the 403 fires
+    // before id lookup, but using a real id rules out 404-masquerade).
+    const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const created = await kurt.post('/clients/invite').send({
+      displayName: 'Guard Subject',
+      channels: {
+        email: { enabled: true, value: 'guard@test.com' },
+        sms: { enabled: false, value: null },
+      },
+      verification: { type: 'ssn', last4: '0000', reverifyEveryHours: 24 },
+    });
+    expect(created.status).toBe(201);
+    const id = created.body.externalIdentityId as string;
+
+    const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+    const deactivate = await alice.post(`/admin/clients/${id}/deactivate`).send({});
+    expect(deactivate.status).toBe(403);
+    const reactivate = await alice.post(`/admin/clients/${id}/reactivate`).send({});
+    expect(reactivate.status).toBe(403);
+    const forget = await alice.post(`/admin/clients/${id}/forget`).send({});
+    expect(forget.status).toBe(403);
+  });
+});
+
 afterAll(async () => {
   // Release the pg pool so Vitest can exit cleanly.
   const { db } = await import('../db/knex.js');

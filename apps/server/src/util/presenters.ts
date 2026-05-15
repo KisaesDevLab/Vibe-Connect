@@ -14,6 +14,7 @@ export function publicUser(row: UserRow): PublicUser {
     isActive: row.is_active,
     status: row.status,
     lastSeenAt: row.last_seen_at,
+    showOnIntakeCard: row.show_on_intake_card,
   };
 }
 

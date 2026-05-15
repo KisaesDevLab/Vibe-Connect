@@ -208,6 +208,14 @@ export function AppShell(): JSX.Element {
             <NavLink to="/account" className="text-brand-700 hover:underline">
               Account
             </NavLink>
+            <NavLink to="/clients" className="text-brand-700 hover:underline">
+              Clients
+            </NavLink>
+            {user?.showOnIntakeCard && (
+              <NavLink to="/my-intake" className="text-brand-700 hover:underline">
+                Intake
+              </NavLink>
+            )}
             {policy.data?.requestsEnabled !== false && (
               <NavLink to="/requests" className="text-brand-700 hover:underline">
                 Requests
@@ -225,6 +233,7 @@ export function AppShell(): JSX.Element {
           <MobileMoreMenu
             requestsEnabled={policy.data?.requestsEnabled !== false}
             isAdmin={Boolean(user?.isAdmin)}
+            showIntake={Boolean(user?.showOnIntakeCard)}
             installAvailable={a2hs.available}
             onInstall={() => void a2hs.promptInstall()}
           />
@@ -285,11 +294,13 @@ export function AppShell(): JSX.Element {
 function MobileMoreMenu({
   requestsEnabled,
   isAdmin,
+  showIntake,
   installAvailable,
   onInstall,
 }: {
   requestsEnabled: boolean;
   isAdmin: boolean;
+  showIntake: boolean;
   installAvailable: boolean;
   onInstall: () => void;
 }): JSX.Element {
@@ -317,6 +328,22 @@ function MobileMoreMenu({
           >
             Account
           </NavLink>
+          <NavLink
+            to="/clients"
+            onClick={() => setOpen(false)}
+            className="block px-3 py-2 hover:bg-slate-50 text-slate-700"
+          >
+            Clients
+          </NavLink>
+          {showIntake && (
+            <NavLink
+              to="/my-intake"
+              onClick={() => setOpen(false)}
+              className="block px-3 py-2 hover:bg-slate-50 text-slate-700"
+            >
+              Intake
+            </NavLink>
+          )}
           {requestsEnabled && (
             <NavLink
               to="/requests"

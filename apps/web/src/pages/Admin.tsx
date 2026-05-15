@@ -1658,7 +1658,9 @@ interface AdminClient {
   invitePublicKey: string | null;
 }
 
-function AdminClients(): JSX.Element {
+export function AdminClients(): JSX.Element {
+  const { user } = useAuth();
+  const isAdmin = Boolean(user?.isAdmin);
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [showDeactivated, setShowDeactivated] = useState(false);
@@ -1738,13 +1740,15 @@ function AdminClients(): JSX.Element {
             />
             Include deactivated
           </label>
-          <button
-            type="button"
-            onClick={() => setAddOpen(true)}
-            className="rounded-md bg-brand-600 text-white text-sm font-medium px-3 py-1.5 hover:bg-brand-700"
-          >
-            Add client
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setAddOpen(true)}
+              className="rounded-md bg-brand-600 text-white text-sm font-medium px-3 py-1.5 hover:bg-brand-700"
+            >
+              Add client
+            </button>
+          )}
         </div>
       </div>
       <InviteClientModal
@@ -1827,7 +1831,7 @@ function AdminClients(): JSX.Element {
                 )}
               </td>
               <td className="p-2 text-right whitespace-nowrap space-x-3">
-                {!c.deactivatedAt && !c.lastActiveAt && (
+                {isAdmin && !c.deactivatedAt && !c.lastActiveAt && (
                   <button
                     type="button"
                     onClick={() =>
@@ -1847,44 +1851,47 @@ function AdminClients(): JSX.Element {
                     {c.invitedAt ? 'Resend invite' : 'Send invite'}
                   </button>
                 )}
-                {c.deactivatedAt ? (
-                  <button
-                    type="button"
-                    onClick={() => reactivate.mutate(c.id)}
-                    className="text-brand-700 hover:underline"
-                  >
-                    Reactivate
-                  </button>
-                ) : (
+                {isAdmin &&
+                  (c.deactivatedAt ? (
+                    <button
+                      type="button"
+                      onClick={() => reactivate.mutate(c.id)}
+                      className="text-brand-700 hover:underline"
+                    >
+                      Reactivate
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (
+                          confirm(
+                            `Deactivate ${c.displayName}? Revokes ${c.activeSessions} active session(s) immediately.`,
+                          )
+                        )
+                          deactivate.mutate(c.id);
+                      }}
+                      className="text-rose-600 hover:underline"
+                    >
+                      Deactivate
+                    </button>
+                  ))}
+                {isAdmin && (
                   <button
                     type="button"
                     onClick={() => {
-                      if (
-                        confirm(
-                          `Deactivate ${c.displayName}? Revokes ${c.activeSessions} active session(s) immediately.`,
-                        )
-                      )
-                        deactivate.mutate(c.id);
+                      const msg =
+                        `Forget ${c.displayName}?\n\n` +
+                        `This IRREVERSIBLY scrubs their name, email, phone, and client ref from the record. ` +
+                        `Past messages they sent remain (as ciphertext) attributed to an anonymous placeholder. ` +
+                        `Use this to satisfy a right-to-erasure request.`;
+                      if (confirm(msg)) forget.mutate(c.id);
                     }}
-                    className="text-rose-600 hover:underline"
+                    className="text-rose-700 hover:underline"
                   >
-                    Deactivate
+                    Forget
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const msg =
-                      `Forget ${c.displayName}?\n\n` +
-                      `This IRREVERSIBLY scrubs their name, email, phone, and client ref from the record. ` +
-                      `Past messages they sent remain (as ciphertext) attributed to an anonymous placeholder. ` +
-                      `Use this to satisfy a right-to-erasure request.`;
-                    if (confirm(msg)) forget.mutate(c.id);
-                  }}
-                  className="text-rose-700 hover:underline"
-                >
-                  Forget
-                </button>
               </td>
             </tr>
           ))}
@@ -4336,7 +4343,7 @@ function AdminIntakeCards(): JSX.Element {
  * `bulkZipMut` below (QA-followup). The build-plan acceptance criteria
  * here are RBAC + decrypt-on-view audit + per-file download + link/unlink.
  */
-function AdminIntakeSessions(): JSX.Element {
+export function AdminIntakeSessions(): JSX.Element {
   const qc = useQueryClient();
   const [status, setStatus] = useState<'' | 'open' | 'finalized' | 'expired' | 'abandoned'>('');
   const [includeArchived, setIncludeArchived] = useState(false);
@@ -5010,7 +5017,7 @@ function LinkClientModal({
  *     resulting URL + per-channel send status.
  *   - List with active/expired/revoked/all filter. Per-row revoke + resend.
  */
-function AdminIntakeLinks(): JSX.Element {
+export function AdminIntakeLinks(): JSX.Element {
   const qc = useQueryClient();
   const [filter, setFilter] = useState<'active' | 'expired' | 'revoked' | 'all'>('active');
   const listQ = useQuery({

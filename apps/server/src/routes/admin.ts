@@ -624,9 +624,15 @@ adminRouter.post(
 
 // ---------- Client (external_identity) management ----------
 
+// Visible to any authenticated staff. The clients list is firm-scoped (not
+// per-staff-scoped), so every staff member sees the same rows — this is
+// safe-by-design because external_identities don't carry staff_id. Mutations
+// below (POST .../deactivate, .../reactivate, .../forget, POST /clients)
+// remain admin-only — the legal/compliance posture for client lifecycle
+// changes hasn't changed.
 adminRouter.get(
   '/clients',
-  requireAdmin,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
     const includeDeactivated = req.query.includeDeactivated === 'true';

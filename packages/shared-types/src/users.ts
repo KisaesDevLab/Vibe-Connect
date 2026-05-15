@@ -22,6 +22,12 @@ export interface PublicUser {
   isActive: boolean;
   status: UserStatus;
   lastSeenAt: string | null;
+  /**
+   * Phase 28 — staff has opted in to be listed on the public `/intake` page.
+   * Drives the "Intake" top-level nav link in the staff app: visible only
+   * when true. Flipped via PATCH /users/me/intake-card.
+   */
+  showOnIntakeCard: boolean;
 }
 
 export interface Group {
