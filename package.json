@@ -26,9 +26,9 @@
     "db:rollback": "yarn workspace @vibe-connect/server rollback",
     "db:seed": "yarn workspace @vibe-connect/server seed",
     "db:reset": "yarn workspace @vibe-connect/server reset",
-    "compose:up": "docker compose -f infra/docker/docker-compose.yml up -d",
-    "compose:down": "docker compose -f infra/docker/docker-compose.yml down",
-    "compose:logs": "docker compose -f infra/docker/docker-compose.yml logs -f"
+    "compose:up": "docker compose -f infra/docker/docker-compose.yml --env-file .env up -d",
+    "compose:down": "docker compose -f infra/docker/docker-compose.yml --env-file .env down",
+    "compose:logs": "docker compose -f infra/docker/docker-compose.yml --env-file .env logs -f"
   },
   "resolutions": {
     "@types/express": "^4.17.21",
