@@ -1,5 +1,5 @@
 {
-  "$comment": "Vibe-Appliance metadata for Vibe-Connect. Read by the appliance bootstrap to render compose, env templates, and the admin console panel. Path-prefix mode (BASE_PATH=/connect); multi-subdomain support is a deferred follow-on.",
+  "$comment": "Vibe-Appliance metadata for Vibe-Connect. Read by the appliance bootstrap to render compose, env templates, and the admin console panel. Supports both path-prefix mode (BASE_PATH=/connect) and multi-subdomain mode (connect.<firm>.com staff + client.<firm>.com portal). Per-app subdomain entries live in the appliance repo's console/manifests/vibe-connect.json subdomains[] array.",
   "schemaVersion": 1,
   "slug": "vibe-connect",
   "displayName": "Vibe Connect",
@@ -144,7 +144,6 @@
     "envOverride": "DESKTOP_DOWNLOAD_URL"
   },
   "outOfScopeForV1": [
-    "Multi-subdomain ingress (connect.firm.com / client.firm.com) — deferred to a follow-on phase. Path-prefix is the canonical shape.",
     "Code-signed Windows binaries — Phase B v1 ships unsigned MSI/NSIS; SmartScreen warning documented in docs/ops/DESKTOP.md.",
     "Magic-link client auth — repo uses access codes (email or SMS); not changing.",
     "Redis / BullMQ — not in the codebase; realtime uses Postgres LISTEN/NOTIFY."
