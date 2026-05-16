@@ -4,6 +4,16 @@ events { worker_connections 2048; }
 
 http {
   include /etc/nginx/mime.types;
+  # nginx's bundled mime.types doesn't include `.webmanifest`, so PWA
+  # manifests would serve as application/octet-stream — which is wrong
+  # per the W3C Web App Manifest spec AND (more critically for us)
+  # bypasses `sub_filter` substitution. Without this types{} override,
+  # the __BASE_HREF__ placeholder in intake's manifest serves literally,
+  # giving installed PWAs a broken start_url. Merges with the included
+  # file rather than replacing it.
+  types {
+    application/manifest+json webmanifest;
+  }
   default_type application/octet-stream;
   sendfile on;
   keepalive_timeout 65;
@@ -185,7 +195,10 @@ http {
       # Phase 28.17 — substitute __BASE_HREF__ inside the PWA manifest as
       # well as the HTML shell, so start_url / scope resolve correctly in
       # both single-app and multi-app modes from one build.
-      sub_filter_types text/html application/manifest+json;
+      # nginx's default already includes text/html; this only ADDS
+      # application/manifest+json so PWA manifests get __BASE_HREF__
+      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
     }
@@ -193,8 +206,17 @@ http {
     location / {
       root /usr/share/nginx/html/web;
       try_files $uri $uri/ /index.html;
-      # Default sub_filter_types is text/html — exactly what we want, so we
-      # don't override it (declaring text/html again warns about duplicates).
+      # Substitute __BASE_HREF__ in both the HTML shell AND the PWA
+      # manifest.webmanifest, so when a staff user installs the app as
+      # a PWA in path-prefix mode (BASE_PATH=/connect), the resulting
+      # manifest's start_url / scope / id resolve to /connect/ instead
+      # of /. The http{}-level types{} block aliases `.webmanifest` to
+      # application/manifest+json so this sub_filter_types directive
+      # actually fires on the file.
+      # nginx's default already includes text/html; this only ADDS
+      # application/manifest+json so PWA manifests get __BASE_HREF__
+      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
     }
@@ -241,8 +263,13 @@ http {
     location / {
       root /usr/share/nginx/html/portal;
       try_files $uri $uri/ /index.html;
-      # Default sub_filter_types is text/html — exactly what we want, so we
-      # don't override it (declaring text/html again warns about duplicates).
+      # Same manifest substitution policy as the staff block — a future
+      # portal/public/manifest.webmanifest will Just Work without
+      # revisiting nginx config.
+      # nginx's default already includes text/html; this only ADDS
+      # application/manifest+json so PWA manifests get __BASE_HREF__
+      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
     }
@@ -352,6 +379,10 @@ http {
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
       try_files $uri $uri/ /index.html;
+      # nginx's default already includes text/html; this only ADDS
+      # application/manifest+json so PWA manifests get __BASE_HREF__
+      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
     }
@@ -362,8 +393,16 @@ http {
       }
       root /usr/share/nginx/html/web;
       try_files $uri $uri/ /index.html;
-      # Default sub_filter_types is text/html — exactly what we want, so we
-      # don't override it (declaring text/html again warns about duplicates).
+      # Substitute __BASE_HREF__ in the HTML shell AND the PWA manifest —
+      # the http{}-level types{} block aliases `.webmanifest` to
+      # application/manifest+json so this directive actually fires on
+      # the file (without the alias, nginx serves it as octet-stream
+      # and sub_filter skips it). Same policy as the TLS-internal staff
+      # block above.
+      # nginx's default already includes text/html; this only ADDS
+      # application/manifest+json so PWA manifests get __BASE_HREF__
+      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
     }
@@ -410,6 +449,11 @@ http {
     location / {
       root /usr/share/nginx/html/portal;
       try_files $uri $uri/ /index.html;
+      # Same manifest substitution policy as the TLS-internal blocks.
+      # nginx's default already includes text/html; this only ADDS
+      # application/manifest+json so PWA manifests get __BASE_HREF__
+      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
     }
