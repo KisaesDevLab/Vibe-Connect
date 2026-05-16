@@ -5,6 +5,37 @@ import { useAuth } from '../state/auth.js';
 import { getBoot } from '../lib/boot.js';
 import { AdminIntakeSessions, AdminIntakeLinks } from './Admin.js';
 
+/**
+ * Build the public-facing URL for an intake path (e.g. `/intake` or
+ * `/intake/<staffId>`) for display in the staff's "My intake page" card.
+ *
+ * Derives the URL from the browser's actual origin + the SPA's basePath
+ * rather than trusting `boot.siteUrl`. SITE_URL is operator-set on the
+ * appliance and frequently misconfigured (falls through to the dev
+ * default `http://localhost:4000` if the appliance bootstrap doesn't
+ * derive it from the subdomain template). When that happens, this
+ * card would otherwise surface a localhost URL to a staff member who's
+ * browsing from a real public hostname — confusing and useless.
+ *
+ * window.location.origin is the source of truth for "where the staff
+ * member's browser is right now", and boot.basePath is already correctly
+ * derived by /__vibe-boot.js. The two together produce the right URL in
+ * every deployment where clients and staff hit the same hostname, which
+ * is effectively all of them.
+ *
+ * SSR/test fallback: when window is undefined or origin is empty, fall
+ * back to the old boot.siteUrl path so unit tests don't break.
+ */
+function publicIntakeUrl(path: string): string {
+  const boot = getBoot();
+  const suffix = path.startsWith('/') ? path : '/' + path;
+  if (typeof window !== 'undefined' && window.location.origin) {
+    const base = boot.basePath || '';
+    return `${window.location.origin}${base}${suffix}`;
+  }
+  return `${boot.siteUrl.replace(/\/$/, '')}${suffix}`;
+}
+
 const tabs = [
   { path: 'files', label: 'Files' },
   { path: 'links', label: 'Links' },
@@ -60,12 +91,8 @@ export function MyIntakePage(): JSX.Element {
 function MyIntakeUrlCard(): JSX.Element {
   const { user } = useAuth();
   const [copied, setCopied] = useState(false);
-  // Distribution-mode aware: boot.siteUrl is the operator-configured external
-  // URL, which already includes BASE_PATH in multi-app mode (e.g.
-  // 'https://host/connect'). Concatenating '/intake/<id>' produces the right
-  // shape in both single-app ('https://host/intake/<id>') and multi-app
-  // ('https://host/connect/intake/<id>') deployments without rebuild.
-  const myUrl = user ? `${getBoot().siteUrl.replace(/\/$/, '')}/intake/${user.id}` : '';
+  const myUrl = user ? publicIntakeUrl(`/intake/${user.id}`) : '';
+  const landingUrl = publicIntakeUrl('/intake');
 
   async function copy(): Promise<void> {
     if (!myUrl) return;
@@ -156,8 +183,7 @@ function MyIntakeUrlCard(): JSX.Element {
           </button>
         </div>
         <p className="text-xs text-slate-500">
-          Or share the landing page at{' '}
-          <span className="font-mono">{getBoot().siteUrl.replace(/\/$/, '')}/intake</span> — clients
+          Or share the landing page at <span className="font-mono">{landingUrl}</span> — clients
           pick you from the staff list there.
         </p>
       </div>
