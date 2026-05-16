@@ -16,6 +16,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { db } from '../db/knex.js';
 import { env } from '../env.js';
+import { effectiveUrls } from '../services/effectiveUrls.js';
 
 export const bootstrapRouter = Router();
 
@@ -67,10 +68,15 @@ bootstrapRouter.get(
       // the SPA still bootstraps and shows the default branding.
       appName = null;
     }
+    // siteUrl/portalUrl honor the DB-side admin override (firm_settings.site_url,
+    // firm_settings.portal_url) when set; otherwise fall back to env vars.
+    // Same 60s cache-control window on this response means an admin save
+    // propagates to all SPAs within a minute.
+    const urls = await effectiveUrls();
     const boot: VibeBoot = {
       basePath: env.basePath,
-      siteUrl: env.siteUrl,
-      portalUrl: env.portalUrl,
+      siteUrl: urls.siteUrl,
+      portalUrl: urls.portalUrl,
       tlsMode: env.tlsMode,
       appName,
       buildVersion: env.buildVersion,

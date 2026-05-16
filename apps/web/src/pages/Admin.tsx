@@ -821,12 +821,164 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+interface AdminSettingsResponse {
+  settings: Record<string, unknown>;
+  envSiteUrl: string;
+  envPortalUrl: string;
+  effectiveSiteUrl: string;
+  effectivePortalUrl: string;
+}
+
+interface UrlOverrideFieldProps {
+  label: string;
+  helpText: string;
+  envDefault: string;
+  effective: string;
+  dbValue: string | null;
+  field: 'siteUrl' | 'portalUrl';
+}
+
+const URL_ERROR_COPY: Record<string, string> = {
+  invalid_url: 'That doesn’t parse as a URL.',
+  bad_scheme: 'Must start with https:// (or http:// for localhost only).',
+  http_only_allowed_for_localhost:
+    'Plain http:// is only allowed for localhost. Use https:// for any public host.',
+  query_not_allowed: 'No ?query strings allowed.',
+  fragment_not_allowed: 'No #fragment allowed.',
+  too_long: 'Too long.',
+  dev_default_not_allowed:
+    'That’s the dev placeholder. Enter the real public URL you want clients to receive.',
+};
+
+// URL override editor with explicit Save (not on-blur autosave) and inline
+// validation feedback. URLs misconfigured here break auth/cookies/email
+// links, so we make the admin opt in by clicking Save instead of bumping
+// off-tab triggering a write to a half-typed value.
+function UrlOverrideField({
+  label,
+  helpText,
+  envDefault,
+  effective,
+  dbValue,
+  field,
+}: UrlOverrideFieldProps): JSX.Element {
+  const qc = useQueryClient();
+  const [draft, setDraft] = useState<string>(dbValue ?? '');
+  const [status, setStatus] = useState<
+    { kind: 'ok'; msg: string } | { kind: 'err'; msg: string } | null
+  >(null);
+  const overriding = Boolean(dbValue);
+  const mut = useMutation({
+    mutationFn: (value: string | null) =>
+      json(`/admin/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify({ [field]: value }),
+      }),
+    onSuccess: () => {
+      setStatus({
+        kind: 'ok',
+        msg: dbValue !== null && draft.trim() === '' ? 'Cleared.' : 'Saved.',
+      });
+      void qc.invalidateQueries({ queryKey: ['admin', 'settings'] });
+      window.setTimeout(() => setStatus(null), 4_000);
+    },
+    onError: async (err: unknown) => {
+      // The json helper throws on non-2xx with a Response attached. Try to
+      // extract the structured 400 reason so we show actionable copy
+      // instead of "fetch failed".
+      let reason = 'save_failed';
+      try {
+        const e = err as { response?: Response };
+        if (e.response) {
+          const body = (await e.response
+            .clone()
+            .json()
+            .catch(() => ({}))) as {
+            reason?: string;
+          };
+          if (body.reason) reason = body.reason;
+        }
+      } catch {
+        /* swallow */
+      }
+      setStatus({ kind: 'err', msg: URL_ERROR_COPY[reason] ?? `Save failed (${reason}).` });
+    },
+  });
+  function onSave(): void {
+    setStatus(null);
+    const trimmed = draft.trim();
+    mut.mutate(trimmed.length === 0 ? null : trimmed);
+  }
+  function onClear(): void {
+    setDraft('');
+    setStatus(null);
+    mut.mutate(null);
+  }
+  return (
+    <div className="space-y-1">
+      <label className="block">
+        <span className="text-sm text-slate-700">{label}</span>
+        <div className="mt-1 flex gap-2">
+          <input
+            type="url"
+            inputMode="url"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={envDefault}
+            className="flex-1 min-w-0 rounded-md border border-slate-300 px-3 py-2 text-sm font-mono"
+          />
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={mut.isPending || draft.trim() === (dbValue ?? '')}
+            className="rounded-md bg-brand-600 text-white text-sm font-medium px-3 py-2 hover:bg-brand-700 disabled:opacity-50"
+          >
+            {mut.isPending ? 'Saving…' : 'Save'}
+          </button>
+          {overriding && (
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={mut.isPending}
+              className="rounded-md border border-slate-300 bg-white text-sm font-medium px-3 py-2 hover:bg-slate-50 disabled:opacity-50"
+            >
+              Use env default
+            </button>
+          )}
+        </div>
+      </label>
+      <p className="text-[11px] text-slate-500">{helpText}</p>
+      <p className="text-[11px] text-slate-500">
+        <span className="font-medium">Currently effective:</span>{' '}
+        <span className="font-mono">{effective}</span>
+        {overriding ? (
+          <span className="text-amber-700"> (DB override)</span>
+        ) : (
+          <span className="text-slate-400"> (env default)</span>
+        )}
+      </p>
+      <p className="text-[11px] text-slate-400">
+        <span className="font-medium">Env default:</span>{' '}
+        <span className="font-mono">{envDefault}</span>
+      </p>
+      {status && (
+        <p
+          className={
+            status.kind === 'ok' ? 'text-[11px] text-emerald-700' : 'text-[11px] text-rose-700'
+          }
+        >
+          {status.msg}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function AdminSettings(): JSX.Element {
   const qc = useQueryClient();
   const q = useQuery({
     queryKey: ['admin', 'settings'],
-    queryFn: () =>
-      json<{ settings: Record<string, unknown> }>(`/admin/settings`).then((r) => r.settings),
+    queryFn: () => json<AdminSettingsResponse>(`/admin/settings`),
   });
   const mut = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -834,7 +986,11 @@ function AdminSettings(): JSX.Element {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'settings'] }),
   });
   if (q.isLoading || !q.data) return <div className="p-4 text-sm text-slate-500">Loading…</div>;
-  const s = q.data as {
+  const envSiteUrl = q.data.envSiteUrl;
+  const envPortalUrl = q.data.envPortalUrl;
+  const effectiveSiteUrl = q.data.effectiveSiteUrl;
+  const effectivePortalUrl = q.data.effectivePortalUrl;
+  const s = q.data.settings as {
     firm_name: string;
     app_name: string | null;
     retention_days: number | null;
@@ -852,6 +1008,8 @@ function AdminSettings(): JSX.Element {
     message_edit_window_minutes: number;
     message_destruct_enabled: boolean;
     message_destruct_max_seconds: number;
+    site_url: string | null;
+    portal_url: string | null;
   };
   // pg returns JSONB as parsed objects in most cases, but a few code paths
   // hand it back as a string — normalize defensively so the editor never
@@ -907,6 +1065,33 @@ function AdminSettings(): JSX.Element {
           className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
         />
       </label>
+
+      <fieldset className="rounded-md border border-slate-200 bg-white shadow-card p-3 space-y-3">
+        <legend className="text-sm font-medium text-slate-700 px-1">Public URLs</legend>
+        <p className="text-xs text-slate-500">
+          Overrides for the URLs embedded in invite emails, intake links, and offline notifications
+          sent to clients. Leave blank to use the appliance&apos;s env defaults.
+          <strong className="block mt-1 text-amber-700">
+            Wrong values here break authentication and client-facing links until corrected.
+          </strong>
+        </p>
+        <UrlOverrideField
+          label="Site URL"
+          helpText="Staff-facing origin. Used for tokenized intake links sent to clients. Multi-app appliances include the path prefix, e.g. https://vibe.example.com/connect"
+          envDefault={envSiteUrl}
+          effective={effectiveSiteUrl}
+          dbValue={s.site_url}
+          field="siteUrl"
+        />
+        <UrlOverrideField
+          label="Portal URL"
+          helpText="Client-portal origin. Used for the magic-link invite emails and the per-message offline notification links. Usually the Site URL plus /portal."
+          envDefault={envPortalUrl}
+          effective={effectivePortalUrl}
+          dbValue={s.portal_url}
+          field="portalUrl"
+        />
+      </fieldset>
       <div className="block">
         <label className="block">
           <span className="text-sm text-slate-700">Retention (days, blank = keep forever)</span>

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import { db } from '../db/knex.js';
 import { env } from '../env.js';
+import { effectiveUrls } from '../services/effectiveUrls.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { auditRepo } from '../repositories/audit.js';
 import {
@@ -69,10 +70,12 @@ portalRouter.post(
         const { code } = await issueAccessCode(identity, via);
         if (via === 'email') {
           const emailProvider = await getEmailProvider();
+          // Honors admin-side DB override of PORTAL_URL via firm_settings.
+          const { portalUrl } = await effectiveUrls();
           await emailProvider.send({
             to: identity.email,
             subject: 'Your Vibe Connect access code',
-            text: `Your code is: ${code}\nExpires in 10 minutes.\nOpen: ${env.portalUrl}`,
+            text: `Your code is: ${code}\nExpires in 10 minutes.\nOpen: ${portalUrl}`,
           });
         } else {
           const smsProvider = await getSmsProvider();

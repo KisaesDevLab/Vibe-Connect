@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
 import { env } from '../env.js';
+import { effectiveUrls } from '../services/effectiveUrls.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAuth } from '../middleware/auth.js';
 import { auditRepo } from '../repositories/audit.js';
@@ -633,8 +634,6 @@ intakeAdminRouter.get(
 // ticker isn't involved here.
 // ============================================================================
 
-const SITE_URL_BASE = (): string => env.siteUrl.replace(/\/$/, '');
-
 interface SendResult {
   email: boolean;
   sms: boolean;
@@ -652,8 +651,16 @@ async function sendLink(opts: {
   staffDisplayName: string;
   firmName: string;
   note: string | null;
+  /**
+   * The site URL base (no trailing slash) to embed in the outbound message.
+   * Passed in (rather than read from env) so the admin-configured DB
+   * override in firm_settings.site_url propagates here. Callers compute
+   * it once via `(await effectiveUrls()).siteUrl.replace(/\/$/, '')` and
+   * pass it through.
+   */
+  siteUrlBase: string;
 }): Promise<SendResult> {
-  const url = `${SITE_URL_BASE()}/intake/t/${opts.token}`;
+  const url = `${opts.siteUrlBase}/intake/t/${opts.token}`;
   const expiryStr = opts.expiresAt.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
   const result: SendResult = { email: false, sms: false };
   if (opts.email) {
@@ -762,6 +769,7 @@ intakeAdminRouter.post(
       .where({ id: 1 })
       .first<{ firm_name: string }>('firm_name');
     const firmName = firm?.firm_name ?? 'Vibe Connect';
+    const siteUrlBase = (await effectiveUrls()).siteUrl.replace(/\/$/, '');
 
     const emailEnc = parsed.data.email ? await encryptField(parsed.data.email) : null;
     const phoneEnc = parsed.data.phone ? await encryptField(parsed.data.phone) : null;
@@ -811,6 +819,7 @@ intakeAdminRouter.post(
         staffDisplayName: staff.display_name,
         firmName,
         note: parsed.data.note ?? null,
+        siteUrlBase,
       });
       await auditRepo.write({
         actorUserId: me,
@@ -836,7 +845,7 @@ intakeAdminRouter.post(
       link: {
         id: linkRow.id,
         token: linkRow.token,
-        url: `${SITE_URL_BASE()}/intake/t/${linkRow.token}`,
+        url: `${siteUrlBase}/intake/t/${linkRow.token}`,
         expiresAt: linkRow.expires_at,
         send: sendResult,
         sendError,
@@ -921,6 +930,9 @@ intakeAdminRouter.get(
     }
     const offset = (parsed.data.page - 1) * parsed.data.pageSize;
     const rows = await q.offset(offset).limit(parsed.data.pageSize);
+    // Resolve once, reuse for every row in the map below — avoids N
+    // identical firm_settings reads on a list endpoint.
+    const siteUrlBase = (await effectiveUrls()).siteUrl.replace(/\/$/, '');
 
     // Decrypt the encrypted contact columns for display. Each is wrapped
     // in try/catch so one bad row (key-rotation incident) doesn't 500
@@ -938,7 +950,7 @@ intakeAdminRouter.get(
           // Token is included for the "copy link" affordance on the UI.
           // The link IS the secret; staff who can see this list could
           // already issue one themselves.
-          url: `${SITE_URL_BASE()}/intake/t/${r.token}`,
+          url: `${siteUrlBase}/intake/t/${r.token}`,
           assignedStaffId: r.assigned_staff_id,
           assignedStaffName: r.assigned_staff_name,
           createdByUserId: r.created_by_user_id,
@@ -1032,6 +1044,7 @@ intakeAdminRouter.post(
     const phone = link.client_phone_enc
       ? await decryptField(link.client_phone_enc).catch(() => null)
       : null;
+    const siteUrlBase = (await effectiveUrls()).siteUrl.replace(/\/$/, '');
     let sendError: string | null = null;
     let sendResult: SendResult = { email: false, sms: false };
     try {
@@ -1043,6 +1056,7 @@ intakeAdminRouter.post(
         staffDisplayName: staff?.display_name ?? '(staff)',
         firmName: firm?.firm_name ?? 'Vibe Connect',
         note: link.note_to_client,
+        siteUrlBase,
       });
       await auditRepo.write({
         actorUserId: me,

@@ -12,6 +12,7 @@ import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { generators, Issuer, type Client, type TokenSet } from 'openid-client';
 import { env } from '../env.js';
+import { effectiveUrls } from '../services/effectiveUrls.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { auditRepo } from '../repositories/audit.js';
 import { usersRepo } from '../repositories/users.js';
@@ -310,7 +311,11 @@ oidcRouter.get(
     });
 
     // Send them to the staff app. Enrollment still prompts for a device passphrase.
-    res.redirect(env.siteUrl + '/');
+    // Honors the admin DB override of SITE_URL (firm_settings.site_url) so an
+    // OIDC SSO that lands here doesn't bounce the user to a misconfigured
+    // default URL.
+    const { siteUrl } = await effectiveUrls();
+    res.redirect(siteUrl + '/');
   }),
 );
 

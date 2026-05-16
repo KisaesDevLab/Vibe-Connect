@@ -6,6 +6,7 @@ import type { Knex } from 'knex';
 import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { env } from '../env.js';
+import { effectiveUrls } from '../services/effectiveUrls.js';
 import { logger } from '../logger.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { requireAdmin, requireAuth } from '../middleware/auth.js';
@@ -92,7 +93,17 @@ adminRouter.get(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     const row = await db('firm_settings').where({ id: 1 }).first();
-    res.json({ settings: row });
+    // Surface env-derived URL defaults alongside the row so the admin UI
+    // can show "currently overriding to X, env default is Y" without a
+    // second roundtrip. Source: services/effectiveUrls.ts.
+    const urls = await effectiveUrls();
+    res.json({
+      settings: row,
+      envSiteUrl: urls.envSiteUrl,
+      envPortalUrl: urls.envPortalUrl,
+      effectiveSiteUrl: urls.siteUrl,
+      effectivePortalUrl: urls.portalUrl,
+    });
   }),
 );
 
@@ -202,7 +213,65 @@ const settingsSchema = z.object({
     .optional(),
   vaultNewYearCronEnabled: z.boolean().optional(),
   vaultInformationBarrier: z.boolean().optional(),
+
+  // Admin overrides for SITE_URL / PORTAL_URL. Null clears the override so
+  // env values take effect again. Validation is strict: must parse as a
+  // URL, http or https only, no query/fragment, no trailing slash. We
+  // explicitly REJECT the dev-default placeholder ("http://localhost:4000")
+  // so a confused admin can't "save" the same wrong value they're trying
+  // to fix and walk away thinking it's now set. Plain localhost over
+  // http is allowed for dev/staging; anything else must be https.
+  siteUrl: z.string().nullable().optional(),
+  portalUrl: z.string().nullable().optional(),
 });
+
+/**
+ * Validate one of the admin-settable URL overrides. Returns the normalized
+ * value (trimmed, no trailing slash) on success, or an error message tag.
+ * Pulled into a helper so siteUrl + portalUrl share semantics — drifting
+ * validation between the two would let an admin save a malformed siteUrl
+ * after the portalUrl one rejected it.
+ *
+ * Returns null when the input is null or empty (the "clear override" path).
+ */
+function normalizeAdminUrl(
+  raw: string | null | undefined,
+): { ok: true; value: string | null } | { ok: false; error: string } {
+  if (raw === null || raw === undefined) return { ok: true, value: null };
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: null };
+  if (trimmed.length > 1024) return { ok: false, error: 'too_long' };
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, error: 'invalid_url' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { ok: false, error: 'bad_scheme' };
+  }
+  if (parsed.search) return { ok: false, error: 'query_not_allowed' };
+  if (parsed.hash) return { ok: false, error: 'fragment_not_allowed' };
+  // localhost / 127.0.0.1 / loopback IPv6 may use plain http; anything else
+  // demands https. Stops an admin from saving a real public URL over http,
+  // which would land cookies on a non-secure origin and break session
+  // handling.
+  const isLoopback =
+    parsed.hostname === 'localhost' ||
+    parsed.hostname === '127.0.0.1' ||
+    parsed.hostname === '[::1]' ||
+    parsed.hostname === '::1';
+  if (parsed.protocol === 'http:' && !isLoopback) {
+    return { ok: false, error: 'http_only_allowed_for_localhost' };
+  }
+  // Refuse the canonical dev defaults — saving them is almost always a
+  // misclick by an admin trying to fix a misconfigured appliance.
+  const normalized = trimmed.replace(/\/$/, '');
+  if (normalized === 'http://localhost:4000' || normalized === 'http://localhost:4000/portal') {
+    return { ok: false, error: 'dev_default_not_allowed' };
+  }
+  return { ok: true, value: normalized };
+}
 
 // Minimum set of provider-secret keys that must be configured before switching
 // an outbound channel to a given provider. If any are missing, the PATCH is
@@ -324,6 +393,25 @@ adminRouter.patch(
       patch.vault_new_year_cron_enabled = parsed.data.vaultNewYearCronEnabled;
     if (parsed.data.vaultInformationBarrier !== undefined)
       patch.vault_information_barrier = parsed.data.vaultInformationBarrier;
+    // Admin URL overrides — validated via normalizeAdminUrl. Reject 400
+    // early so a bad save doesn't partially apply alongside other fields
+    // in the same PATCH.
+    if (parsed.data.siteUrl !== undefined) {
+      const n = normalizeAdminUrl(parsed.data.siteUrl);
+      if (!n.ok) {
+        res.status(400).json({ error: 'bad_request', field: 'siteUrl', reason: n.error });
+        return;
+      }
+      patch.site_url = n.value;
+    }
+    if (parsed.data.portalUrl !== undefined) {
+      const n = normalizeAdminUrl(parsed.data.portalUrl);
+      if (!n.ok) {
+        res.status(400).json({ error: 'bad_request', field: 'portalUrl', reason: n.error });
+        return;
+      }
+      patch.portal_url = n.value;
+    }
     if (Object.keys(patch).length > 0) {
       await db('firm_settings')
         .where({ id: 1 })

@@ -11,6 +11,7 @@ import EmailReplyParser from 'email-reply-parser';
 import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { env } from '../env.js';
+import { effectiveUrls } from '../services/effectiveUrls.js';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { auditRepo } from '../repositories/audit.js';
 import { logger } from '../logger.js';
@@ -520,7 +521,8 @@ export async function maybeSendOutboundEmail(
 
   const token = await ensureConversationToken(args.conversationId);
   const replyTo = makeInboundAddress(token);
-  const portalUrl = env.portalUrl;
+  // Honors admin-side DB override of PORTAL_URL via firm_settings.
+  const { portalUrl } = await effectiveUrls();
 
   if (settings.email_outbound_mode === 'content' && args.previewCiphertext) {
     logger.warn('email.content_mode_downgrade', { reason: 'no-server-decrypt' });

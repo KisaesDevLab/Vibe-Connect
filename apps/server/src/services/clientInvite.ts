@@ -4,7 +4,7 @@
 // break the portal's /invite acceptance handshake.
 import { randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { env } from '../env.js';
+import { effectiveUrls } from './effectiveUrls.js';
 
 // CRYPTO: Invite-URL token layout.
 //   bytes  0..16  → identifier; bcrypt-hashed into invite_token_hash for verification
@@ -66,7 +66,11 @@ export interface SendClientInviteArgs {
 // conversation-reading private key from it.
 export async function sendClientInvite(args: SendClientInviteArgs): Promise<void> {
   const urlTok = args.token.toString('base64url');
-  const link = `${env.portalUrl}/invite?id=${encodeURIComponent(args.identityId)}&t=${urlTok}`;
+  // Honors the admin-side DB override (firm_settings.portal_url) so a firm
+  // can fix invite-link URLs from the Admin UI without SSH access to the
+  // appliance env file.
+  const { portalUrl } = await effectiveUrls();
+  const link = `${portalUrl.replace(/\/$/, '')}/invite?id=${encodeURIComponent(args.identityId)}&t=${urlTok}`;
   const firm = args.firmName?.trim() || 'your firm';
   const sender = args.fromDisplayName?.trim().split(/\s+/)[0] || 'Your firm';
   if (args.via === 'email') {

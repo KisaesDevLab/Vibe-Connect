@@ -15,6 +15,7 @@
 import type { Knex } from 'knex';
 import { db } from '../db/knex.js';
 import { env } from '../env.js';
+import { effectiveUrls } from './effectiveUrls.js';
 import { logger } from '../logger.js';
 import { getEmailProvider } from '../bridges/email/index.js';
 import { getSmsProvider } from '../bridges/sms/index.js';
@@ -226,7 +227,12 @@ export async function notifyForNewMessage(args: OfflineNotifyArgs): Promise<Disp
       loadFirmName(),
     ]);
     const now = new Date();
-    const portalUrl = (env.portalUrl ?? '').replace(/\/$/, '');
+    // Honors admin-side DB override of PORTAL_URL via firm_settings; falls
+    // back to env. Resolved once per dispatch — the loop below reuses it for
+    // every recipient.
+    const urls = await effectiveUrls();
+    const portalUrl = urls.portalUrl.replace(/\/$/, '');
+    const siteUrl = urls.siteUrl;
     for (const r of recipients) {
       const result: DispatchResult = {
         userId: r.user_id,
@@ -278,7 +284,7 @@ export async function notifyForNewMessage(args: OfflineNotifyArgs): Promise<Disp
               `Hi ${r.display_name},\n\n` +
               `${sender.displayName} sent you a new message in ${firmName}.\n` +
               (args.urgent ? `It is marked urgent.\n` : '') +
-              `\nOpen the app to read it: ${portalUrl || env.siteUrl}\n\n` +
+              `\nOpen the app to read it: ${portalUrl || siteUrl}\n\n` +
               `This email never includes the message body — sign in to read it.\n`,
           });
           result.email = 'sent';
@@ -304,7 +310,7 @@ export async function notifyForNewMessage(args: OfflineNotifyArgs): Promise<Disp
         try {
           const provider = await getSmsProvider();
           const prefix = args.urgent ? `[Urgent] ${firmName}: ` : `${firmName}: `;
-          const open = portalUrl || env.siteUrl;
+          const open = portalUrl || siteUrl;
           await provider.sendMessage({
             to: r.phone,
             body: `${prefix}${sender.displayName} sent you a new message. Open: ${open}`,
@@ -416,7 +422,9 @@ export async function notifyExternalRecipients(
   try {
     const recipients = await loadExternalRecipients(args.conversationId);
     if (recipients.length === 0) return out;
-    const portalUrl = (env.portalUrl ?? '').replace(/\/$/, '') || env.siteUrl;
+    // Honors admin-side DB override of PORTAL_URL / SITE_URL via firm_settings.
+    const urls = await effectiveUrls();
+    const portalUrl = urls.portalUrl.replace(/\/$/, '') || urls.siteUrl;
     const firmName = await loadFirmName();
     const smsAvailable = await smsProviderAvailable();
     for (const r of recipients) {
