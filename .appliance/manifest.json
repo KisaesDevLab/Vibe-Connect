@@ -62,7 +62,12 @@
         "subdomain": "connect",
         "suffix": "/portal"
       },
-      { "name": "API_URL", "from": "subdomain-url", "subdomain": "connect" }
+      { "name": "API_URL", "from": "subdomain-url", "subdomain": "connect" },
+      {
+        "name": "CONNECT_INTAKE_ENCRYPTION_KEY",
+        "secret": true,
+        "doc": "Phase 28 intake encryption-at-rest key. 32 raw bytes (libsodium secretbox / XChaCha20-Poly1305) encoded as base64 (44 chars). Generate with: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\". Set in /opt/vibe/env/vibe-connect.env then recreate the vibe-connect-server container. Losing this key makes every encrypted intake row + file unrecoverable — record it alongside SESSION_SECRET and the firm recovery phrase. The appliance schema does not currently support a base64-32 generator, so this entry has no `from:` source and the appliance bootstrap will surface a 'required env var not set' error on fresh installs until the operator generates and pastes the value. Tracked: extend the appliance schema with `generated:base64-32` (and back-fill `from` here) as a future cleanup."
+      }
     ],
     "optional": [
       { "name": "BASE_PATH", "default": "/connect" },
