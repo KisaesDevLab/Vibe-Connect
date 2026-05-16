@@ -369,4 +369,50 @@ http {
     }
   }
 
+  # ---- Client portal — plain HTTP listener for external TLS mode ----
+  # vibe:tls-external-only:begin portal-http
+  # Parallel to the TLS-internal portal server block above, but listens
+  # on plain HTTP so an upstream TLS terminator (Vibe-Appliance Caddy,
+  # Cloudflare Tunnel, etc.) can reach the portal SPA + API. Without
+  # this, an appliance-mode vibe-connect-client image serves ONLY the
+  # staff app on the HTTP listener — the portal SPA is never reachable
+  # even when the upstream proxy correctly routes a `client.<domain>`
+  # subdomain at this container. The entrypoint strips this block in
+  # TLS_MODE=internal (the TLS-internal portal block on
+  # PORTAL_HTTPS_PORT remains the source of truth for standalone
+  # single-app deployments).
+  server {
+    listen ${PORTAL_HTTP_PORT};
+    server_name _;
+
+    location /__vibe-boot.js {
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    # Same multiplex as the TLS-internal portal: API paths proxy to the
+    # backend, SPA-shell paths get rewritten to /index.html and served
+    # from the portal bundle by the catch-all below.
+    location ~ ^/(portal|auth|attachments|notifications|health)(/|$) {
+      if ($vibe_wants_spa = 1) {
+        rewrite ^ /index.html last;
+      }
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    location / {
+      root /usr/share/nginx/html/portal;
+      try_files $uri $uri/ /index.html;
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+  }
+  # vibe:tls-external-only:end portal-http
 }

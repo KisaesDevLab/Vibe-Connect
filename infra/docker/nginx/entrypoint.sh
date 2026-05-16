@@ -10,6 +10,11 @@
 #   HTTP_PORT        80   (default 80)
 #   HTTPS_PORT       443  (default 443; ignored in TLS_MODE=external)
 #   PORTAL_HTTPS_PORT 8443 (default 8443; ignored in TLS_MODE=external)
+#   PORTAL_HTTP_PORT 8080 (default 8080; ignored in TLS_MODE=internal —
+#                          the portal listens HTTPS-only there). In
+#                          external mode an upstream TLS terminator
+#                          (Caddy / Cloudflare Tunnel) maps the public
+#                          client subdomain to this internal port.
 #
 # We pre-compute two derived values the template needs:
 #   BASE_PATH_HREF      empty when BASE_PATH=/ (so <base href="/"> renders),
@@ -24,6 +29,7 @@ set -e
 : "${HTTP_PORT:=80}"
 : "${HTTPS_PORT:=443}"
 : "${PORTAL_HTTPS_PORT:=8443}"
+: "${PORTAL_HTTP_PORT:=8080}"
 # Where the staff `/desktop/` redirect points. Default is the public
 # GitHub releases page; appliances on isolated networks override to a
 # locally-mirrored URL. Mounted only on the staff server block — the
@@ -55,7 +61,7 @@ esac
 # Port values must be plain integers in the 1-65535 range — they end up in
 # nginx's `listen` directive and a malformed value produces a confusing
 # config-parse failure deep in nginx's startup.
-for var in HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT; do
+for var in HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT PORTAL_HTTP_PORT; do
   eval "val=\${$var}"
   case "$val" in
     ''|*[!0-9]*)
@@ -77,7 +83,7 @@ case "${TLS_MODE}" in
     ;;
 esac
 
-export BASE_PATH BASE_PATH_HREF TLS_MODE HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT DESKTOP_DOWNLOAD_URL
+export BASE_PATH BASE_PATH_HREF TLS_MODE HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT PORTAL_HTTP_PORT DESKTOP_DOWNLOAD_URL
 
 # In TLS_MODE=internal the SSL `server` blocks reference
 # /etc/nginx/tls/{connect,portal}.{crt,key}. On a fresh appliance the
@@ -105,10 +111,19 @@ render_config() {
     external) TLS_MODE_INTERNAL=0 ;;
   esac
   export TLS_MODE_INTERNAL
-  envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${DESKTOP_DOWNLOAD_URL}' \
+  envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${PORTAL_HTTP_PORT} ${DESKTOP_DOWNLOAD_URL}' \
     < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
   if [ "$effective_mode" = "external" ]; then
+    # External mode: strip the TLS-internal HTTPS server blocks (staff +
+    # portal). The remaining HTTP listeners cover staff (HTTP_PORT) and,
+    # post Phase β, portal (PORTAL_HTTP_PORT) for upstream-TLS deployments.
     sed -i '/# vibe:tls-internal-only:begin/,/# vibe:tls-internal-only:end/d' /etc/nginx/nginx.conf
+  else
+    # Internal mode: the TLS-internal portal HTTPS block on PORTAL_HTTPS_PORT
+    # is the canonical portal listener — strip the external-only plain-HTTP
+    # portal block so we don't end up with two listeners trying to serve
+    # the same SPA (one over HTTPS, one over plain HTTP) on the same image.
+    sed -i '/# vibe:tls-external-only:begin/,/# vibe:tls-external-only:end/d' /etc/nginx/nginx.conf
   fi
 }
 
