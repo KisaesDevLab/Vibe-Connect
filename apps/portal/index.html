@@ -9,7 +9,17 @@
     <meta name="theme-color" content="#1e3a8a" />
     <link rel="icon" type="image/svg+xml" href="favicon.svg" />
     <title>Firm Portal</title>
-    <script src="__vibe-boot.js"></script>
+    <!--
+      Boot script must be absolute (not relative) because the endpoint
+      lives on the backend at the origin root (nginx `location /__vibe-boot.js`
+      proxy_pass http://app:4000). The relative src `__vibe-boot.js`
+      resolves against <base href>, which becomes `/connect/` under the
+      Vibe-Appliance path-mount — sending the fetch to /connect/__vibe-boot.js
+      and ultimately to the WRONG nginx listener (staff:80 instead of
+      portal:8080). Using __BASE_HREF__ as an absolute prefix sidesteps
+      the base href entirely.
+    -->
+    <script src="__BASE_HREF__/__vibe-boot.js"></script>
   </head>
   <body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>
