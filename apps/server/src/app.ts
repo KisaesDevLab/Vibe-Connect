@@ -443,14 +443,41 @@ export function createApp(): Express {
     res.status(404).json({ error: 'not_found' });
   });
 
+  // Map an Express error's HTTP status to a stable, meaningful error code
+  // for the JSON response body. Order of preference:
+  //   1. err.code (most routes use this — e.g. {code:'unknown_staff', status:400})
+  //   2. err.type (body-parser convention — e.g. {type:'entity.parse.failed',status:400})
+  //   3. Status-derived fallback (400 → 'bad_request', 401 → 'unauthorized', etc.)
+  // Previously this fell through to the literal string 'error', which leaked
+  // to callers as `{"error":"error"}` — meaningless to the recipient AND a
+  // small hygiene issue (looks like a placeholder leak).
+  const statusToCode: Record<number, string> = {
+    400: 'bad_request',
+    401: 'unauthorized',
+    403: 'forbidden',
+    404: 'not_found',
+    405: 'method_not_allowed',
+    409: 'conflict',
+    413: 'payload_too_large',
+    415: 'unsupported_media_type',
+    422: 'unprocessable_entity',
+    429: 'too_many_requests',
+  };
+  function deriveErrorCode(err: Error, status: number): string {
+    const e = err as { code?: unknown; type?: unknown };
+    if (typeof e.code === 'string' && e.code.length > 0) return e.code;
+    if (typeof e.type === 'string' && e.type.length > 0) return e.type;
+    return statusToCode[status] ?? `http_${status}`;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
     const status = (err as { status?: unknown }).status;
-    const code = (err as { code?: unknown }).code;
     const reqId = req.reqId;
     if (typeof status === 'number' && status >= 400 && status < 600) {
+      const code = deriveErrorCode(err, status);
       logger.warn('request_client_error', { reqId, status, code, msg: err.message });
-      res.status(status).json({ error: typeof code === 'string' ? code : 'error', reqId });
+      res.status(status).json({ error: code, reqId });
       return;
     }
     logger.error('request_error', { reqId, msg: err.message, stack: err.stack });

@@ -36,20 +36,23 @@ set -e
 # portal SPA never surfaces this path.
 : "${DESKTOP_DOWNLOAD_URL:=https://github.com/KisaesDevLab/Vibe-Connect/releases/latest}"
 
-# Whitelist BASE_PATH to either '/' or '/<segment>'. The value flows into
-# nginx's sub_filter substitution and the SPA's <base href> attribute; an
-# operator typo like 'connect' (missing slash) or stray quotes would break
-# routing or — for the truly creative — let a malicious env value forge an
-# HTML fragment. Refuse to start instead of papering over a config error.
-case "${BASE_PATH}" in
-  /) ;;
-  /[a-z][a-z0-9_-]*) ;;
-  /[a-z][a-z0-9_-]*/) ;;
-  *)
-    echo "[entrypoint] invalid BASE_PATH='${BASE_PATH}' (expected '/' or '/<lowercase-name>')" >&2
-    exit 1
-    ;;
-esac
+# Whitelist BASE_PATH to either '/' or '/<segment>' with optional trailing
+# slash. The value flows into nginx's sub_filter substitution and the
+# SPA's <base href> attribute; an operator typo like 'connect' (missing
+# slash), '/Connect' (uppercase), '/my path' (whitespace), or stray
+# quotes would break routing or — for the truly creative — let a
+# malicious env value forge an HTML fragment. Refuse to start instead
+# of papering over a config error.
+#
+# IMPORTANT: bash `case` uses glob, not regex. `[a-z][a-z0-9_-]*` in
+# case-glob matches *any chars* after the first letter, including
+# whitespace and control bytes — `/my path` previously slipped past
+# this validator. The image's /bin/sh is BusyBox ash (no =~ operator),
+# so we route through `grep -qE` for a real anchored ERE check.
+if ! printf '%s' "${BASE_PATH}" | grep -qE '^/$|^/[a-z][a-z0-9_-]*/?$'; then
+  echo "[entrypoint] invalid BASE_PATH='${BASE_PATH}' (expected '/' or '/<lowercase-name>'; no whitespace, no uppercase)" >&2
+  exit 1
+fi
 
 # Strip trailing slashes (so '/connect/' and '/connect' produce the same
 # href). Single-app '/' → '' so <base href="/"> is what the browser sees.

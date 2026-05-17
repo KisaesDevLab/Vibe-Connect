@@ -81,4 +81,14 @@ describe('intakeCrypto', () => {
     expect(searchHashEquals(h, h + 'A')).toBe(false);
     expect(searchHashEquals(h, 'different')).toBe(false);
   });
+
+  // Sentinel exists + is exported. Behavior coverage (hashForAudit returning
+  // it when the key is unset) is verified end-to-end at the route layer —
+  // exercising it as a unit test would require mocking the env module that
+  // intakeCrypto.ts captures at import time. The sentinel value itself is
+  // stable + asserted here so a future rename surfaces as a test failure.
+  it('exports HASH_FOR_AUDIT_UNKEYED sentinel for audit viewers to recognize', async () => {
+    const mod = await import('../services/intakeCrypto.js');
+    expect(mod.HASH_FOR_AUDIT_UNKEYED).toBe('unkeyed-no-intake-key');
+  });
 });

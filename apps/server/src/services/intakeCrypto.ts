@@ -164,6 +164,19 @@ function assertKeyLength(key: Uint8Array): void {
 }
 
 /**
+ * Sentinel returned by `hashForAudit` when the intake key isn't configured.
+ * Audit rows written during a misconfigured-appliance window record this
+ * placeholder instead of crashing; the audit viewer can surface "key
+ * missing during this window" as an operator hygiene signal without the
+ * misconfiguration cascading into a 500 on every public intake probe.
+ *
+ * Exported so tests + audit viewers can recognize it explicitly.
+ */
+export const HASH_FOR_AUDIT_UNKEYED = 'unkeyed-no-intake-key';
+
+let warnedUnkeyed = false;
+
+/**
  * Deterministic HMAC-SHA256 over a plaintext value, keyed by the intake
  * content key. Use this for audit-event payload fields where the operator
  * needs to correlate two audit rows ("same client uploaded twice?") without
@@ -172,9 +185,42 @@ function assertKeyLength(key: Uint8Array): void {
  * NOT for staff search — see `searchHash` instead. The audit hash rotates
  * with the intake key (intentional: historical audit rows can be tied to
  * pre-rotation plaintexts but not to post-rotation ones).
+ *
+ * Tolerates a missing key: if `CONNECT_INTAKE_ENCRYPTION_KEY` is unset the
+ * function returns `HASH_FOR_AUDIT_UNKEYED` and logs a one-shot warning
+ * instead of throwing. Audit hashing is observability — it should never
+ * cascade an environment misconfiguration into a 500 response on a public
+ * route. Without this defense, an anonymous client probing
+ * `/api/public/intake/links/<bad-token>` on a server whose operator
+ * forgot to generate the intake key gets a 500 instead of the intended
+ * 404, leaking server-misconfig state.
  */
 export function hashForAudit(plaintext: string): string {
-  return createHmac('sha256', intakeKey()).update(plaintext, 'utf8').digest('base64url');
+  try {
+    return createHmac('sha256', intakeKey()).update(plaintext, 'utf8').digest('base64url');
+  } catch (err) {
+    if (!warnedUnkeyed) {
+      warnedUnkeyed = true;
+      // Plain console.warn to avoid an import cycle with logger.ts (which
+      // imports services indirectly). One-shot per process; the operator
+      // sees this once at first audit attempt, not on every request.
+      console.warn(
+        '[intakeCrypto] hashForAudit called without CONNECT_INTAKE_ENCRYPTION_KEY set;',
+        'audit rows will record the unkeyed sentinel until the env var is configured.',
+        'Original error:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return HASH_FOR_AUDIT_UNKEYED;
+  }
+}
+
+/**
+ * Test-only: reset the one-shot warning latch so tests can re-exercise
+ * the warning path. Production code never calls this.
+ */
+export function __resetHashForAuditWarn(): void {
+  warnedUnkeyed = false;
 }
 
 /**

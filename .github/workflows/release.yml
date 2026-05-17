@@ -106,9 +106,14 @@ jobs:
       # Signs the immutable digest emitted by build-push-action so a later
       # mutable tag retag (e.g. moving :latest forward) doesn't invalidate
       # the signature. Operators verify with:
-      #   cosign verify ghcr.io/kisaesdevlab/vibe-connect-server:1.4.2 \
-      #     --certificate-identity-regexp 'github.com/KisaesDevLab/vibe-connect' \
+      #   cosign verify ghcr.io/kisaesdevlab/vibe-connect-server:X.Y.Z \
+      #     --certificate-identity-regexp 'github.com/KisaesDevLab/Vibe-Connect' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+      # NOTE: `Vibe-Connect` is mixed-case in the cert subject (mirrors the
+      # GitHub repo name exactly). A lowercase regex returns "no matching
+      # signatures" — confirmed during v0.4.1 production-QA. cosign 2.4+
+      # writes signatures via the OCI 1.1 referrers API; older tags
+      # (≤ 0.2.1) still have legacy `.sig` tags, anything ≥ 0.2.2 doesn't.
       - uses: sigstore/cosign-installer@v3
       - name: Sign vibe-connect-server
         env:
