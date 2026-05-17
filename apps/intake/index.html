@@ -7,8 +7,22 @@
       `__BASE_HREF__` is substituted by nginx's sub_filter at request time;
       single-app mode resolves to "/", multi-app to "/connect". The SPA's
       Router reads BASE_PATH back from window.__VIBE_BOOT__ in boot.ts.
+
+      The base href ALSO appends `intake/` because the intake bundle is
+      mounted under nginx's `location ^~ /intake` block (the staff bundle
+      owns the catch-all `location /`). Relative URLs in this bundle —
+      Vite-emitted `./assets/*.js`, favicon, manifest, etc. — need to
+      resolve under `/intake/` so the matching nginx location serves them
+      from /usr/share/nginx/html/intake/ instead of falling through to
+      the staff bundle's /web root (where the intake hashes don't exist,
+      and try_files would silently return the staff `index.html` with
+      HTTP 200 — booting the staff app, which then redirects to /login
+      because the visitor isn't authenticated). The `__vibe-boot.js`
+      script below uses an absolute __BASE_HREF__-prefixed path because
+      that endpoint lives on the BACKEND (not under /intake/) and must
+      hit nginx's root-level `location /__vibe-boot.js` proxy_pass.
     -->
-    <base href="__BASE_HREF__/" />
+    <base href="__BASE_HREF__/intake/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <meta name="theme-color" content="#1e3a8a" />
@@ -30,7 +44,7 @@
     -->
     <link rel="manifest" href="manifest.webmanifest" />
     <title>Send files</title>
-    <script src="__vibe-boot.js"></script>
+    <script src="__BASE_HREF__/__vibe-boot.js"></script>
   </head>
   <body class="min-h-screen bg-slate-50 text-slate-900 antialiased">
     <div id="root"></div>
