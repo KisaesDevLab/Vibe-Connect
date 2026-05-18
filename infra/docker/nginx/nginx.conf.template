@@ -260,6 +260,40 @@ http {
       proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
     }
 
+    # Phase 28.3 — anonymous intake API on the portal subdomain.
+    # Mirrors the staff block; clients reach this from tokenized intake
+    # links (apps/server sends portalUrl + /api/public/intake/... in
+    # emails) and from the public "Send us files" landing card. `^~` so
+    # it beats the catch-all `/` below.
+    location ^~ /api/public/intake/ {
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    # Phase 28.3 — anonymous intake SPA on the portal subdomain.
+    # The intake bundle is the public, no-auth client-upload surface; it
+    # MUST be reachable on the client portal subdomain so the URLs
+    # emitted in client-facing emails are client-branded
+    # (`client.<domain>/intake/t/<token>`), not staff-branded
+    # (`vibe.<domain>/connect/intake/...`). The staff block keeps its own
+    # /intake mount for staff preview / debugging.
+    #
+    # Substitutes PORTAL_BASE_PATH_HREF (not BASE_PATH_HREF) because the
+    # intake bundle's source HTML carries `<base href="__BASE_HREF__/intake/">`
+    # and on the portal subdomain we want `<base href="/intake/">`, not
+    # `<base href="/connect/intake/">` (which would 404 every asset).
+    location ^~ /intake {
+      root /usr/share/nginx/html/intake;
+      rewrite ^/intake/?(.*)$ /$1 break;
+      try_files $uri $uri/ /index.html;
+      sub_filter_types application/manifest+json;
+      sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+
     location / {
       root /usr/share/nginx/html/portal;
       try_files $uri $uri/ /index.html;
@@ -448,6 +482,28 @@ http {
       proxy_set_header Host $host;
       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    # Anonymous intake API + SPA on the portal subdomain. See the
+    # TLS-internal portal block above for the rationale. This block is
+    # the surface clients actually reach in appliance deployments (Caddy
+    # / Cloudflare Tunnel terminates TLS upstream and proxies plain HTTP
+    # to PORTAL_HTTP_PORT).
+    location ^~ /api/public/intake/ {
+      set $app_backend http://app:4000;
+      proxy_pass $app_backend;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $vibe_forwarded_proto;
+    }
+
+    location ^~ /intake {
+      root /usr/share/nginx/html/intake;
+      rewrite ^/intake/?(.*)$ /$1 break;
+      try_files $uri $uri/ /index.html;
+      sub_filter_types application/manifest+json;
+      sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
+      sub_filter_once off;
     }
 
     location / {
