@@ -12,13 +12,61 @@
 // The output is JS (not JSON) so it can be loaded as a classic <script>
 // tag without the SPA having to await a fetch before it knows its own
 // base path. That avoids a flash-of-wrong-routing on first paint.
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { asyncHandler } from '../middleware/asyncHandler.js';
 import { db } from '../db/knex.js';
 import { env } from '../env.js';
-import { effectiveUrls } from '../services/effectiveUrls.js';
+import { effectiveUrls, type EffectiveUrls } from '../services/effectiveUrls.js';
 
 export const bootstrapRouter = Router();
+
+/**
+ * Pick the basePath the requesting SPA should mount its router under.
+ *
+ * Multi-subdomain appliance deployments serve the staff bundle at one host
+ * (vibe.<domain>/connect/, basePath="/connect") AND the client portal at
+ * another (client.<domain>/, basePath="/"). The SAME server emits the
+ * boot script for both — so a single env.basePath value is wrong for one
+ * of them. Match the request's Host against the effective portal/site
+ * URLs and derive basePath from whichever URL's pathname matches.
+ *
+ * Single-app deployments and dev environments where Host matches neither
+ * URL (e.g. localhost:4000 hitting the endpoint directly during a test)
+ * fall back to env.basePath — preserving the prior behavior.
+ *
+ * Why URL.pathname instead of a separate env var: the SPA's basePath is
+ * already encoded in the URL the operator gave it. SITE_URL / PORTAL_URL
+ * are configurable via firm_settings DB overrides AND env vars; deriving
+ * from those makes the operator the single source of truth and avoids a
+ * "set BASE_PATH and SITE_URL to consistent values, or weird things happen"
+ * footgun.
+ */
+function basePathForRequest(req: Request, urls: EffectiveUrls): string {
+  const reqHost = req.get('host');
+  if (!reqHost) return env.basePath;
+  // Portal first: the typical "blank page" failure mode this fixes is the
+  // portal SPA receiving the staff basePath, not the other way around.
+  // Matching against the explicit portalUrl override before siteUrl
+  // ensures it wins even if an operator accidentally configures
+  // overlapping hosts.
+  for (const url of [urls.portalUrl, urls.siteUrl]) {
+    if (!url) continue;
+    try {
+      const parsed = new URL(url);
+      if (parsed.host === reqHost) {
+        // URL.pathname for a hostname-only URL is "/" — strip the trailing
+        // slash so the SPA's router gets a consistent shape ("" for root,
+        // "/connect" for prefixed). Fall back to "/" for the rare case
+        // where the trim leaves an empty string and downstream code can't
+        // handle "" — React Router treats "" and "/" equivalently here.
+        return parsed.pathname.replace(/\/$/, '') || '/';
+      }
+    } catch {
+      // Malformed URL in env or DB — skip this candidate and try the next.
+    }
+  }
+  return env.basePath;
+}
 
 interface VibeBoot {
   basePath: string;
@@ -57,7 +105,7 @@ function safeStringify(value: unknown): string {
 
 bootstrapRouter.get(
   '/__vibe-boot.js',
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     let appName: string | null = null;
     try {
       const row = await db('firm_settings').where({ id: 1 }).first('app_name');
@@ -74,7 +122,10 @@ bootstrapRouter.get(
     // propagates to all SPAs within a minute.
     const urls = await effectiveUrls();
     const boot: VibeBoot = {
-      basePath: env.basePath,
+      // Host-aware basePath: portal vs staff get different prefixes when
+      // they live on different subdomains. See basePathForRequest() for
+      // why this can't be a single env.basePath value.
+      basePath: basePathForRequest(req, urls),
       siteUrl: urls.siteUrl,
       portalUrl: urls.portalUrl,
       tlsMode: env.tlsMode,
