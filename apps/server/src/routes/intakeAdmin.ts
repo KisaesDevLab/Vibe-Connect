@@ -627,7 +627,9 @@ intakeAdminRouter.get(
 // Staff create a tokenized URL bound to a specific client contact via
 // POST /links. Token is 16 random bytes → 22-char base64url, stored
 // UNIQUE on `intake_links.token`. The URL the client receives is
-// `${SITE_URL}/intake/t/<token>` — 28.14 handles the public landing.
+// `${PORTAL_URL}/intake/t/<token>` — 28.14 handles the public landing.
+// PORTAL_URL (the CLIENT portal host), not SITE_URL (the staff host):
+// intake is client-facing and must avoid the staff auth gate.
 //
 // Sends are synchronous so the staff member sees "Sent" or a clear
 // failure at the moment they hit the button. The 28.10 notification
@@ -652,15 +654,21 @@ async function sendLink(opts: {
   firmName: string;
   note: string | null;
   /**
-   * The site URL base (no trailing slash) to embed in the outbound message.
-   * Passed in (rather than read from env) so the admin-configured DB
-   * override in firm_settings.site_url propagates here. Callers compute
-   * it once via `(await effectiveUrls()).siteUrl.replace(/\/$/, '')` and
-   * pass it through.
+   * The CLIENT portal URL base (no trailing slash) to embed in the
+   * outbound message. Intake is a client-facing flow: the recipient is
+   * the client, not staff, so the link must point at the client portal
+   * host (PORTAL_URL / firm_settings.portal_url) — not the staff site
+   * (SITE_URL). On appliance deployments these resolve to different
+   * subdomains (e.g. client.<domain> vs vibe.<domain>/connect); using
+   * siteUrl would send clients to the staff host, where every route
+   * auth-gates and redirects to login. Callers compute this once via
+   * `(await effectiveUrls()).portalUrl.replace(/\/$/, '')` and pass it
+   * through. The DB override at firm_settings.portal_url wins over the
+   * PORTAL_URL env var, matching the resolver in effectiveUrls.ts.
    */
-  siteUrlBase: string;
+  portalUrlBase: string;
 }): Promise<SendResult> {
-  const url = `${opts.siteUrlBase}/intake/t/${opts.token}`;
+  const url = `${opts.portalUrlBase}/intake/t/${opts.token}`;
   const expiryStr = opts.expiresAt.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
   const result: SendResult = { email: false, sms: false };
   if (opts.email) {
@@ -769,7 +777,7 @@ intakeAdminRouter.post(
       .where({ id: 1 })
       .first<{ firm_name: string }>('firm_name');
     const firmName = firm?.firm_name ?? 'Vibe Connect';
-    const siteUrlBase = (await effectiveUrls()).siteUrl.replace(/\/$/, '');
+    const portalUrlBase = (await effectiveUrls()).portalUrl.replace(/\/$/, '');
 
     const emailEnc = parsed.data.email ? await encryptField(parsed.data.email) : null;
     const phoneEnc = parsed.data.phone ? await encryptField(parsed.data.phone) : null;
@@ -819,7 +827,7 @@ intakeAdminRouter.post(
         staffDisplayName: staff.display_name,
         firmName,
         note: parsed.data.note ?? null,
-        siteUrlBase,
+        portalUrlBase,
       });
       await auditRepo.write({
         actorUserId: me,
@@ -845,7 +853,7 @@ intakeAdminRouter.post(
       link: {
         id: linkRow.id,
         token: linkRow.token,
-        url: `${siteUrlBase}/intake/t/${linkRow.token}`,
+        url: `${portalUrlBase}/intake/t/${linkRow.token}`,
         expiresAt: linkRow.expires_at,
         send: sendResult,
         sendError,
@@ -932,7 +940,7 @@ intakeAdminRouter.get(
     const rows = await q.offset(offset).limit(parsed.data.pageSize);
     // Resolve once, reuse for every row in the map below — avoids N
     // identical firm_settings reads on a list endpoint.
-    const siteUrlBase = (await effectiveUrls()).siteUrl.replace(/\/$/, '');
+    const portalUrlBase = (await effectiveUrls()).portalUrl.replace(/\/$/, '');
 
     // Decrypt the encrypted contact columns for display. Each is wrapped
     // in try/catch so one bad row (key-rotation incident) doesn't 500
@@ -950,7 +958,7 @@ intakeAdminRouter.get(
           // Token is included for the "copy link" affordance on the UI.
           // The link IS the secret; staff who can see this list could
           // already issue one themselves.
-          url: `${siteUrlBase}/intake/t/${r.token}`,
+          url: `${portalUrlBase}/intake/t/${r.token}`,
           assignedStaffId: r.assigned_staff_id,
           assignedStaffName: r.assigned_staff_name,
           createdByUserId: r.created_by_user_id,
@@ -1044,7 +1052,7 @@ intakeAdminRouter.post(
     const phone = link.client_phone_enc
       ? await decryptField(link.client_phone_enc).catch(() => null)
       : null;
-    const siteUrlBase = (await effectiveUrls()).siteUrl.replace(/\/$/, '');
+    const portalUrlBase = (await effectiveUrls()).portalUrl.replace(/\/$/, '');
     let sendError: string | null = null;
     let sendResult: SendResult = { email: false, sms: false };
     try {
@@ -1056,7 +1064,7 @@ intakeAdminRouter.post(
         staffDisplayName: staff?.display_name ?? '(staff)',
         firmName: firm?.firm_name ?? 'Vibe Connect',
         note: link.note_to_client,
-        siteUrlBase,
+        portalUrlBase,
       });
       await auditRepo.write({
         actorUserId: me,
