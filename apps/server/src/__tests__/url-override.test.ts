@@ -8,7 +8,9 @@
  *   - PATCH /admin/settings refuses the dev-default placeholder
  *   - PATCH /admin/settings persists a valid override and /__vibe-boot.js reflects it
  *   - Null clears the override and the env value comes back
- *   - Tokenized intake link POST uses the DB override URL (the bug that prompted this feature)
+ *   - Tokenized intake link POST uses the DB-overridden portal URL (intake
+ *     is client-facing and reads portalUrl, not siteUrl — the appliance
+ *     deploys staff and client portals on different subdomains)
  *   - Client invite link uses the DB portal_url override
  *
  * Seeded users (apps/server/src/db/seeds/01_groups_and_users.js):
@@ -203,11 +205,21 @@ describe('PATCH → /__vibe-boot.js round-trip', () => {
 });
 
 describe('Cross-cutting: outbound URLs respect the DB override', () => {
-  it('tokenized intake link mint uses the DB-overridden site URL', async () => {
-    // Set override.
+  it('tokenized intake link mint uses the DB-overridden portal URL', async () => {
+    // Intake links are CLIENT-facing: the recipient is the client, not
+    // staff. The appliance deploys Vibe-Connect with the staff portal
+    // at one subdomain (e.g. vibe.<domain>/connect) and the client
+    // portal at another (e.g. client.<domain>). intakeAdmin.ts reads
+    // effectiveUrls().portalUrl — not siteUrl — so the share-with-
+    // client URL points at the host the client can actually reach
+    // (siteUrl would auth-gate them into the staff login screen).
+    // Set the portal-URL override and assert the minted link honors
+    // it. Also set siteUrl to a clearly different value to prove the
+    // intake mint is NOT reading siteUrl by accident.
     const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
     const save = await admin.patch('/admin/settings').send({
       siteUrl: 'https://vibe.cpa2web.app/connect',
+      portalUrl: 'https://client.cpa2web.app',
     });
     expect(save.status).toBe(200);
 
@@ -217,7 +229,9 @@ describe('Cross-cutting: outbound URLs respect the DB override', () => {
       .post('/admin/intake/links')
       .send({ email: 'client@example.com', expiresIn: '24h' });
     expect(mint.status).toBe(201);
-    expect(mint.body.link.url).toMatch(/^https:\/\/vibe\.cpa2web\.app\/connect\/intake\/t\//);
+    expect(mint.body.link.url).toMatch(/^https:\/\/client\.cpa2web\.app\/intake\/t\//);
+    // Defensive: ensure the staff host did NOT sneak into the URL.
+    expect(mint.body.link.url).not.toMatch(/vibe\.cpa2web\.app\/connect\/intake/);
   });
 
   it('client invite email body contains the DB-overridden portal URL', async () => {
