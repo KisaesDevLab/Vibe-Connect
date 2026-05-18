@@ -116,9 +116,10 @@ self.addEventListener('fetch', (event) => {
   // deployments cache POST-once GET-once auth responses and the user
   // ends up logged in as whoever made the previous request.
   const scopePrefix = _scopePathname();
-  const relPath = scopePrefix && url.pathname.startsWith(scopePrefix + '/')
-    ? url.pathname.slice(scopePrefix.length)
-    : url.pathname;
+  const relPath =
+    scopePrefix && url.pathname.startsWith(scopePrefix + '/')
+      ? url.pathname.slice(scopePrefix.length)
+      : url.pathname;
   if (
     relPath.startsWith('/auth') ||
     relPath.startsWith('/conversations') ||
