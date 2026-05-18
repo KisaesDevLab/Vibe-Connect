@@ -6,6 +6,17 @@
 #
 # Env contract (with single-app defaults):
 #   BASE_PATH        '/' | '/connect' | etc.   (default '/')
+#   PORTAL_BASE_PATH '/' | '/portal' | etc.    (default '/')
+#                    Independent from BASE_PATH so the portal can be
+#                    deployed at a different prefix than the staff app —
+#                    the appliance puts staff at vibe.<domain>/connect
+#                    AND the portal at client.<domain>/ (different
+#                    subdomains, different prefixes). A single shared
+#                    BASE_PATH leaked the staff prefix into the portal
+#                    bundle's <base href>, sending the portal SPA's
+#                    asset fetches to /connect/assets/... — wrong nginx
+#                    listener, SPA-fallback returned index.html as
+#                    text/html, browser refused to execute, blank page.
 #   TLS_MODE         'internal' | 'external'   (default 'internal')
 #   HTTP_PORT        80   (default 80)
 #   HTTPS_PORT       443  (default 443; ignored in TLS_MODE=external)
@@ -16,15 +27,17 @@
 #                          (Caddy / Cloudflare Tunnel) maps the public
 #                          client subdomain to this internal port.
 #
-# We pre-compute two derived values the template needs:
-#   BASE_PATH_HREF      empty when BASE_PATH=/ (so <base href="/"> renders),
-#                       otherwise BASE_PATH minus any trailing slash
-#   TLS_MODE_INTERNAL   '1' when internal, '0' when external — used by an
-#                       nginx `map` so the HTTP server block knows whether to
-#                       301 to HTTPS or proxy plain HTTP to the app.
+# We pre-compute three derived values the template needs:
+#   BASE_PATH_HREF        empty when BASE_PATH=/ (so <base href="/"> renders),
+#                         otherwise BASE_PATH minus any trailing slash
+#   PORTAL_BASE_PATH_HREF same shape, derived from PORTAL_BASE_PATH
+#   TLS_MODE_INTERNAL     '1' when internal, '0' when external — used by an
+#                         nginx `map` so the HTTP server block knows whether to
+#                         301 to HTTPS or proxy plain HTTP to the app.
 set -e
 
 : "${BASE_PATH:=/}"
+: "${PORTAL_BASE_PATH:=/}"
 : "${TLS_MODE:=internal}"
 : "${HTTP_PORT:=80}"
 : "${HTTPS_PORT:=443}"
@@ -53,12 +66,20 @@ if ! printf '%s' "${BASE_PATH}" | grep -qE '^/$|^/[a-z][a-z0-9_-]*/?$'; then
   echo "[entrypoint] invalid BASE_PATH='${BASE_PATH}' (expected '/' or '/<lowercase-name>'; no whitespace, no uppercase)" >&2
   exit 1
 fi
+if ! printf '%s' "${PORTAL_BASE_PATH}" | grep -qE '^/$|^/[a-z][a-z0-9_-]*/?$'; then
+  echo "[entrypoint] invalid PORTAL_BASE_PATH='${PORTAL_BASE_PATH}' (expected '/' or '/<lowercase-name>'; no whitespace, no uppercase)" >&2
+  exit 1
+fi
 
 # Strip trailing slashes (so '/connect/' and '/connect' produce the same
 # href). Single-app '/' → '' so <base href="/"> is what the browser sees.
 case "${BASE_PATH}" in
   /) BASE_PATH_HREF="" ;;
   *) BASE_PATH_HREF="$(printf '%s' "${BASE_PATH}" | sed 's:/*$::')" ;;
+esac
+case "${PORTAL_BASE_PATH}" in
+  /) PORTAL_BASE_PATH_HREF="" ;;
+  *) PORTAL_BASE_PATH_HREF="$(printf '%s' "${PORTAL_BASE_PATH}" | sed 's:/*$::')" ;;
 esac
 
 # Port values must be plain integers in the 1-65535 range — they end up in
@@ -86,7 +107,7 @@ case "${TLS_MODE}" in
     ;;
 esac
 
-export BASE_PATH BASE_PATH_HREF TLS_MODE HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT PORTAL_HTTP_PORT DESKTOP_DOWNLOAD_URL
+export BASE_PATH BASE_PATH_HREF PORTAL_BASE_PATH PORTAL_BASE_PATH_HREF TLS_MODE HTTP_PORT HTTPS_PORT PORTAL_HTTPS_PORT PORTAL_HTTP_PORT DESKTOP_DOWNLOAD_URL
 
 # In TLS_MODE=internal the SSL `server` blocks reference
 # /etc/nginx/tls/{connect,portal}.{crt,key}. On a fresh appliance the
@@ -114,7 +135,7 @@ render_config() {
     external) TLS_MODE_INTERNAL=0 ;;
   esac
   export TLS_MODE_INTERNAL
-  envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${PORTAL_HTTP_PORT} ${DESKTOP_DOWNLOAD_URL}' \
+  envsubst '${BASE_PATH} ${BASE_PATH_HREF} ${PORTAL_BASE_PATH} ${PORTAL_BASE_PATH_HREF} ${TLS_MODE} ${TLS_MODE_INTERNAL} ${HTTP_PORT} ${HTTPS_PORT} ${PORTAL_HTTPS_PORT} ${PORTAL_HTTP_PORT} ${DESKTOP_DOWNLOAD_URL}' \
     < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf
   if [ "$effective_mode" = "external" ]; then
     # External mode: strip the TLS-internal HTTPS server blocks (staff +
@@ -139,7 +160,7 @@ else
   effective_mode="${TLS_MODE}"
 fi
 
-echo "[entrypoint] rendering nginx.conf with BASE_PATH=${BASE_PATH} TLS_MODE=${TLS_MODE} effective=${effective_mode}"
+echo "[entrypoint] rendering nginx.conf with BASE_PATH=${BASE_PATH} PORTAL_BASE_PATH=${PORTAL_BASE_PATH} TLS_MODE=${TLS_MODE} effective=${effective_mode}"
 render_config "${effective_mode}"
 # Validate so a bad template (or marker drift) surfaces immediately
 # rather than after nginx is half-started.

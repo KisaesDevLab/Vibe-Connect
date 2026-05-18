@@ -263,14 +263,18 @@ http {
     location / {
       root /usr/share/nginx/html/portal;
       try_files $uri $uri/ /index.html;
-      # Same manifest substitution policy as the staff block — a future
-      # portal/public/manifest.webmanifest will Just Work without
-      # revisiting nginx config.
+      # The portal lives at its own base path — independent from the
+      # staff app's BASE_PATH. In single-app deployments PORTAL_BASE_PATH
+      # defaults to '/' and matches BASE_PATH; in two-subdomain appliance
+      # deployments PORTAL_BASE_PATH stays '/' while BASE_PATH=/connect,
+      # so substituting BASE_PATH_HREF here would emit <base href="/connect/">
+      # into the portal SPA's HTML and every asset fetch would go to the
+      # wrong nginx listener (blank-page bug).
       # nginx's default already includes text/html; this only ADDS
       # application/manifest+json so PWA manifests get __BASE_HREF__
       # substituted alongside the HTML shell.
       sub_filter_types application/manifest+json;
-      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
       sub_filter_once off;
     }
   }
@@ -449,12 +453,14 @@ http {
     location / {
       root /usr/share/nginx/html/portal;
       try_files $uri $uri/ /index.html;
-      # Same manifest substitution policy as the TLS-internal blocks.
-      # nginx's default already includes text/html; this only ADDS
-      # application/manifest+json so PWA manifests get __BASE_HREF__
-      # substituted alongside the HTML shell.
+      # Mirror the TLS-internal portal block: portal SPA uses
+      # PORTAL_BASE_PATH_HREF, not the staff BASE_PATH_HREF. With the
+      # appliance setting PORTAL_BASE_PATH=/ this resolves to an empty
+      # href segment, so <base href="/"> renders and asset paths
+      # resolve at /assets/... — matching the portal listener's own
+      # /usr/share/nginx/html/portal/ root.
       sub_filter_types application/manifest+json;
-      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
       sub_filter_once off;
     }
   }
