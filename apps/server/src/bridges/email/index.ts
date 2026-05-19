@@ -229,12 +229,7 @@ async function resolveEmailProviderKind(): Promise<
     const { db } = await import('../../db/knex.js');
     const row = await db('firm_settings').where({ id: 1 }).first('email_provider');
     const picked = row?.email_provider as string | undefined;
-    if (
-      picked === 'postmark' ||
-      picked === 'postfix' ||
-      picked === 'emailit' ||
-      picked === 'mock'
-    )
+    if (picked === 'postmark' || picked === 'postfix' || picked === 'emailit' || picked === 'mock')
       return picked;
   } catch (err) {
     // DB unreachable (boot race, maintenance window). Fall through to env so
