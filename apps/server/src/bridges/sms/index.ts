@@ -41,6 +41,26 @@ export interface SmsProvider {
   verifyWebhookSignature(ctx: WebhookVerifyContext): Promise<boolean> | boolean;
 }
 
+// Same timeout posture as the email bridge — never let a stuck provider
+// call hang a ticker tick or a route handler. Twilio + TextLink both
+// respond well under 15s in normal operation.
+const SMS_PROVIDER_TIMEOUT_MS = 15_000;
+
+// Best-effort redact of long dash-free alphanumeric runs (Twilio Account
+// SIDs, hex API keys) without shredding UUID-shaped correlation IDs.
+// Operators get the full body via the warn log emitted at the call site.
+function redactAndCapSms(raw: string): string {
+  const redacted = raw.replace(/[A-Za-z0-9_]{20,}/g, '[redacted]');
+  return redacted.length > 160 ? `${redacted.slice(0, 160)}…` : redacted;
+}
+
+function mapSmsFetchError(provider: string, err: unknown): Error {
+  const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+  if (isTimeout) return new Error(`${provider}_timeout_after_${SMS_PROVIDER_TIMEOUT_MS}ms`);
+  const msg = err instanceof Error ? err.message : String(err);
+  return new Error(`${provider}_network_error: ${msg.slice(0, 120)}`);
+}
+
 class MockSms implements SmsProvider {
   name = 'mock' as const;
   async sendMessage(req: SmsSendRequest) {
@@ -76,12 +96,22 @@ class TextLinkSms implements SmsProvider {
   async sendMessage(req: SmsSendRequest) {
     const apiKey = await getOrEnvFallback('sms.textlink.api_key', env.textlinkApiKey);
     if (!apiKey) throw new Error('textlink_api_key_not_configured');
-    const res = await fetch('https://textlinksms.com/api/send-sms', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey, to: req.to, message: req.body }),
-    });
-    if (!res.ok) throw new Error(`textlink_${res.status}`);
+    let res: Response;
+    try {
+      res = await fetch('https://textlinksms.com/api/send-sms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey, to: req.to, message: req.body }),
+        signal: AbortSignal.timeout(SMS_PROVIDER_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw mapSmsFetchError('textlink', err);
+    }
+    if (!res.ok) {
+      const full = await res.text();
+      logger.warn('sms.textlink_send_failed', { status: res.status, body: full.slice(0, 500) });
+      throw new Error(`textlink_${res.status}: ${redactAndCapSms(full)}`);
+    }
     const data = (await res.json()) as { messageId?: string };
     return { id: data.messageId ?? crypto.randomUUID(), status: 'sent' as const };
   }
@@ -140,20 +170,24 @@ class TwilioSms implements SmsProvider {
     if (messagingServiceSid) form.set('MessagingServiceSid', messagingServiceSid);
     else if (fromNumber) form.set('From', fromNumber);
     const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: form.toString(),
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: form.toString(),
+        signal: AbortSignal.timeout(SMS_PROVIDER_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw mapSmsFetchError('twilio', err);
+    }
     if (!res.ok) {
-      // Twilio surfaces the account SID in error payloads. Strip any 20+ char
-      // alnum runs before bubbling so we never leak token-shaped material
-      // into upstream error logs / audit details.
-      const txt = (await res.text()).replace(/[A-Za-z0-9]{20,}/g, '[redacted]');
-      throw new Error(`twilio_${res.status}: ${txt}`);
+      const full = await res.text();
+      logger.warn('sms.twilio_send_failed', { status: res.status, body: full.slice(0, 500) });
+      throw new Error(`twilio_${res.status}: ${redactAndCapSms(full)}`);
     }
     const data = (await res.json()) as { sid: string };
     return { id: data.sid, status: 'sent' as const };

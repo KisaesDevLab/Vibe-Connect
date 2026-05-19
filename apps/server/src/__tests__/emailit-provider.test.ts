@@ -106,6 +106,49 @@ describe('EmailitProvider', () => {
     );
   });
 
+  it('redacts long dash-free tokens but preserves UUID-shaped correlation IDs', async () => {
+    // The redact regex must drop bearer-token-shaped runs (20+ chars,
+    // dash-free) while leaving UUIDs readable so operators can file
+    // provider support tickets with the correlation ID in hand.
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    const body =
+      '{"error":"invalid_token","leaked":"abcdefghijklmnopqrstuvwxyz1234567890","traceId":"12345678-1234-1234-1234-123456789012"}';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(body, { status: 401, headers: { 'content-type': 'application/json' } }),
+    );
+
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    try {
+      await provider.send({ to: 'a@b.com', subject: 's', text: 't' });
+      throw new Error('expected throw');
+    } catch (err) {
+      const msg = (err as Error).message;
+      expect(msg).toMatch(/emailit_401/);
+      // Bearer-shaped token gone:
+      expect(msg).not.toContain('abcdefghijklmnopqrstuvwxyz1234567890');
+      // UUID preserved:
+      expect(msg).toContain('12345678-1234-1234-1234-123456789012');
+    }
+  });
+
+  it('maps fetch timeout to a typed emailit_timeout error', async () => {
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => {
+      const e = new DOMException('aborted', 'TimeoutError');
+      return Promise.reject(e);
+    });
+
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await expect(provider.send({ to: 'a@b.com', subject: 's', text: 't' })).rejects.toThrow(
+      /emailit_timeout_after_\d+ms/,
+    );
+  });
+
   it('throws when api_key is missing', async () => {
     // No secret stored, env fallback also empty (tests start with EMAILIT_API_KEY unset).
     const { getEmailProvider } = await import('../bridges/email/index.js');

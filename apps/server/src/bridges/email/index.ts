@@ -15,6 +15,31 @@ export interface EmailMessage {
   replyTo?: string;
 }
 
+// Single timeout used by every HTTP-based provider. 15s comfortably covers
+// the p99 of Postmark / Emailit / Twilio while still letting a stuck send
+// surface as a logged failure rather than blocking a ticker tick forever.
+const PROVIDER_TIMEOUT_MS = 15_000;
+
+// Hard-cap + best-effort redact for provider error bodies before they
+// flow into thrown errors. The contiguous-alnum pattern catches dash-free
+// tokens (Twilio Account SIDs, hex API keys, base64 secrets) without
+// shredding UUID-shaped correlation IDs (which contain dashes — operators
+// need them visible to file support tickets).
+function redactAndCap(raw: string): string {
+  const redacted = raw.replace(/[A-Za-z0-9_]{20,}/g, '[redacted]');
+  // 160 chars keeps the toast on one or two lines and bounds the audit
+  // detail size — operators who need the full payload have it in the
+  // warn log emitted by the provider call site.
+  return redacted.length > 160 ? `${redacted.slice(0, 160)}…` : redacted;
+}
+
+function mapFetchError(provider: string, err: unknown): Error {
+  const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+  if (isTimeout) return new Error(`${provider}_timeout_after_${PROVIDER_TIMEOUT_MS}ms`);
+  const msg = err instanceof Error ? err.message : String(err);
+  return new Error(`${provider}_network_error: ${msg.slice(0, 120)}`);
+}
+
 export interface EmailProvider {
   send(msg: EmailMessage): Promise<{ id: string; status: 'sent' | 'queued' | 'bounced' }>;
   name: string;
@@ -67,21 +92,29 @@ class PostmarkProvider implements EmailProvider {
       ReplyTo: msg.replyTo,
       MessageStream: 'outbound',
     };
-    const res = await fetch('https://api.postmarkapp.com/email', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'X-Postmark-Server-Token': token,
-      },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch('https://api.postmarkapp.com/email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'X-Postmark-Server-Token': token,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+      });
+    } catch (err) {
+      throw mapFetchError('postmark', err);
+    }
     if (!res.ok) {
-      // Postmark returns the token in error replies for some 4xx cases. Strip
-      // any bearer-like substrings from the body before surfacing — we don't
-      // want credentials to land in audit details via the bridge's error path.
-      const txt = (await res.text()).replace(/[A-Za-z0-9-]{20,}/g, '[redacted]');
-      throw new Error(`postmark_${res.status}: ${txt}`);
+      // Postmark returns the token in error replies for some 4xx cases. We
+      // log the full body at warn level so operators tailing docker logs
+      // can see correlation IDs / Postmark error codes, then bubble a hard
+      // -capped + redacted form upward (audit + UI toast).
+      const full = await res.text();
+      logger.warn('email.postmark_send_failed', { status: res.status, body: full.slice(0, 500) });
+      throw new Error(`postmark_${res.status}: ${redactAndCap(full)}`);
     }
     const data = (await res.json()) as { MessageID: string };
     return { id: data.MessageID, status: 'sent' as const };
@@ -97,7 +130,6 @@ class PostmarkProvider implements EmailProvider {
 //   * `to` is a string or string[], not an [{email}] array.
 //   * Auth is Bearer <api_key>.
 const DEFAULT_EMAILIT_BASE_URL = 'https://api.emailit.com/v2';
-const EMAILIT_TIMEOUT_MS = 15_000;
 class EmailitProvider implements EmailProvider {
   name = 'emailit';
   async send(msg: EmailMessage) {
@@ -133,21 +165,15 @@ class EmailitProvider implements EmailProvider {
           accept: 'application/json',
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(EMAILIT_TIMEOUT_MS),
+        signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
       });
     } catch (err) {
-      const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
-      throw new Error(
-        isTimeout
-          ? `emailit_timeout_after_${EMAILIT_TIMEOUT_MS}ms`
-          : `emailit_network_error: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw mapFetchError('emailit', err);
     }
     if (!res.ok) {
-      // Strip anything that looks like a bearer token from the body before
-      // surfacing it — matches the redaction posture of PostmarkProvider.
-      const txt = (await res.text()).replace(/[A-Za-z0-9_-]{24,}/g, '[redacted]');
-      throw new Error(`emailit_${res.status}: ${txt.slice(0, 200)}`);
+      const full = await res.text();
+      logger.warn('email.emailit_send_failed', { status: res.status, body: full.slice(0, 500) });
+      throw new Error(`emailit_${res.status}: ${redactAndCap(full)}`);
     }
     let parsed: unknown = null;
     try {
@@ -185,6 +211,15 @@ class PostfixProvider implements EmailProvider {
     const secure = secureFlag === '1' || secureFlag === 'true';
     const user = await getOrEnvFallback('email.smtp.user', env.smtpUser);
     const pass = await getOrEnvFallback('email.smtp.pass', env.smtpPass);
+    // Half-configured auth (user without pass or vice-versa) is almost
+    // always a config typo — silently falling back to an unauthenticated
+    // session lets the send "succeed" against a relay that will then drop
+    // or spam-tag the message. Refuse loudly so the admin sees the gap.
+    if (Boolean(user) !== Boolean(pass)) {
+      throw new Error(
+        'smtp_partial_auth_configured: both email.smtp.user and email.smtp.pass must be set together',
+      );
+    }
     return nodemailer.createTransport({
       host,
       port,

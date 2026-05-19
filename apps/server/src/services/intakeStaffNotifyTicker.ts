@@ -198,8 +198,14 @@ async function processOne(row: StaffRow): Promise<void> {
       },
       ipAddress: null,
     })
-    .catch(() => {
-      /* audit failure shouldn't fail the send */
+    .catch((err) => {
+      // Send succeeded; audit-table gap would otherwise look identical to
+      // "never sent" — log so forensics can correlate.
+      logger.warn('intake.staff_notify_audit_write_failed', {
+        rowId: row.id,
+        channel: row.channel,
+        err: err instanceof Error ? err.message : String(err),
+      });
     });
   logger.info('intake.staff_notify_sent', {
     rowId: row.id,
@@ -498,8 +504,11 @@ async function flushDigests(): Promise<void> {
           },
           ipAddress: null,
         })
-        .catch(() => {
-          /* audit failure shouldn't fail send */
+        .catch((err) => {
+          logger.warn('intake.staff_notify_digest_audit_write_failed', {
+            userId,
+            err: err instanceof Error ? err.message : String(err),
+          });
         });
       logger.info('intake.staff_notify_digest_sent', {
         userId,
@@ -552,8 +561,11 @@ async function markFailed(row: StaffRow, reason: string): Promise<void> {
       },
       ipAddress: null,
     })
-    .catch(() => {
-      /* audit failure shouldn't loop */
+    .catch((err) => {
+      logger.warn('intake.staff_notify_failure_audit_write_failed', {
+        rowId: row.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
     });
   logger.error('intake.staff_notify_permanent_failure', {
     rowId: row.id,

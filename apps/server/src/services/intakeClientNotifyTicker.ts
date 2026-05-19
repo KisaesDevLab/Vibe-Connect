@@ -210,8 +210,17 @@ async function processOne(row: ClaimedNotificationRow): Promise<void> {
       },
       ipAddress: null,
     })
-    .catch(() => {
-      /* audit failure shouldn't fail the send */
+    .catch((err) => {
+      // Audit failure must not fail the send (the message went out), but
+      // silently swallowing leaves a gap in the audit table that looks
+      // identical to "never sent". One warn line so docker-logs forensics
+      // can correlate the audit-table gap to the actual send.
+      logger.warn('intake.client_notify_audit_write_failed', {
+        rowId: row.id,
+        sessionId: row.session_id,
+        channel: row.channel,
+        err: err instanceof Error ? err.message : String(err),
+      });
     });
   logger.info('intake.client_notify_sent', {
     rowId: row.id,
@@ -274,8 +283,11 @@ async function markFailed(row: ClaimedNotificationRow, reason: string): Promise<
       },
       ipAddress: null,
     })
-    .catch(() => {
-      /* audit failure shouldn't loop the retry */
+    .catch((err) => {
+      logger.warn('intake.client_notify_failure_audit_write_failed', {
+        rowId: row.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
     });
   logger.error('intake.client_notify_permanent_failure', {
     rowId: row.id,
