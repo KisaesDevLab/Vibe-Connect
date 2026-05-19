@@ -191,7 +191,14 @@ http {
       # search /usr/share/nginx/html/intake/intake/index.html which doesn't
       # exist.)
       rewrite ^/intake/?(.*)$ /$1 break;
-      try_files $uri $uri/ /index.html;
+      # Do NOT include `$uri/` in this try_files: when the rewrite collapses
+      # the URI to bare `/`, nginx finds the intake root as a directory and
+      # internal-redirects to `/` — which then falls through to the catch-all
+      # `location /` below (the staff bundle, or the portal bundle on the
+      # portal block) and the visitor lands on the wrong app. Skipping the
+      # directory check makes nginx fall straight to `/index.html` which the
+      # current `root` directive resolves under `/usr/share/nginx/html/intake/`.
+      try_files $uri /index.html;
       # Phase 28.17 — substitute __BASE_HREF__ inside the PWA manifest as
       # well as the HTML shell, so start_url / scope resolve correctly in
       # both single-app and multi-app modes from one build.
@@ -288,7 +295,11 @@ http {
     location ^~ /intake {
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
-      try_files $uri $uri/ /index.html;
+      # See the staff /intake block above for why `$uri/` is omitted —
+      # without this, a bare `/intake` request internal-redirects to `/`
+      # and the portal catch-all below answers, dumping the portal SPA
+      # at the visitor (whose React Router then bounces them to /login).
+      try_files $uri /index.html;
       sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
       sub_filter_once off;
@@ -416,7 +427,10 @@ http {
       }
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
-      try_files $uri $uri/ /index.html;
+      # See the staff TLS-internal /intake block for why `$uri/` is omitted
+      # from try_files — bare `/intake` otherwise internal-redirects to `/`
+      # and the catch-all answers with the wrong bundle.
+      try_files $uri /index.html;
       # nginx's default already includes text/html; this only ADDS
       # application/manifest+json so PWA manifests get __BASE_HREF__
       # substituted alongside the HTML shell.
@@ -500,7 +514,11 @@ http {
     location ^~ /intake {
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
-      try_files $uri $uri/ /index.html;
+      # See the staff /intake block above for why `$uri/` is omitted —
+      # without this, a bare `/intake` request internal-redirects to `/`
+      # and the portal catch-all below answers, dumping the portal SPA
+      # at the visitor (whose React Router then bounces them to /login).
+      try_files $uri /index.html;
       sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
       sub_filter_once off;
