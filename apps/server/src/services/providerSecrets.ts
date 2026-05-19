@@ -46,6 +46,10 @@ export const PROVIDER_SECRET_KEYS = [
   'email.smtp.user',
   'email.smtp.pass',
   'email.smtp.secure',
+  // --- Email — Emailit (https://emailit.com v2 API) ---
+  'email.emailit.api_key',
+  'email.emailit.base_url',
+  'email.emailit.reply_to',
 ] as const;
 export type ProviderSecretKey = (typeof PROVIDER_SECRET_KEYS)[number];
 const KEY_SET: ReadonlySet<string> = new Set(PROVIDER_SECRET_KEYS);
@@ -60,6 +64,8 @@ const NON_SECRET_KEYS: ReadonlySet<ProviderSecretKey> = new Set([
   'email.smtp.host',
   'email.smtp.port',
   'email.smtp.secure',
+  'email.emailit.base_url',
+  'email.emailit.reply_to',
 ]);
 export function isMaskedKey(key: ProviderSecretKey): boolean {
   return !NON_SECRET_KEYS.has(key);

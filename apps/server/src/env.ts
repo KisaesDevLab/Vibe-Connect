@@ -148,11 +148,23 @@ export const env = {
   // response shape is preserved so the absence isn't probe-able). The
   // db-backed `firm_settings.email_provider` enum doesn't include 'none'
   // — flipping the override here is the only way to disable mail wholesale.
-  emailProvider: str('EMAIL_PROVIDER', 'mock') as 'mock' | 'postmark' | 'postfix' | 'none',
+  emailProvider: str('EMAIL_PROVIDER', 'mock') as
+    | 'mock'
+    | 'postmark'
+    | 'postfix'
+    | 'emailit'
+    | 'none',
   emailFrom: str('EMAIL_FROM', 'Vibe Connect <noreply@vibeconnect.local>'),
   emailInboundDomain: str('EMAIL_INBOUND_DOMAIN', 'connect.vibeconnect.local'),
   postmarkServerToken: str('POSTMARK_SERVER_TOKEN', ''),
   postmarkInboundWebhookSecret: str('POSTMARK_INBOUND_WEBHOOK_SECRET', ''),
+  // Emailit (https://emailit.com) — transactional email v2 API. API key is
+  // the only required credential; base URL defaults to api.emailit.com/v2
+  // and is only here so a future regional endpoint can be selected from
+  // the Admin UI without a code change.
+  emailitApiKey: str('EMAILIT_API_KEY', ''),
+  emailitBaseUrl: str('EMAILIT_BASE_URL', ''),
+  emailitReplyTo: str('EMAILIT_REPLY_TO', ''),
   // Dedicated secret for the Postfix pipe's raw-MIME endpoint. Previously
   // this shared POSTMARK_INBOUND_WEBHOOK_SECRET, which meant a leaked
   // Postmark bounce/error revealing the secret also opened the raw endpoint.
