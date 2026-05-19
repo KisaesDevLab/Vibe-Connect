@@ -73,8 +73,13 @@ export function CameraModal({ onCapture, onClose }: CameraModalProps): JSX.Eleme
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
+            // `ideal: 1920` lets phones with 4K-capable sensors return a
+            // 4K stream — the resulting frame chews ~64 MB ImageData
+            // per warp and tips iOS Safari over its ~250 MB heap. `max`
+            // caps the stream so the rest of the pipeline stays inside
+            // its memory budget. 1920×1080 is plenty for document OCR.
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 },
           },
         });
         if (cancelled) {

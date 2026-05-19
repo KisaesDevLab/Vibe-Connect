@@ -117,22 +117,48 @@ export function warpPerspective(
   // We need the source pixel data — render the source onto a scratch
   // canvas so we can read ImageData regardless of whether `src` is an
   // <img> or a <canvas>. (Direct ImageData on an <img> isn't possible.)
+  //
+  // SOURCE_MAX caps the scratch canvas at 2400 px on the long edge. iPhone
+  // captures land at the sensor's native resolution (3024×4032 on iPhone
+  // 13, much larger on Pro models) — without this clamp, the scratch
+  // canvas + its ImageData + the output ImageData stack to >150 MB and
+  // iOS Safari (250 MB heap ceiling) OOMs silently, the warp throws, and
+  // the user lands on an empty ScanBatch with no surfaced error. 2400 px
+  // is a fine-grained-enough source for a 2000 px output and gives ~40 MB
+  // ImageData headroom on every iOS Safari build we test against.
+  const SOURCE_MAX = 2400;
   let srcCanvas: HTMLCanvasElement;
   let srcW: number;
+  let srcQuadEff: Quad = srcQuad;
   let srcH: number;
   if (src instanceof HTMLCanvasElement) {
     srcCanvas = src;
     srcW = src.width;
     srcH = src.height;
   } else {
-    srcW = src.naturalWidth;
-    srcH = src.naturalHeight;
+    const natW = src.naturalWidth;
+    const natH = src.naturalHeight;
+    const long = Math.max(natW, natH);
+    const scale = long > SOURCE_MAX ? SOURCE_MAX / long : 1;
+    srcW = Math.max(1, Math.round(natW * scale));
+    srcH = Math.max(1, Math.round(natH * scale));
     srcCanvas = document.createElement('canvas');
     srcCanvas.width = srcW;
     srcCanvas.height = srcH;
     const c = srcCanvas.getContext('2d');
     if (!c) throw new Error('warpPerspective: scratch context unavailable');
-    c.drawImage(src, 0, 0);
+    c.drawImage(src, 0, 0, srcW, srcH);
+    if (scale !== 1) {
+      // The quad was solved against the natural-resolution image; rescale
+      // each corner into the downsampled source frame so the homography
+      // pulls from the right pixels.
+      srcQuadEff = {
+        topLeft: { x: srcQuad.topLeft.x * scale, y: srcQuad.topLeft.y * scale },
+        topRight: { x: srcQuad.topRight.x * scale, y: srcQuad.topRight.y * scale },
+        bottomRight: { x: srcQuad.bottomRight.x * scale, y: srcQuad.bottomRight.y * scale },
+        bottomLeft: { x: srcQuad.bottomLeft.x * scale, y: srcQuad.bottomLeft.y * scale },
+      };
+    }
   }
   const srcCtx = srcCanvas.getContext('2d');
   if (!srcCtx) throw new Error('warpPerspective: source context unavailable');
@@ -142,7 +168,7 @@ export function warpPerspective(
   // We want the inverse map: given dest (u, v) → source (x, y). The
   // forward homography we solved is src → dest, so we invert it once and
   // apply per-pixel.
-  const Hfwd = solvePerspective(srcQuad, outW, outH);
+  const Hfwd = solvePerspective(srcQuadEff, outW, outH);
   const Hinv = invert3x3(Hfwd);
 
   const dstData = outCtx.createImageData(outW, outH);
@@ -298,20 +324,18 @@ export function enhance(canvas: HTMLCanvasElement, mode: EnhanceMode): HTMLCanva
 }
 
 /**
- * Best-effort auto-detect via jscanify if `window.cv` (OpenCV.js) is
- * already loaded on the page. Returns null if jscanify or OpenCV isn't
- * available; callers fall back to the default near-edges quad.
+ * Best-effort auto-detect via jscanify. Lazy-loads OpenCV.js
+ * (@techstark/opencv-js, code-split into its own Vite chunk) on first
+ * call so the initial /intake landing stays small for visitors who never
+ * open the scanner. Subsequent calls reuse the cached `window.cv`.
  *
- * Operators who want the 8/10-auto-crop convenience the build plan calls
- * for can vendor opencv.js into `apps/intake/public/` and load it via a
- * <script> tag in the public index.html. We don't bundle OpenCV here
- * because it's ~7 MB and would blow the scanner-chunk size budget.
+ * Returns null if loading fails — the caller falls back to the default
+ * 8%-inset quad so manual corner-drag still works.
  */
 export async function tryAutoDetect(img: HTMLImageElement): Promise<Quad | null> {
-  // window.cv is the OpenCV.js global. Without it, jscanify throws.
-  const w = window as unknown as { cv?: unknown };
-  if (!w.cv) return null;
   try {
+    const { ensureOpenCV } = await import('../lib/opencvLoader.js');
+    await ensureOpenCV();
     // jscanify ships no .d.ts; the ambient declaration in
     // src/jscanify.d.ts gives us a tiny typed surface for what we use.
     const mod = (await import('jscanify')) as unknown;
@@ -333,7 +357,13 @@ export async function tryAutoDetect(img: HTMLImageElement): Promise<Quad | null>
       bottomRight: c.bottomRightCorner,
       bottomLeft: c.bottomLeftCorner,
     };
-  } catch {
+  } catch (err) {
+    // Surface in dev so an operator setting up the appliance can see why
+    // auto-detect didn't fire; the SPA still functions with manual drag.
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn('auto-detect failed; falling back to manual quad', err);
+    }
     return null;
   }
 }

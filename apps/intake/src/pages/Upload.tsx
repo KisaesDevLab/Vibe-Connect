@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import * as tus from 'tus-js-client';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CameraModal, canUseCamera } from '../components/CameraModal.js';
-import { ScanBatch, type ScanBatchHandle } from '../components/ScanBatch.js';
+import { ScanBatch } from '../components/ScanBatch.js';
 import { ScannerReview } from '../components/ScannerReview.js';
 import { url } from '../lib/boot.js';
 
@@ -100,7 +100,22 @@ export function Upload(): JSX.Element {
   // kind='scanned_image' + orderIndex matching the review-confirmed order.
   const [batchActive, setBatchActive] = useState(false);
   const [retakeIndex, setRetakeIndex] = useState<number | null>(null);
-  const batchRef = useRef<ScanBatchHandle | null>(null);
+  // Pending capture handed off to ScanBatch via prop rather than an
+  // imperative ref. With the prior `batchRef.current?.addPage(file)`
+  // pattern, an iOS Safari capture flow could land at onScannerConfirm
+  // before the child component's ref-setup useEffect had committed —
+  // the optional-chain silently swallowed the file and the user
+  // arrived at an empty ScanBatch with no error. A useEffect-watched
+  // state field is reliably consumed once the child mounts, regardless
+  // of effect ordering.
+  const [pendingBatchPage, setPendingBatchPage] = useState<{
+    file: File;
+    replaceIndex: number | null;
+    /** Bumped on every queue so identical files (same File ref) still
+     *  trigger the consume effect. */
+    seq: number;
+  } | null>(null);
+  const pendingSeq = useRef(0);
   const idCounter = useRef(0);
   const cameraFallbackRef = useRef<HTMLInputElement | null>(null);
   const scanCounterRef = useRef(0);
@@ -249,21 +264,21 @@ export function Upload(): JSX.Element {
     setReviewBlob(blob);
   }
 
-  async function onScannerConfirm(file: File): Promise<void> {
+  function onScannerConfirm(file: File): void {
     setReviewBlob(null);
     if (!batchActive) {
-      // Pre-28.8 single-shot path. Should be unreachable now that
-      // batchActive is set whenever the user enters scan mode, but kept
-      // as a safety fallback.
       enqueueScan(file);
       return;
     }
-    if (retakeIndex !== null) {
-      await batchRef.current?.replacePage(retakeIndex, file);
-      setRetakeIndex(null);
-    } else {
-      await batchRef.current?.addPage(file);
-    }
+    // Hand the file off to ScanBatch via state instead of an imperative
+    // ref — see `pendingBatchPage` for why.
+    pendingSeq.current += 1;
+    setPendingBatchPage({
+      file,
+      replaceIndex: retakeIndex,
+      seq: pendingSeq.current,
+    });
+    if (retakeIndex !== null) setRetakeIndex(null);
   }
 
   function onScannerRetake(): void {
@@ -339,12 +354,15 @@ export function Upload(): JSX.Element {
       const renamed = new File([f], blobToScanFile(f).name, {
         type: f.type || 'image/jpeg',
       });
-      if (batchActive && batchRef.current) {
+      if (batchActive) {
         // 28.8 — append to the multi-page batch instead of uploading
-        // immediately. Note: the fallback path skips ScannerReview
-        // because the OS camera already produces a final photo; the
-        // user can still reorder / delete / retake from ScanBatch.
-        await batchRef.current.addPage(renamed);
+        // immediately. The fallback path skips ScannerReview because
+        // the OS camera already produces a final photo; the user can
+        // still reorder / delete / retake from ScanBatch. Use the same
+        // state-based handoff as the in-browser camera path so a
+        // mount-race can't swallow the capture.
+        pendingSeq.current += 1;
+        setPendingBatchPage({ file: renamed, replaceIndex: null, seq: pendingSeq.current });
       } else {
         enqueueScan(renamed);
       }
@@ -430,8 +448,9 @@ export function Upload(): JSX.Element {
 
         {batchActive ? (
           <ScanBatch
-            ref={batchRef}
             sessionId={sessionId}
+            pendingPage={pendingBatchPage}
+            onPendingConsumed={() => setPendingBatchPage(null)}
             onAddMore={onBatchAddMore}
             onRetakePage={onBatchRetake}
             onSubmit={onBatchSubmit}
