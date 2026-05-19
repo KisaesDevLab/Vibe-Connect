@@ -111,6 +111,24 @@ describe('url() — absolute URL passthrough (any mode)', () => {
   });
 });
 
+describe('url() — basePath "/" defensive guard', () => {
+  // The server-side bootstrap now emits basePath="" (empty) for root-mounted
+  // hosts, but an older appliance could still hand back basePath="/" via a
+  // cached __vibe-boot.js. Without the guard the helper would do
+  // `"/" + "/api/foo"` = `"//api/foo"`, which a browser parses as
+  // protocol-relative and tries to DNS-resolve `api`.
+  it('treats basePath="/" the same as basePath="" (no protocol-relative output)', () => {
+    setBoot({ basePath: '/' });
+    expect(url('/api/public/intake/staff')).toBe('/api/public/intake/staff');
+    expect(url('/auth/login')).toBe('/auth/login');
+  });
+
+  it('prepends a slash to relative paths when basePath="/"', () => {
+    setBoot({ basePath: '/' });
+    expect(url('auth/login')).toBe('/auth/login');
+  });
+});
+
 describe('url() — defensive cases that should not happen in practice', () => {
   it('does not double-prepend when caller already includes BASE_PATH', () => {
     // This IS a footgun: callers must NOT pass a pre-prefixed path. The

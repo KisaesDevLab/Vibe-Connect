@@ -48,7 +48,11 @@ export function getBoot(): VibeBoot {
 export function url(path: string): string {
   if (/^[a-z]+:\/\//i.test(path) || path.startsWith('//')) return path;
   const base = getBoot().basePath;
-  if (!base) return path.startsWith('/') ? path : '/' + path;
+  // `base === '/'` collapses to the root-mount case: `base + '/api/foo'`
+  // would otherwise emit `//api/foo`, which a browser parses as a
+  // protocol-relative URL. Defensive guard alongside the server-side
+  // bootstrap fix that now emits `""` instead of `"/"`.
+  if (!base || base === '/') return path.startsWith('/') ? path : '/' + path;
   const p = path.startsWith('/') ? path : '/' + path;
   return base + p;
 }

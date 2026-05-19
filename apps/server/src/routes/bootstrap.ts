@@ -55,11 +55,15 @@ function basePathForRequest(req: Request, urls: EffectiveUrls): string {
       const parsed = new URL(url);
       if (parsed.host === reqHost) {
         // URL.pathname for a hostname-only URL is "/" — strip the trailing
-        // slash so the SPA's router gets a consistent shape ("" for root,
-        // "/connect" for prefixed). Fall back to "/" for the rare case
-        // where the trim leaves an empty string and downstream code can't
-        // handle "" — React Router treats "" and "/" equivalently here.
-        return parsed.pathname.replace(/\/$/, '') || '/';
+        // slash so the SPA's router gets a consistent shape: "" for the
+        // root-mounted case and "/connect" (no trailing slash) for the
+        // prefixed case. MUST NOT fall back to "/" when the strip leaves
+        // an empty string — the SPA's url() helper does `base + path` and
+        // would emit "/" + "/api/foo" = "//api/foo", which a browser
+        // interprets as a protocol-relative URL with `api` as the host.
+        // Empty string is the right value here; React Router accepts it
+        // as a basename and `url()` short-circuits on falsy base.
+        return parsed.pathname.replace(/\/$/, '');
       }
     } catch {
       // Malformed URL in env or DB — skip this candidate and try the next.
