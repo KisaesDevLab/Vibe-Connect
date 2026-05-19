@@ -276,6 +276,37 @@ async function resolveEmailProviderKind(): Promise<
   return env.emailProvider;
 }
 
+export type EmailProviderKind = 'mock' | 'postmark' | 'postfix' | 'emailit' | 'none';
+
+/**
+ * Factory for a SPECIFIC provider, bypassing the resolver. Used by the
+ * Admin → Providers "Test" button so an admin can verify a provider's
+ * credentials are working before flipping `firm_settings.email_provider`
+ * to it (otherwise testing a new provider would require flipping the
+ * setting first, taking outbound mail with it on failure).
+ */
+export function buildEmailProvider(kind: EmailProviderKind): EmailProvider {
+  switch (kind) {
+    case 'postmark':
+      return new PostmarkProvider();
+    case 'postfix':
+      return new PostfixProvider();
+    case 'emailit':
+      return new EmailitProvider();
+    case 'none':
+      return new NoneProvider();
+    case 'mock':
+    default:
+      return new MockProvider();
+  }
+}
+
+/** What the resolver currently picks. Exposed so Admin → Providers can
+ *  surface "Emailit (active)" vs "Postmark (configured but not active)". */
+export async function currentEmailProviderKind(): Promise<EmailProviderKind> {
+  return resolveEmailProviderKind();
+}
+
 export async function getEmailProvider(): Promise<EmailProvider> {
   switch (await resolveEmailProviderKind()) {
     case 'postmark':

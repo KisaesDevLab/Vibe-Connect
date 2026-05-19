@@ -3328,9 +3328,14 @@ interface ProviderSecretMeta {
 // Registry display metadata — matches the server's PROVIDER_SECRET_KEYS list
 // but adds user-facing labels and input affordances. Kept hardcoded client-side
 // so we control copy + don't have to round-trip "what's this field for" strings.
+type ProviderTestKind =
+  | { channel: 'email'; provider: 'postmark' | 'postfix' | 'emailit' }
+  | { channel: 'sms'; provider: 'twilio' | 'textlink' };
+
 const PROVIDER_GROUPS: {
   title: string;
   blurb: string;
+  test: ProviderTestKind;
   keys: {
     key: string;
     label: string;
@@ -3342,6 +3347,7 @@ const PROVIDER_GROUPS: {
     title: 'Email — Postmark',
     blurb:
       'Used when EMAIL_PROVIDER=postmark. Transactional email for client invites + notifications.',
+    test: { channel: 'email', provider: 'postmark' },
     keys: [
       {
         key: 'email.postmark.server_token',
@@ -3358,6 +3364,7 @@ const PROVIDER_GROUPS: {
   {
     title: 'Email — SMTP (Postfix compatible)',
     blurb: 'Used when EMAIL_PROVIDER=postfix. Direct SMTP (self-hosted relay or third-party).',
+    test: { channel: 'email', provider: 'postfix' },
     keys: [
       { key: 'email.smtp.host', label: 'Host', placeholder: 'smtp.example.com', inputType: 'text' },
       { key: 'email.smtp.port', label: 'Port', placeholder: '587', inputType: 'text' },
@@ -3375,6 +3382,7 @@ const PROVIDER_GROUPS: {
     title: 'Email — Emailit',
     blurb:
       'Used when EMAIL_PROVIDER=emailit. Transactional v2 API (emailit.com). API key is the only required field; the base URL defaults to https://api.emailit.com/v2.',
+    test: { channel: 'email', provider: 'emailit' },
     keys: [
       { key: 'email.emailit.api_key', label: 'API key', placeholder: 'Emailit API key' },
       {
@@ -3395,6 +3403,7 @@ const PROVIDER_GROUPS: {
     title: 'SMS — Twilio',
     blurb:
       'Used when SMS_PROVIDER=twilio. Either MessagingServiceSid or From number is required — not both.',
+    test: { channel: 'sms', provider: 'twilio' },
     keys: [
       {
         key: 'sms.twilio.account_sid',
@@ -3420,6 +3429,7 @@ const PROVIDER_GROUPS: {
   {
     title: 'SMS — TextLink',
     blurb: 'Used when SMS_PROVIDER=textlink.',
+    test: { channel: 'sms', provider: 'textlink' },
     keys: [
       { key: 'sms.textlink.api_key', label: 'API key', placeholder: 'TextLink API key' },
       {
@@ -3507,6 +3517,7 @@ function AdminProviders(): JSX.Element {
                   />
                 );
               })}
+              <ProviderTestPanel test={group.test} />
             </div>
           </section>
         ))}
@@ -3624,6 +3635,102 @@ function ProviderSecretRow({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Inline test-send panel that lives under each provider section in
+// Admin → Providers. Lets an admin verify credentials by firing a real
+// test message to a recipient they pick — independent of whichever
+// provider firm_settings currently selects, so a new provider can be
+// proven before flipping the switch on outbound mail/SMS.
+function ProviderTestPanel({ test }: { test: ProviderTestKind }): JSX.Element {
+  const [recipient, setRecipient] = useState('');
+  const [status, setStatus] = useState<
+    | { kind: 'idle' }
+    | { kind: 'sending' }
+    | { kind: 'sent'; messageId: string }
+    | { kind: 'error'; reason: string }
+  >({ kind: 'idle' });
+
+  async function send(): Promise<void> {
+    if (!recipient.trim()) return;
+    setStatus({ kind: 'sending' });
+    try {
+      const r =
+        test.channel === 'email'
+          ? await api.testEmailProvider(test.provider, recipient.trim())
+          : await api.testSmsProvider(test.provider, recipient.trim());
+      setStatus({ kind: 'sent', messageId: r.providerMessageId });
+    } catch (err) {
+      // The /admin/providers/test/* routes return either 400 (validation
+      // / missing secrets) or 502 (provider rejected the send). Either
+      // way, json() throws an Error with the body attached as `.body`.
+      type ServerErr = { error?: string; reason?: string; keys?: string[] };
+      const bodyText = (err as { body?: string } | null)?.body ?? '';
+      let parsed: ServerErr | null = null;
+      try {
+        parsed = JSON.parse(bodyText) as ServerErr;
+      } catch {
+        parsed = null;
+      }
+      let reason: string;
+      if (parsed?.error === 'provider_secrets_missing') {
+        reason = `Missing credentials: ${(parsed.keys ?? []).join(', ')}. Save them above first.`;
+      } else if (parsed?.error) {
+        reason = String(parsed.error);
+      } else {
+        reason = err instanceof Error ? err.message : String(err);
+      }
+      setStatus({ kind: 'error', reason: reason.slice(0, 300) });
+    }
+  }
+
+  const placeholder = test.channel === 'email' ? 'admin@yourfirm.com' : '+15551234567';
+  const label = test.channel === 'email' ? 'Send test email to' : 'Send test SMS to';
+
+  return (
+    <div className="px-4 py-3 bg-slate-50/60">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="text-xs text-slate-700 font-medium" htmlFor={`test-${test.provider}`}>
+          {label}
+        </label>
+        <input
+          id={`test-${test.provider}`}
+          type={test.channel === 'email' ? 'email' : 'tel'}
+          value={recipient}
+          onChange={(e) => setRecipient(e.target.value)}
+          placeholder={placeholder}
+          className="flex-1 min-w-[200px] rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+          disabled={status.kind === 'sending'}
+        />
+        <button
+          type="button"
+          onClick={() => void send()}
+          disabled={status.kind === 'sending' || !recipient.trim()}
+          className="btn-secondary text-xs disabled:opacity-50"
+        >
+          {status.kind === 'sending' ? 'Sending…' : 'Test'}
+        </button>
+      </div>
+      {status.kind === 'sent' && (
+        <div
+          className="mt-2 text-xs rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 px-3 py-2"
+          role="status"
+        >
+          Sent — provider message id <code>{status.messageId.slice(0, 40)}</code>. Check your inbox
+          / phone within ~30 s. If it doesn&apos;t arrive, look at the provider&apos;s dashboard
+          (sandbox keys often return 200 but never deliver).
+        </div>
+      )}
+      {status.kind === 'error' && (
+        <div
+          className="mt-2 text-xs rounded-md border border-rose-200 bg-rose-50 text-rose-800 px-3 py-2"
+          role="alert"
+        >
+          Failed: {status.reason}
+        </div>
+      )}
     </div>
   );
 }

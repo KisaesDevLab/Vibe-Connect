@@ -134,6 +134,70 @@ describe('DB-backed provider selection', () => {
     const read = await admin.get('/admin/settings');
     expect(read.body.settings.email_provider).toBe('emailit');
   });
+
+  describe('Admin → Providers test endpoints', () => {
+    it('POST /admin/providers/test/email rejects with provider_secrets_missing when emailit has no api_key', async () => {
+      const { db } = await import('../db/knex.js');
+      await db('firm_provider_credentials').delete();
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin
+        .post('/admin/providers/test/email')
+        .send({ provider: 'emailit', to: 'admin@example.com' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('provider_secrets_missing');
+      expect(res.body.keys).toEqual(['email.emailit.api_key']);
+    });
+
+    it('POST /admin/providers/test/sms rejects with provider_secrets_missing when textlink has no api_key', async () => {
+      const { db } = await import('../db/knex.js');
+      await db('firm_provider_credentials').delete();
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin
+        .post('/admin/providers/test/sms')
+        .send({ provider: 'textlink', to: '+15551234567' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('provider_secrets_missing');
+    });
+
+    it('POST /admin/providers/test/email with mock provider always succeeds + writes audit row', async () => {
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin
+        .post('/admin/providers/test/email')
+        .send({ provider: 'mock', to: 'admin@example.com' });
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.providerMessageId).toMatch(/^mock-/);
+      // Audit row should land.
+      const { db } = await import('../db/knex.js');
+      const row = await db('audit_log')
+        .where({ action: 'admin.provider_test_sent' })
+        .orderBy('created_at', 'desc')
+        .first();
+      expect(row).toBeDefined();
+      expect(row.details.provider).toBe('mock');
+      expect(row.details.status).toBe('sent');
+    });
+
+    it('rejects validation errors (bad email, bad provider enum)', async () => {
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const bad1 = await admin
+        .post('/admin/providers/test/email')
+        .send({ provider: 'emailit', to: 'not-an-email' });
+      expect(bad1.status).toBe(400);
+      const bad2 = await admin
+        .post('/admin/providers/test/email')
+        .send({ provider: 'sendgrid', to: 'admin@example.com' });
+      expect(bad2.status).toBe(400);
+    });
+
+    it('non-admin (staff) is forbidden from hitting the test endpoint', async () => {
+      const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+      const res = await alice
+        .post('/admin/providers/test/email')
+        .send({ provider: 'mock', to: 'admin@example.com' });
+      expect(res.status).toBe(403);
+    });
+  });
 });
 
 afterAll(async () => {

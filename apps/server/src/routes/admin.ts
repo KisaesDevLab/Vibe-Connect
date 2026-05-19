@@ -1505,6 +1505,138 @@ adminRouter.delete(
   }),
 );
 
+// ---------- Provider test send ----------
+//
+// Admin → Providers exposes a "Test" button per provider. The button
+// POSTs here with the specific provider kind + a recipient address; the
+// server instantiates THAT provider (not the currently-resolved one) and
+// sends a small fixed test message. Returns the provider's reported
+// message id on success or the error string on failure — both are echoed
+// in the UI so the admin can immediately see what's wrong with their
+// credentials. Audit-logged so a compromise leaves a trail.
+//
+// Rate-limited tightly: a test send is an outbound API call to a paid
+// provider; we don't want a stuck UI / bug to drain the firm's quota.
+const providerTestSendLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const testEmailBody = z.object({
+  provider: z.enum(['postmark', 'postfix', 'emailit', 'mock']),
+  to: z.string().email().max(254),
+});
+
+adminRouter.post(
+  '/providers/test/email',
+  requireAdmin,
+  providerTestSendLimiter,
+  asyncHandler(async (req, res) => {
+    const parsed = testEmailBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'validation', details: parsed.error.flatten() });
+      return;
+    }
+    const { provider, to } = parsed.data;
+    const gap = await missingSecretsFor(provider);
+    if (gap.length > 0) {
+      res.status(400).json({ error: 'provider_secrets_missing', keys: gap });
+      return;
+    }
+    const { buildEmailProvider } = await import('../bridges/email/index.js');
+    const impl = buildEmailProvider(provider);
+    const stamp = new Date().toISOString();
+    try {
+      const result = await impl.send({
+        to,
+        subject: 'Vibe Connect — test email',
+        text: `This is a test email from Vibe Connect's Admin → Providers diagnostic.\n\nProvider: ${provider}\nSent at: ${stamp}\n\nIf you received this, ${provider} is configured correctly.`,
+      });
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.provider_test_sent',
+        targetType: 'firm_settings',
+        targetId: 'email',
+        details: { provider, status: 'sent', messageId: result.id },
+        ipAddress: req.ip ?? null,
+      });
+      res.json({ ok: true, providerMessageId: result.id, status: result.status });
+    } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).slice(0, 400);
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.provider_test_sent',
+        targetType: 'firm_settings',
+        targetId: 'email',
+        details: { provider, status: 'failed', reason: reason.slice(0, 200) },
+        ipAddress: req.ip ?? null,
+      });
+      res.status(502).json({ ok: false, error: reason });
+    }
+  }),
+);
+
+const testSmsBody = z.object({
+  provider: z.enum(['twilio', 'textlink', 'mock']),
+  to: z
+    .string()
+    .min(7)
+    .max(20)
+    .regex(/^\+?[0-9\s\-()]+$/, 'must look like a phone number'),
+});
+
+adminRouter.post(
+  '/providers/test/sms',
+  requireAdmin,
+  providerTestSendLimiter,
+  asyncHandler(async (req, res) => {
+    const parsed = testSmsBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'validation', details: parsed.error.flatten() });
+      return;
+    }
+    const { provider, to } = parsed.data;
+    const gap = await missingSecretsFor(provider);
+    if (gap.length > 0) {
+      res.status(400).json({ error: 'provider_secrets_missing', keys: gap });
+      return;
+    }
+    const { buildSmsProvider } = await import('../bridges/sms/index.js');
+    const impl = buildSmsProvider(provider);
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    // E.164 normalisation: strip spaces / dashes / parens; ensure leading +.
+    const normalisedTo = to.replace(/[\s\-()]/g, '').replace(/^(?!\+)/, '+');
+    try {
+      const result = await impl.sendMessage({
+        to: normalisedTo,
+        body: `Vibe Connect test SMS via ${provider} at ${stamp} UTC. If you received this, the provider is configured correctly. Reply STOP to opt out.`,
+      });
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.provider_test_sent',
+        targetType: 'firm_settings',
+        targetId: 'sms',
+        details: { provider, status: 'sent', messageId: result.id },
+        ipAddress: req.ip ?? null,
+      });
+      res.json({ ok: true, providerMessageId: result.id, status: result.status });
+    } catch (err) {
+      const reason = (err instanceof Error ? err.message : String(err)).slice(0, 400);
+      await auditRepo.write({
+        actorUserId: req.session.userId!,
+        action: 'admin.provider_test_sent',
+        targetType: 'firm_settings',
+        targetId: 'sms',
+        details: { provider, status: 'failed', reason: reason.slice(0, 200) },
+        ipAddress: req.ip ?? null,
+      });
+      res.status(502).json({ ok: false, error: reason });
+    }
+  }),
+);
+
 // ---------- Retention sweep (on-demand) ----------
 
 adminRouter.post(
