@@ -5048,27 +5048,55 @@ function AdminIntakeDetail({
             <section className="space-y-2">
               <h4 className="font-medium text-slate-900">Files ({detailQ.data.files.length})</h4>
               <ul className="space-y-1">
-                {detailQ.data.files.map((f) => (
-                  <li
-                    key={f.id}
-                    className="flex items-center justify-between border border-slate-100 rounded p-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-slate-900">{f.originalFilename}</div>
-                      <div className="text-xs text-slate-500">
-                        {f.kind === 'scanned_image' ? 'Scanned image' : 'File'} ·{' '}
-                        {formatIntakeBytes(f.sizeBytes)}
-                      </div>
-                    </div>
-                    <a
-                      href={appUrl(`/admin/intake/sessions/${sessionId}/files/${f.id}`)}
-                      className="text-xs text-brand-700 hover:text-brand-800"
-                      download
+                {detailQ.data.files.map((f) => {
+                  const isImage =
+                    f.kind === 'scanned_image' ||
+                    (f.mimeType ?? '').toLowerCase().startsWith('image/');
+                  return (
+                    <li
+                      key={f.id}
+                      className="flex items-center gap-3 border border-slate-100 rounded p-2"
                     >
-                      Download
-                    </a>
-                  </li>
-                ))}
+                      {/* Inline thumbnail for image-mime files. The route
+                          decrypts + downsamples + caches; non-image rows
+                          show a generic placeholder so the layout stays
+                          aligned. */}
+                      {isImage ? (
+                        <img
+                          src={appUrl(
+                            `/admin/intake/sessions/${sessionId}/files/${f.id}/thumbnail`,
+                          )}
+                          alt=""
+                          width={48}
+                          height={48}
+                          className="w-12 h-12 rounded object-cover bg-slate-100 border border-slate-200 flex-shrink-0"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div
+                          aria-hidden="true"
+                          className="w-12 h-12 rounded bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400 text-xs flex-shrink-0"
+                        >
+                          File
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-slate-900">{f.originalFilename}</div>
+                        <div className="text-xs text-slate-500">
+                          {f.kind === 'scanned_image' ? 'Scanned image' : 'File'} ·{' '}
+                          {formatIntakeBytes(f.sizeBytes)}
+                        </div>
+                      </div>
+                      <a
+                        href={appUrl(`/admin/intake/sessions/${sessionId}/files/${f.id}`)}
+                        className="text-xs text-brand-700 hover:text-brand-800"
+                        download
+                      >
+                        Download
+                      </a>
+                    </li>
+                  );
+                })}
               </ul>
             </section>
             {/* Phase 28.15 — retention status + admin override. */}
