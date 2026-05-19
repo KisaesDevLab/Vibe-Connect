@@ -73,6 +73,18 @@ async function readBoot(): Promise<{ siteUrl: string; portalUrl: string }> {
   return JSON.parse(match[1]!) as { siteUrl: string; portalUrl: string };
 }
 
+// Same as readBoot but with a configurable Host header — exercises the
+// host-aware basePath derivation in routes/bootstrap.ts.
+async function readBootWithHost(
+  host: string,
+): Promise<{ basePath: string; siteUrl: string; portalUrl: string }> {
+  const r = await request(app).get('/__vibe-boot.js').set('Host', host);
+  expect(r.status).toBe(200);
+  const match = /window\.__VIBE_BOOT__ = (\{[\s\S]*\});/.exec(r.text);
+  if (!match) throw new Error(`unexpected boot payload: ${r.text}`);
+  return JSON.parse(match[1]!) as { basePath: string; siteUrl: string; portalUrl: string };
+}
+
 describe('effectiveUrls() helper', () => {
   it('falls back to env when DB columns are null', async () => {
     const { effectiveUrls } = await import('../services/effectiveUrls.js');
@@ -166,6 +178,29 @@ describe('PATCH /admin/settings — URL validation', () => {
       .patch('/admin/settings')
       .send({ siteUrl: 'https://vibe.cpa2web.app/connect' });
     expect(r.status).toBe(403);
+  });
+});
+
+describe('Host-aware basePath derivation', () => {
+  it('emits basePath="" (not "/") when the Host matches a root-mounted portal URL', async () => {
+    // CRITICAL regression guard: the apps/{web,portal,intake}/lib/boot.ts
+    // url() helper does `base + path`. If the server returns basePath="/"
+    // for a root-mounted host, the helper produces "//api/foo", which a
+    // browser parses as protocol-relative and tries to DNS-resolve `api`
+    // — the entire staff/client list fetch dies with ERR_NAME_NOT_RESOLVED.
+    // Empty string is the right value here; React Router accepts "" as a
+    // basename and url() short-circuits on falsy base.
+    const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    await admin.patch('/admin/settings').send({
+      siteUrl: 'https://vibe.cpa2web.app/connect',
+      portalUrl: 'https://client.cpa2web.app',
+    });
+
+    const portalBoot = await readBootWithHost('client.cpa2web.app');
+    expect(portalBoot.basePath).toBe('');
+
+    const staffBoot = await readBootWithHost('vibe.cpa2web.app');
+    expect(staffBoot.basePath).toBe('/connect');
   });
 });
 
