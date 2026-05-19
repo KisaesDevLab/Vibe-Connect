@@ -79,8 +79,17 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
     throw new Error(`buildPdfForSession: session ${sessionId} not found`);
   }
   const files = await intakeFilesRepo.listBySession(sessionId);
-  const scannedImages = files.filter((f) => f.kind === 'scanned_image');
-  const otherFiles = files.filter((f) => f.kind === 'file');
+  // Every image-mime upload becomes an embedded PDF page, regardless of
+  // whether it arrived through the in-browser scanner (kind='scanned_image')
+  // or through the regular file picker / iOS native-camera fallback
+  // (kind='file' with an image/* mime). Originally we only embedded
+  // kind='scanned_image' rows, which left clients-who-took-a-photo with a
+  // cover-only PDF and their image listed in "Other files attached" —
+  // surprising for the staff recipient who expected one mergeable PDF.
+  const isEmbeddable = (f: IntakeFileRow): boolean =>
+    f.kind === 'scanned_image' || (f.mime_type ?? '').toLowerCase().startsWith('image/');
+  const scannedImages = files.filter(isEmbeddable);
+  const otherFiles = files.filter((f) => !isEmbeddable(f));
 
   const staff = await db('users')
     .where({ id: session.staff_id })

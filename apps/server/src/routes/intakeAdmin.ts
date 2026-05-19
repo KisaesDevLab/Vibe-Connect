@@ -16,6 +16,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import sharp from 'sharp';
 import { z } from 'zod';
 import { db } from '../db/knex.js';
 import { logger } from '../logger.js';
@@ -358,6 +359,68 @@ intakeAdminRouter.get(
     );
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.send(plaintext);
+  }),
+);
+
+// -------- file thumbnail (image preview) --------
+//
+// Returns a small JPEG preview for image-mime intake files so the staff
+// session-detail UI can render thumbnails inline next to each row. The
+// underlying bytes are encrypted at rest with the firm intake key; we
+// decrypt in-process, downsample with sharp, and return a fresh JPEG.
+// No audit row — this fires once per page render and would otherwise
+// drown out actual download events. Cache-Control of 5min lets the
+// browser reuse the response across re-renders.
+intakeAdminRouter.get(
+  '/sessions/:id/files/:fileId/thumbnail',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const sessionId = req.params.id!;
+    const fileId = req.params.fileId!;
+    const session = await intakeSessionsRepo.byId(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (!req.session.isAdmin && session.staff_id !== req.session.userId) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    const file = await intakeFilesRepo.byId(fileId);
+    if (!file || file.session_id !== sessionId) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const mime = (file.mime_type ?? '').toLowerCase();
+    if (file.kind !== 'scanned_image' && !mime.startsWith('image/')) {
+      // Non-image files have no inline thumbnail — caller should hide
+      // the <img> element rather than ever requesting this URL.
+      res.status(404).json({ error: 'not_image' });
+      return;
+    }
+    try {
+      const ciphertext = await attachmentStorage().get(file.stored_path);
+      const plaintext = await decryptBufferStreaming(ciphertext);
+      // 192 px on the long edge × 2x DPR = sharp on retina. JPEG at q70
+      // — readable at thumbnail size, ~5–15 KB on typical phone photos.
+      const thumb = await sharp(plaintext)
+        .rotate()
+        .resize({ width: 192, height: 192, fit: 'inside' })
+        .jpeg({ quality: 70 })
+        .toBuffer();
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Content-Length', String(thumb.length));
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(thumb);
+    } catch (err) {
+      logger.warn('intake.thumbnail_failed', {
+        sessionId,
+        fileId,
+        msg: err instanceof Error ? err.message : String(err),
+      });
+      res.status(500).json({ error: 'thumbnail_failed' });
+    }
   }),
 );
 

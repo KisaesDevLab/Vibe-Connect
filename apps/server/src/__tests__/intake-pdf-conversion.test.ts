@@ -217,6 +217,28 @@ describe('Phase 28.9 — PDF conversion ticker', () => {
     expect(pdfRow.page_count).toBe(3);
   });
 
+  it('also embeds image-mime files uploaded as kind=file (iOS native-camera path)', async () => {
+    // Regression guard for the iPhone Safari report where a single
+    // IMG_*.jpeg taken via the OS camera fallback arrived as kind='file'
+    // and the assembled PDF was cover-page-only (1.5 KB) with the image
+    // listed under "Other files attached" instead of as a PDF page.
+    // The builder now embeds any file whose mime_type starts with
+    // image/, regardless of kind.
+    const { sessionId, token } = await createSession();
+    const jpeg = await makeJpeg();
+    await uploadFile(token, jpeg, {
+      filename: 'IMG_3127.jpeg',
+      filetype: 'image/jpeg',
+      // intentionally no `kind` — defaults to 'file' on the server,
+      // mirroring the apps/intake fallback path.
+    });
+    const { id } = await processSession(sessionId);
+    const pdfRow = await db('intake_pdfs').where({ id }).first();
+    expect(pdfRow.conversion_status).toBe('done');
+    // Cover + 1 image page = 2 pages. Previously: 1 (cover only).
+    expect(pdfRow.page_count).toBe(2);
+  });
+
   it('honours firm_settings.intake_include_cover_page=false', async () => {
     const { sessionId, token } = await createSession();
     await db('firm_settings').where({ id: 1 }).update({ intake_include_cover_page: false });
