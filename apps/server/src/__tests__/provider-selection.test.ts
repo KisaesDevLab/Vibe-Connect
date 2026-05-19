@@ -49,6 +49,9 @@ describe('DB-backed provider selection', () => {
 
     await db('firm_settings').where({ id: 1 }).update({ email_provider: 'postfix' });
     expect((await getEmailProvider()).name).toBe('postfix');
+
+    await db('firm_settings').where({ id: 1 }).update({ email_provider: 'emailit' });
+    expect((await getEmailProvider()).name).toBe('emailit');
   });
 
   it('getSmsProvider honors firm_settings.sms_provider', async () => {
@@ -104,6 +107,32 @@ describe('DB-backed provider selection', () => {
         keys: ['email.postmark.server_token'],
       },
     ]);
+  });
+
+  it('pre-flight rejects switching to emailit when api_key is missing', async () => {
+    const { db } = await import('../db/knex.js');
+    await db('firm_provider_credentials').delete();
+    const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const res = await admin.patch('/admin/settings').send({ emailProvider: 'emailit' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('provider_secrets_missing');
+    expect(res.body.missing).toEqual([
+      {
+        field: 'emailProvider',
+        provider: 'emailit',
+        keys: ['email.emailit.api_key'],
+      },
+    ]);
+  });
+
+  it('PATCH /admin/settings persists emailit once api_key is stored', async () => {
+    const { set: setProviderSecret } = await import('../services/providerSecrets.js');
+    await setProviderSecret('email.emailit.api_key', 'test-emailit-key-xyz', null);
+    const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const patched = await admin.patch('/admin/settings').send({ emailProvider: 'emailit' });
+    expect(patched.status).toBe(200);
+    const read = await admin.get('/admin/settings');
+    expect(read.body.settings.email_provider).toBe('emailit');
   });
 });
 

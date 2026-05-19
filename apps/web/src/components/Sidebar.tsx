@@ -1105,13 +1105,20 @@ export function Sidebar(): JSX.Element {
           const sms = result.deliveryStatus.sms;
           const parts: string[] = [];
           if (email === 'sent') parts.push('email sent');
-          else if (email === 'failed') parts.push('email failed');
+          else if (email === 'failed') {
+            const reason = result.deliveryErrors?.email?.slice(0, 140);
+            parts.push(reason ? `email failed (${reason})` : 'email failed');
+          }
           if (sms === 'sent') parts.push('SMS sent');
-          else if (sms === 'failed') parts.push('SMS failed');
+          else if (sms === 'failed') {
+            const reason = result.deliveryErrors?.sms?.slice(0, 140);
+            parts.push(reason ? `SMS failed (${reason})` : 'SMS failed');
+          }
           setResendFlash(
             `Re-invited ${result.displayName}${parts.length > 0 ? ` — ${parts.join(', ')}` : ''}.`,
           );
-          window.setTimeout(() => setResendFlash(null), 6_000);
+          const hasFailure = email === 'failed' || sms === 'failed';
+          window.setTimeout(() => setResendFlash(null), hasFailure ? 20_000 : 6_000);
         }}
         onOpenExistingClient={(clientId, clientDisplayName) => {
           // 409 on resend means email/phone now collide with another identity.

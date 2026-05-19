@@ -132,7 +132,7 @@ const settingsSchema = z.object({
   emailOutboundContentPreviewChars: z.number().int().min(0).max(2000).optional(),
   smsProvider: z.enum(['textlink', 'twilio', 'mock']).optional(),
   smsMonthlyCap: z.number().int().min(0).max(100_000).optional(),
-  emailProvider: z.enum(['mock', 'postmark', 'postfix']).optional(),
+  emailProvider: z.enum(['mock', 'postmark', 'postfix', 'emailit']).optional(),
   exportExternalRequiresRecoveryPhrase: z.boolean().optional(),
   sidebarGroupsOrder: z.array(z.string().uuid()).optional(),
   // 0 = never lock; upper bound matches the DB constraint (24 h).
@@ -280,6 +280,7 @@ function normalizeAdminUrl(
 const REQUIRED_SECRETS_BY_PROVIDER: Record<string, ProviderSecretKey[]> = {
   postmark: ['email.postmark.server_token'],
   postfix: ['email.smtp.host', 'email.smtp.port'],
+  emailit: ['email.emailit.api_key'],
   textlink: ['sms.textlink.api_key'],
   twilio: ['sms.twilio.account_sid', 'sms.twilio.auth_token'],
   // 'mock' providers write to the local .outbox/ and never need secrets.

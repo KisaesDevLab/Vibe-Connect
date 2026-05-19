@@ -61,6 +61,10 @@ export interface InviteCreatedResult {
   displayName: string;
   invitePublicKey: string;
   deliveryStatus: { email: 'sent' | 'failed' | null; sms: 'sent' | 'failed' | null };
+  /** Provider error string surfaced when deliveryStatus.* === 'failed'. The
+   *  invite toast renders this so SMTP / API failures don't hide behind a
+   *  generic "email failed". */
+  deliveryErrors?: { email?: string; sms?: string };
   /** True when the modal ran in resend mode and re-dispatched an invite. */
   resent?: boolean;
 }
@@ -362,6 +366,7 @@ export function InviteClientModal({
           displayName: displayName.trim(),
           invitePublicKey: resent.invitePublicKey,
           deliveryStatus: resent.deliveryStatus,
+          deliveryErrors: resent.deliveryErrors,
           resent: true,
         });
         return;
@@ -391,6 +396,7 @@ export function InviteClientModal({
         displayName: displayName.trim(),
         invitePublicKey: invite.invitePublicKey,
         deliveryStatus: invite.deliveryStatus,
+        deliveryErrors: invite.deliveryErrors,
       });
     } catch (err) {
       // `json()` in api.ts throws Error with { status, body } attached. Pull the

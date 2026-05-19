@@ -997,7 +997,7 @@ function AdminSettings(): JSX.Element {
     stepup_timeout_hours: number;
     email_outbound_mode: 'summary' | 'content';
     sms_provider: 'textlink' | 'twilio' | 'mock';
-    email_provider: 'mock' | 'postmark' | 'postfix';
+    email_provider: 'mock' | 'postmark' | 'postfix' | 'emailit';
     idle_lock_minutes: number;
     client_messaging_enabled: boolean;
     requests_enabled: boolean;
@@ -1329,6 +1329,7 @@ function AdminSettings(): JSX.Element {
           <option value="mock">Mock (dev only — writes to .outbox/)</option>
           <option value="postmark">Postmark (transactional)</option>
           <option value="postfix">SMTP / Postfix (self-hosted relay)</option>
+          <option value="emailit">Emailit (transactional)</option>
         </select>
         <span className="mt-1 text-[11px] text-slate-500 block">
           Configure credentials in <strong>Admin → Providers</strong> before switching off Mock.
@@ -1951,14 +1952,22 @@ export function AdminClients(): JSX.Element {
           const sms = result.deliveryStatus.sms;
           const parts: string[] = [];
           if (email === 'sent') parts.push('email sent');
-          else if (email === 'failed') parts.push('email failed');
+          else if (email === 'failed') {
+            const reason = result.deliveryErrors?.email?.slice(0, 140);
+            parts.push(reason ? `email failed (${reason})` : 'email failed');
+          }
           if (sms === 'sent') parts.push('SMS sent');
-          else if (sms === 'failed') parts.push('SMS failed');
+          else if (sms === 'failed') {
+            const reason = result.deliveryErrors?.sms?.slice(0, 140);
+            parts.push(reason ? `SMS failed (${reason})` : 'SMS failed');
+          }
           setFlash(
             `Invited ${result.displayName}${parts.length > 0 ? ` — ${parts.join(', ')}` : ''}.`,
           );
-          // Self-clear so the row's normal "pending" state takes over.
-          window.setTimeout(() => setFlash(null), 6_000);
+          // Failures get a longer dwell so admins can read the underlying
+          // provider error before it disappears — success self-clears fast.
+          const hasFailure = email === 'failed' || sms === 'failed';
+          window.setTimeout(() => setFlash(null), hasFailure ? 20_000 : 6_000);
         }}
         onOpenExistingClient={(_clientId, existingName) => {
           // Duplicate path — the admin /clients search matches on name /
@@ -3358,6 +3367,26 @@ const PROVIDER_GROUPS: {
         key: 'email.smtp.secure',
         label: 'TLS (1 = on, 0 = off)',
         placeholder: '1',
+        inputType: 'text',
+      },
+    ],
+  },
+  {
+    title: 'Email — Emailit',
+    blurb:
+      'Used when EMAIL_PROVIDER=emailit. Transactional v2 API (emailit.com). API key is the only required field; the base URL defaults to https://api.emailit.com/v2.',
+    keys: [
+      { key: 'email.emailit.api_key', label: 'API key', placeholder: 'Emailit API key' },
+      {
+        key: 'email.emailit.base_url',
+        label: 'Base URL (optional)',
+        placeholder: 'https://api.emailit.com/v2',
+        inputType: 'text',
+      },
+      {
+        key: 'email.emailit.reply_to',
+        label: 'Reply-To (optional)',
+        placeholder: 'reply@yourfirm.com',
         inputType: 'text',
       },
     ],
