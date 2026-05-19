@@ -239,6 +239,25 @@ export const api = {
   bulkZipIntakeSessionsUrl: (): string => url('/admin/intake/sessions/zip'),
   unarchiveIntakeSession: (id: string) =>
     json<{ ok: true }>(`/admin/intake/sessions/${id}/archive`, { method: 'DELETE' }),
+  markIntakeSessionRead: (id: string) =>
+    json<{ ok: true; alreadyRead: boolean }>(`/admin/intake/sessions/${id}/mark-read`, {
+      method: 'POST',
+    }),
+  // Phase 28.18 — Inbox feed: lightweight list of finalized intake
+  // sessions the current staff hasn't yet marked read. Used by InboxPage.
+  inboxIntakes: () =>
+    json<{
+      sessions: Array<{
+        id: string;
+        staffId: string;
+        staffDisplayName: string | null;
+        clientName: string | null;
+        fileCount: number;
+        status: string;
+        createdAt: string;
+        finalizedAt: string | null;
+      }>;
+    }>('/admin/intake/inbox/intakes'),
   linkIntakeSessionClient: (id: string, clientId: string) =>
     json<{ ok: true; client: { id: string; displayName: string } }>(
       `/admin/intake/sessions/${id}/link-client`,

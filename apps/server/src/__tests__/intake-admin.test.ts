@@ -109,6 +109,63 @@ describe('Phase 28.11 — GET /admin/intake/sessions list + RBAC', () => {
   });
 });
 
+describe('Phase 28.18 — Inbox feed + mark-read', () => {
+  it('GET /admin/intake/inbox/intakes lists finalized sessions for the assigned staff', async () => {
+    const sessId = await createSessionFor(aliceStaffId, { name: 'Inbox Tester' });
+    const aliceAgent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+    const r = await aliceAgent.get('/admin/intake/inbox/intakes');
+    expect(r.status).toBe(200);
+    const found = r.body.sessions.find((s: { id: string }) => s.id === sessId);
+    expect(found).toBeDefined();
+    expect(found.clientName).toBe('Inbox Tester');
+    expect(found.staffId).toBe(aliceStaffId);
+  });
+
+  it('does NOT surface a session another staff owns (non-admin scoping)', async () => {
+    const sessId = await createSessionFor(aliceStaffId);
+    const bobAgent = await loginAs('bob', 'bob-dev-only-ChangeMe!');
+    const r = await bobAgent.get('/admin/intake/inbox/intakes');
+    expect(r.body.sessions.map((s: { id: string }) => s.id)).not.toContain(sessId);
+  });
+
+  it('admin sees sessions assigned to any staff', async () => {
+    const sessId = await createSessionFor(aliceStaffId);
+    // kurt is an admin per the dev-seed users.
+    const kurtAgent = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const r = await kurtAgent.get('/admin/intake/inbox/intakes');
+    expect(r.body.sessions.map((s: { id: string }) => s.id)).toContain(sessId);
+  });
+
+  it('POST /admin/intake/sessions/:id/mark-read drops the session from the inbox feed', async () => {
+    const sessId = await createSessionFor(aliceStaffId);
+    const aliceAgent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+    const before = await aliceAgent.get('/admin/intake/inbox/intakes');
+    expect(before.body.sessions.map((s: { id: string }) => s.id)).toContain(sessId);
+    const mark = await aliceAgent.post(`/admin/intake/sessions/${sessId}/mark-read`);
+    expect(mark.status).toBe(200);
+    expect(mark.body.alreadyRead).toBe(false);
+    const after = await aliceAgent.get('/admin/intake/inbox/intakes');
+    expect(after.body.sessions.map((s: { id: string }) => s.id)).not.toContain(sessId);
+  });
+
+  it('mark-read is idempotent — second call reports alreadyRead', async () => {
+    const sessId = await createSessionFor(aliceStaffId);
+    const aliceAgent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+    const first = await aliceAgent.post(`/admin/intake/sessions/${sessId}/mark-read`);
+    expect(first.body.alreadyRead).toBe(false);
+    const second = await aliceAgent.post(`/admin/intake/sessions/${sessId}/mark-read`);
+    expect(second.status).toBe(200);
+    expect(second.body.alreadyRead).toBe(true);
+  });
+
+  it('rejects mark-read from a staff member who is not the assigned recipient', async () => {
+    const sessId = await createSessionFor(aliceStaffId);
+    const bobAgent = await loginAs('bob', 'bob-dev-only-ChangeMe!');
+    const r = await bobAgent.post(`/admin/intake/sessions/${sessId}/mark-read`);
+    expect(r.status).toBe(403);
+  });
+});
+
 describe('Phase 28.11 — GET /admin/intake/sessions/:id detail', () => {
   it('returns decrypted PII for the assigned staff', async () => {
     const sessId = await createSessionFor(aliceStaffId, {

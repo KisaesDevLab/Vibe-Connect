@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import { ConversationView } from './components/ConversationView.js';
@@ -130,38 +130,6 @@ function FullScreenSpinner(): JSX.Element {
   );
 }
 
-function ConversationPlaceholder(): JSX.Element {
-  return (
-    <div className="h-full grid place-items-center text-slate-500 text-sm p-6">
-      <div className="max-w-md text-center space-y-3">
-        <div className="text-3xl">💬</div>
-        <div className="font-medium text-slate-700">Select a conversation to get started.</div>
-        <ul className="text-xs text-slate-500 text-left list-disc pl-5 space-y-1">
-          <li>Click a coworker in the left sidebar to open a direct message.</li>
-          <li>
-            Use <strong>Multi-select</strong> in the sidebar to start a group conversation.
-          </li>
-          <li>
-            Press <kbd className="px-1 rounded bg-slate-100 border border-slate-200">Ctrl/⌘</kbd>+
-            <kbd className="px-1 rounded bg-slate-100 border border-slate-200">K</kbd> to jump to an
-            existing conversation, or{' '}
-            <kbd className="px-1 rounded bg-slate-100 border border-slate-200">Ctrl/⌘</kbd>+
-            <kbd className="px-1 rounded bg-slate-100 border border-slate-200">F</kbd> to search
-            decrypted messages.
-          </li>
-          <li>
-            No coworkers yet? Admins add them under{' '}
-            <NavLink to="/admin/users" className="text-brand-700 hover:underline">
-              Admin → Users
-            </NavLink>
-            .
-          </li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-
 function GlobalShortcuts(): JSX.Element {
   const [quickOpen, setQuickOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -215,7 +183,15 @@ export function App(): JSX.Element {
                           </Protected>
                         }
                       >
-                        <Route index element={<ConversationPlaceholder />} />
+                        {/* Default landing for signed-in staff is the
+                            Inbox — surfaces unread conversations,
+                            unviewed intake sessions, and request-list
+                            items needing review in one place. The old
+                            ConversationPlaceholder used to live here
+                            and is still reachable via the keyboard
+                            shortcut help; the Inbox is a strictly
+                            better starting point. */}
+                        <Route index element={<InboxPage />} />
                         <Route path="inbox" element={<InboxPage />} />
                         <Route path="conversation/:id" element={<ConversationView />} />
                         <Route path="admin/*" element={<AdminPage />} />

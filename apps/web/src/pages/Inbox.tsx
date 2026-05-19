@@ -17,6 +17,11 @@ export function InboxPage(): JSX.Element {
     queryFn: () => api.listUsers(),
     staleTime: 30_000,
   });
+  const intakesQ = useQuery({
+    queryKey: ['inbox', 'intakes'],
+    queryFn: () => api.inboxIntakes().then((r) => r.sessions),
+    staleTime: 15_000,
+  });
   const usersById = useMemo(() => {
     const m: Record<string, PublicUser> = {};
     for (const u of usersQ.data?.users ?? []) m[u.id] = u;
@@ -31,36 +36,89 @@ export function InboxPage(): JSX.Element {
     [convQ.data],
   );
 
+  const intakes = intakesQ.data ?? [];
+
+  const totalNew = unread.length + intakes.length;
+
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto p-6">
-        <h1 className="text-xl font-semibold text-slate-900 mb-4">Inbox</h1>
-        <RequestsAttentionWidget />
-        {convQ.isLoading && <div className="text-sm text-slate-500">Loading…</div>}
-        {unread.length === 0 && !convQ.isLoading && (
-          <div className="text-sm text-slate-500">You&apos;re all caught up.</div>
+      <div className="max-w-3xl mx-auto p-6 space-y-6">
+        <h1 className="text-xl font-semibold text-slate-900">Inbox</h1>
+
+        {/* Intake submissions — surfaced until staff opens the detail
+            view (which fires the mark-read API and drops the row). */}
+        {intakes.length > 0 && (
+          <section>
+            <h2 className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-2">
+              <span>New intake submissions</span>
+              <span className="text-xs font-semibold bg-amber-500 text-white rounded-full px-2 py-0.5">
+                {intakes.length}
+              </span>
+            </h2>
+            <ul className="divide-y divide-slate-200 bg-white rounded-lg shadow-card">
+              {intakes.map((s) => (
+                <li key={s.id}>
+                  <NavLink
+                    to={`/admin/intake?session=${s.id}`}
+                    className="block px-4 py-3 hover:bg-slate-50"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-800">
+                        {s.clientName?.trim() || '(name not provided)'}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {s.fileCount} file{s.fileCount === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      To {s.staffDisplayName ?? 'staff'} ·{' '}
+                      {new Date(s.finalizedAt ?? s.createdAt).toLocaleString()}
+                      {s.status !== 'finalized' && s.status !== 'open' && (
+                        <span className="ml-2 text-amber-700">({s.status})</span>
+                      )}
+                    </div>
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
-        <ul className="divide-y divide-slate-200 bg-white rounded-lg shadow-card">
-          {unread.map((c) => (
-            <li key={c.id}>
-              <NavLink to={`/conversation/${c.id}`} className="block px-4 py-3 hover:bg-slate-50">
-                <div className="flex items-center justify-between">
-                  <span className="font-medium text-slate-800">
-                    {threadLabel(c, usersById, me?.id ?? null)}
-                  </span>
-                  <span className="text-xs font-semibold bg-brand-600 text-white rounded-full px-2 py-0.5">
-                    {c.unreadCount > 99 ? '99+' : c.unreadCount}
-                  </span>
-                </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  {c.lastMessageAt
-                    ? new Date(c.lastMessageAt).toLocaleString()
-                    : 'No recent activity'}
-                </div>
-              </NavLink>
-            </li>
-          ))}
-        </ul>
+
+        <RequestsAttentionWidget />
+
+        <section>
+          <h2 className="text-sm font-semibold text-slate-700 mb-2">Unread conversations</h2>
+          {convQ.isLoading && <div className="text-sm text-slate-500">Loading…</div>}
+          {unread.length === 0 && !convQ.isLoading && totalNew === 0 && (
+            <div className="text-sm text-slate-500">You&apos;re all caught up.</div>
+          )}
+          {unread.length > 0 && (
+            <ul className="divide-y divide-slate-200 bg-white rounded-lg shadow-card">
+              {unread.map((c) => (
+                <li key={c.id}>
+                  <NavLink
+                    to={`/conversation/${c.id}`}
+                    className="block px-4 py-3 hover:bg-slate-50"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-800">
+                        {threadLabel(c, usersById, me?.id ?? null)}
+                      </span>
+                      <span className="text-xs font-semibold bg-brand-600 text-white rounded-full px-2 py-0.5">
+                        {c.unreadCount > 99 ? '99+' : c.unreadCount}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      {c.lastMessageAt
+                        ? new Date(c.lastMessageAt).toLocaleString()
+                        : 'No recent activity'}
+                    </div>
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
     </div>
   );
