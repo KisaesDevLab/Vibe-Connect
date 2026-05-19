@@ -5061,6 +5061,28 @@ function AdminIntakeDetail({
   });
   const [showLinkModal, setShowLinkModal] = useState(false);
 
+  // Mark the session "read" the moment the detail view mounts. The
+  // endpoint is idempotent + drops the audit row when already read, so
+  // a re-open is cheap. Invalidate the Inbox feed query on success so
+  // this session disappears from the Inbox without a manual refresh.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .markIntakeSessionRead(sessionId)
+      .then(() => {
+        if (!cancelled) {
+          void qc.invalidateQueries({ queryKey: ['inbox', 'intakes'] });
+        }
+      })
+      .catch(() => {
+        /* swallow — staff already on the page; a failed mark-read just
+           means this session lingers in the Inbox until next pageview. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, qc]);
+
   const linkMut = useMutation({
     mutationFn: (clientId: string) => api.linkIntakeSessionClient(sessionId, clientId),
     onSuccess: () => {

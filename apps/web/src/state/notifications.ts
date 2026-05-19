@@ -94,6 +94,9 @@ export function useRealtimeNotifications(): void {
     // in another tab sees the indicator.
     function onIntake(evt: { sessionId: string; fileCount: number }) {
       qc.invalidateQueries({ queryKey: ['admin', 'intake', 'sessions'] });
+      // Also refresh the Inbox feed so a freshly-finalised intake
+      // surfaces on the staff landing page within a single tick.
+      qc.invalidateQueries({ queryKey: ['inbox', 'intakes'] });
       if (document.hasFocus()) return;
       notify(
         'New intake',

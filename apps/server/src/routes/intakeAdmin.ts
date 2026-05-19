@@ -567,6 +567,140 @@ intakeAdminRouter.delete(
   }),
 );
 
+// -------- mark-read (per-staff "viewed" state for the Inbox feed) --------
+//
+// Fired by the staff app when the AdminIntakeDetail modal mounts. The
+// row in intake_session_archives is shared with the archive feature —
+// `read_at` and `archived_at` are mutually orthogonal so an explicit
+// "Mark unread" path could clear read_at without touching archive.
+// Idempotent so a re-mount (close + reopen) doesn't write a new audit
+// row; only the first mark-read per staff per session audits.
+
+intakeAdminRouter.post(
+  '/sessions/:id/mark-read',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const sessionId = req.params.id!;
+    const me = req.session.userId!;
+    const session = await intakeSessionsRepo.byId(sessionId);
+    if (!session) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (!req.session.isAdmin && session.staff_id !== me) {
+      res.status(403).json({ error: 'forbidden' });
+      return;
+    }
+    const existing = await db('intake_session_archives')
+      .where({ session_id: sessionId, user_id: me })
+      .first('read_at');
+    if (existing?.read_at) {
+      // Already marked read — no-op, no audit row. UI re-mounts on
+      // every detail-open should NOT spam the audit log.
+      res.json({ ok: true, alreadyRead: true });
+      return;
+    }
+    await db.raw(
+      `INSERT INTO intake_session_archives (session_id, user_id, read_at)
+       VALUES (?, ?, NOW())
+       ON CONFLICT (session_id, user_id) DO UPDATE SET read_at = EXCLUDED.read_at`,
+      [sessionId, me],
+    );
+    await auditRepo.write({
+      actorUserId: me,
+      action: 'intake.session.read',
+      targetType: 'intake_session',
+      targetId: sessionId,
+      ipAddress: req.ip ?? null,
+    });
+    res.json({ ok: true, alreadyRead: false });
+  }),
+);
+
+// -------- inbox feed (unviewed intakes for the current staff) --------
+//
+// Lightweight projection for the staff Inbox page. Returns the sessions
+// the staff would care about right now: finalized, not yet read by this
+// staff, not archived, scoped to those they're the assigned recipient
+// of (admins see all). Limit caps to 20 — the Inbox tile is a heads-up,
+// not a full report (that's `GET /admin/intake/sessions`).
+
+intakeAdminRouter.get(
+  '/inbox/intakes',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const me = req.session.userId!;
+    const isAdmin = req.session.isAdmin === true;
+    const rows = (await db('intake_sessions as s')
+      .leftJoin(
+        db('intake_session_archives')
+          .where({ user_id: me })
+          .select('session_id', 'archived_at', 'read_at')
+          .as('a'),
+        'a.session_id',
+        's.id',
+      )
+      .leftJoin(
+        db('intake_files')
+          .select('session_id')
+          .count<{ session_id: string; file_count: string }[]>('* as file_count')
+          .groupBy('session_id')
+          .as('f'),
+        'f.session_id',
+        's.id',
+      )
+      .leftJoin('users as u', 'u.id', 's.staff_id')
+      .whereNull('a.archived_at')
+      .whereNull('a.read_at')
+      .modify((q) => {
+        if (!isAdmin) q.where('s.staff_id', me);
+      })
+      .orderBy('s.created_at', 'desc')
+      .limit(20)
+      .select([
+        's.id as id',
+        's.staff_id as staff_id',
+        's.created_at as created_at',
+        's.finalized_at as finalized_at',
+        's.status as status',
+        's.client_name_enc as client_name_enc',
+        'u.display_name as staff_display_name',
+        db.raw('COALESCE(f."file_count", 0) as file_count'),
+      ])) as Array<{
+      id: string;
+      staff_id: string;
+      created_at: string;
+      finalized_at: string | null;
+      status: string;
+      client_name_enc: Buffer | null;
+      staff_display_name: string | null;
+      file_count: string;
+    }>;
+    const sessions = [];
+    for (const r of rows) {
+      let clientName: string | null = null;
+      if (r.client_name_enc) {
+        try {
+          clientName = await decryptField(r.client_name_enc);
+        } catch {
+          clientName = null;
+        }
+      }
+      sessions.push({
+        id: r.id,
+        staffId: r.staff_id,
+        staffDisplayName: r.staff_display_name,
+        clientName,
+        fileCount: Number(r.file_count),
+        status: r.status,
+        createdAt: r.created_at,
+        finalizedAt: r.finalized_at,
+      });
+    }
+    res.json({ sessions });
+  }),
+);
+
 // -------- link / unlink to Connect client (external_identities) --------
 
 const linkSchema = z.object({ clientId: z.string().uuid() });
