@@ -32,15 +32,36 @@ import {
  * the build plan.
  */
 
+export interface PendingPage {
+  /** The cropped + enhanced JPEG handed back from ScannerReview, or the
+   *  raw OS-camera JPEG from the `<input capture>` fallback path. */
+  file: File;
+  /** Non-null when the parent asked for a retake of page N — we replace
+   *  rather than append, preserving the original order_index. */
+  replaceIndex: number | null;
+  /** Monotonically-increasing sequence number bumped by the parent on
+   *  every enqueue. The consume-effect keys off this so that two
+   *  consecutive captures of the same File reference (rare but possible)
+   *  still fire the effect. */
+  seq: number;
+}
+
 export interface ScanBatchProps {
   sessionId: string;
+  /** Pending capture queued by the parent for inclusion in the batch.
+   *  Null when nothing is pending. The child consumes it via useEffect
+   *  and calls onPendingConsumed once persisted. */
+  pendingPage: PendingPage | null;
+  /** Called by the child once a pendingPage has been added/replaced and
+   *  persisted to IDB. The parent must clear its own pending state in
+   *  response so a stale pendingPage doesn't re-fire on every render. */
+  onPendingConsumed: () => void;
   /** Called by the parent when the user wants to add a new page — the
-   *  parent reopens the camera flow and eventually calls back to
-   *  `ScanBatchRef.addPage` with the captured + cropped file. */
+   *  parent reopens the camera flow and the next captured + cropped file
+   *  arrives as a new `pendingPage`. */
   onAddMore: () => void;
   /** Same idea but the parent should reopen the camera in "retake page N"
-   *  mode; we pass the index that should be replaced when the new page
-   *  comes back. */
+   *  mode; the new pendingPage will carry replaceIndex = N. */
   onRetakePage: (index: number) => void;
   /** User confirmed the batch — emit ordered File[] (page 1 first). The
    *  parent clears its review state and calls back into the upload pipe
@@ -51,23 +72,15 @@ export interface ScanBatchProps {
   onDiscard: () => void;
 }
 
-export interface ScanBatchHandle {
-  /** Imperative add: the parent invokes this when the ScannerReview
-   *  finishes confirming a page that should join the batch. */
-  addPage: (file: File) => Promise<void>;
-  /** Imperative replace: the parent invokes this when the parent had
-   *  asked for a retake of page N and the user confirmed a new shot. */
-  replacePage: (index: number, file: File) => Promise<void>;
-}
-
 export function ScanBatch({
   sessionId,
+  pendingPage,
+  onPendingConsumed,
   onAddMore,
   onRetakePage,
   onSubmit,
   onDiscard,
-  ref,
-}: ScanBatchProps & { ref?: React.MutableRefObject<ScanBatchHandle | null> }): JSX.Element {
+}: ScanBatchProps): JSX.Element {
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -125,37 +138,43 @@ export function ScanBatch({
     });
   }, []);
 
-  // Expose imperative handlers to the parent — useImperativeHandle would
-  // be cleaner but requires forwardRef wrapping; passing a mutable ref
-  // through props is the simpler pattern here.
+  // Consume the parent's pendingPage handoff once hydration completes.
+  // Guarded on `hydrated` so we don't append a capture that arrives
+  // before the IDB load finishes (race the old imperative-ref pattern
+  // had). Keyed on the parent's seq counter so identical Files still
+  // fire on a second capture.
+  const lastConsumedSeq = useRef<number | null>(null);
   useEffect(() => {
-    if (ref) ref.current = { addPage, replacePage };
-    return () => {
-      if (ref) ref.current = null;
-    };
-  }, [ref, addPage, replacePage]);
+    if (!hydrated || !pendingPage) return;
+    if (lastConsumedSeq.current === pendingPage.seq) return;
+    lastConsumedSeq.current = pendingPage.seq;
+    const { file, replaceIndex } = pendingPage;
+    void (async () => {
+      try {
+        if (replaceIndex !== null) {
+          await replacePage(replaceIndex, file);
+        } else {
+          await addPage(file);
+        }
+      } finally {
+        onPendingConsumed();
+      }
+    })();
+  }, [hydrated, pendingPage, addPage, replacePage, onPendingConsumed]);
 
   function deletePage(id: string): void {
     setPages((prev) => prev.filter((p) => p.id !== id));
     setConfirmDeleteId(null);
   }
 
-  const dragFromRef = useRef<number | null>(null);
-  function onDragStart(index: number): void {
-    dragFromRef.current = index;
-  }
-  function onDragOver(e: React.DragEvent): void {
-    e.preventDefault();
-  }
-  function onDrop(targetIndex: number): void {
-    const from = dragFromRef.current;
-    dragFromRef.current = null;
-    if (from === null || from === targetIndex) return;
+  function movePage(from: number, to: number): void {
+    if (from === to) return;
     setPages((prev) => {
+      if (from < 0 || from >= prev.length || to < 0 || to >= prev.length) return prev;
       const next = prev.slice();
       const [moved] = next.splice(from, 1);
       if (!moved) return prev;
-      next.splice(targetIndex, 0, moved);
+      next.splice(to, 0, moved);
       return next;
     });
   }
@@ -200,15 +219,33 @@ export function ScanBatch({
           {pages.map((p, i) => (
             <li
               key={p.id}
-              draggable
-              onDragStart={() => onDragStart(i)}
-              onDragOver={onDragOver}
-              onDrop={() => onDrop(i)}
-              className="bg-white border border-slate-200 rounded-md p-3 flex items-center gap-3 cursor-move"
+              className="bg-white border border-slate-200 rounded-md p-3 flex items-center gap-3"
             >
-              <span className="text-slate-400 select-none" aria-hidden="true">
-                ⋮⋮
-              </span>
+              {/* Explicit up/down buttons rather than HTML5 draggable —
+                  the drag API doesn't fire on touch, so on mobile the
+                  prior drag-handle was a dead element. These work
+                  everywhere; the row count is small so a Lego-block
+                  reorder is fine UX. */}
+              <div className="flex flex-col gap-1">
+                <button
+                  type="button"
+                  onClick={() => movePage(i, i - 1)}
+                  disabled={i === 0}
+                  aria-label={`Move page ${i + 1} up`}
+                  className="text-slate-500 hover:text-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-lg leading-none"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => movePage(i, i + 1)}
+                  disabled={i === pages.length - 1}
+                  aria-label={`Move page ${i + 1} down`}
+                  className="text-slate-500 hover:text-slate-800 disabled:opacity-30 disabled:cursor-not-allowed text-lg leading-none"
+                >
+                  ↓
+                </button>
+              </div>
               <img
                 src={p.thumb}
                 alt={`Page ${i + 1} of ${pages.length}`}
@@ -344,6 +381,7 @@ function formatBytes(n: number): string {
  */
 async function makeThumbnail(file: File): Promise<string> {
   const objectUrl = URL.createObjectURL(file);
+  let usedAsResult = false;
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const el = new Image();
@@ -360,18 +398,23 @@ async function makeThumbnail(file: File): Promise<string> {
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return objectUrl;
+    if (!ctx) {
+      usedAsResult = true;
+      return objectUrl;
+    }
     ctx.drawImage(img, 0, 0, w, h);
+    // Data URL is self-contained; revoke the object URL immediately so
+    // the browser releases its mapping. Without this, an N-page batch
+    // leaks N object URLs into the page's URL store — meaningful on
+    // iOS Safari where the heap ceiling sits around 250 MB.
     return canvas.toDataURL('image/jpeg', 0.7);
   } catch {
-    // If decoding fails, fall back to the raw blob URL — slightly heavier
-    // but at least the page renders.
+    // Decode failed — fall back to the raw blob URL so the page still
+    // renders. The URL must stay valid for the life of the page, so
+    // mark it as "used as result" to skip the revoke in `finally`.
+    usedAsResult = true;
     return objectUrl;
   } finally {
-    // We deliberately don't revoke the object URL inside the success path
-    // because the thumbnail is a *data* URL — but the catch fallback IS
-    // the object URL, and we'd want it to stay valid until the page is
-    // removed. Cheap tradeoff: leak a few hundred bytes per page; the
-    // browser releases them on tab close.
+    if (!usedAsResult) URL.revokeObjectURL(objectUrl);
   }
 }

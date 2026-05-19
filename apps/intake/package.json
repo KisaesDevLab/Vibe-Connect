@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.1",
+    "@techstark/opencv-js": "^4.12.0-release.1",
     "@vibe-connect/shared-types": "0.1.0",
     "clsx": "^2.1.1",
     "jscanify": "1.0.0",
