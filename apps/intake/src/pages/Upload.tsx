@@ -120,11 +120,16 @@ export function Upload(): JSX.Element {
   const cameraFallbackRef = useRef<HTMLInputElement | null>(null);
   const scanCounterRef = useRef(0);
 
-  function onFiles(e: ChangeEvent<HTMLInputElement>): void {
-    const list = e.target.files;
+  // Shared file-enqueue path used by both the hidden <input type=file>
+  // change handler and the new drag-and-drop dropzone. Splitting it out
+  // keeps the size-cap rule + status seeding in one place — previously
+  // duplicated between the file picker and the scan / camera fallbacks.
+  function enqueueFiles(list: FileList | File[]): void {
     if (!list || !token) return;
+    const arr = list instanceof Array ? list : Array.from(list);
+    if (arr.length === 0) return;
     const next: UploadRow[] = [];
-    for (const f of Array.from(list)) {
+    for (const f of arr) {
       if (f.size > PER_FILE_CAP_BYTES) {
         next.push({
           id: String(++idCounter.current),
@@ -146,8 +151,6 @@ export function Upload(): JSX.Element {
       next.push(row);
     }
     setRows((prev) => [...prev, ...next]);
-    e.target.value = '';
-    // Kick off all newly-queued uploads.
     for (const r of next) {
       if (r.status === 'queued') startUpload(r);
     }
@@ -469,26 +472,10 @@ export function Upload(): JSX.Element {
               📷 Scan a document
             </button>
 
-            <div className="rounded-md border border-dashed border-slate-300 bg-white p-6 text-center space-y-3">
-              <input
-                type="file"
-                multiple
-                onChange={onFiles}
-                className="block w-full text-sm"
-                aria-label="Choose files to upload"
-              />
-              <button
-                type="button"
-                onClick={openScan}
-                className="hidden sm:inline-flex btn-secondary text-xs"
-                aria-label="Scan a document with the camera"
-              >
-                📷 Scan a document
-              </button>
-              <p className="text-xs text-slate-500">
-                PDF, image, Word, Excel, CSV, or plain text — up to 250 MB each.
-              </p>
-            </div>
+            <Dropzone onFiles={enqueueFiles} onScan={openScan} />
+            <p className="text-xs text-slate-500 text-center">
+              PDF, image, Word, Excel, CSV, or plain text — up to 250 MB each.
+            </p>
           </>
         )}
 
@@ -611,6 +598,126 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+// Modern drag-and-drop dropzone used by the intake Upload page. The
+// whole box is a click target that opens the native file picker, AND it
+// listens for HTML5 drag events at the document layer so a user can
+// drop files anywhere over the panel. The dragover prevent-default is
+// load-bearing — without it, browsers refuse the drop and re-navigate
+// to the file as if the URL bar were the target.
+function Dropzone({
+  onFiles,
+  onScan,
+}: {
+  onFiles: (files: FileList | File[]) => void;
+  onScan: () => void;
+}): JSX.Element {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [over, setOver] = useState(false);
+  // Counter pattern: dragenter/dragleave fire for every nested element
+  // we cross, so a single boolean would flicker as the cursor moves over
+  // child nodes. The counter only flips false when balance returns to 0.
+  const depth = useRef(0);
+
+  function onDragEnter(e: React.DragEvent<HTMLDivElement>): void {
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    depth.current += 1;
+    setOver(true);
+  }
+  function onDragOver(e: React.DragEvent<HTMLDivElement>): void {
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+  function onDragLeave(e: React.DragEvent<HTMLDivElement>): void {
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    depth.current = Math.max(0, depth.current - 1);
+    if (depth.current === 0) setOver(false);
+  }
+  function onDrop(e: React.DragEvent<HTMLDivElement>): void {
+    if (!e.dataTransfer?.files || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    depth.current = 0;
+    setOver(false);
+    onFiles(e.dataTransfer.files);
+  }
+
+  return (
+    <div
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          inputRef.current?.click();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-label="Drop files here or click to choose"
+      className={
+        'relative rounded-xl border-2 border-dashed bg-white p-8 text-center cursor-pointer transition-colors ' +
+        (over
+          ? 'border-brand-500 bg-brand-50 ring-2 ring-brand-200'
+          : 'border-slate-300 hover:border-brand-400 hover:bg-slate-50')
+      }
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        onChange={(e) => {
+          onFiles(e.target.files ?? []);
+          e.target.value = '';
+        }}
+        className="sr-only"
+        aria-hidden="true"
+        tabIndex={-1}
+      />
+
+      {/* Cloud-upload glyph. SVG inline so the bundle stays free of an
+          icon-library dep and the colour follows currentColor for the
+          drag-over highlight. */}
+      <svg
+        viewBox="0 0 48 48"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+        className={'mx-auto h-12 w-12 mb-3 ' + (over ? 'text-brand-600' : 'text-slate-400')}
+      >
+        <path d="M14 30a8 8 0 0 1 1.6-15.8 12 12 0 0 1 23.3 4.4A7 7 0 0 1 38 32H16a2 2 0 0 1-2-2z" />
+        <path d="M24 22v14m-5-9 5-5 5 5" />
+      </svg>
+      <div className={'font-medium ' + (over ? 'text-brand-700' : 'text-slate-800')}>
+        {over ? 'Drop to upload' : 'Drag files here, or click to choose'}
+      </div>
+      <div className="mt-1 text-xs text-slate-500">
+        Files upload as soon as you add them — you can keep adding while we work.
+      </div>
+      {/* Secondary scan button (desktop only — mobile gets the bigger
+          green button above the dropzone). stopPropagation so clicking
+          this doesn't ALSO open the file picker. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onScan();
+        }}
+        className="hidden sm:inline-flex mt-4 items-center gap-1 text-xs text-brand-700 hover:text-brand-900 hover:underline"
+        aria-label="Scan a document with the camera instead"
+      >
+        📷 Scan a document instead
+      </button>
+    </div>
+  );
 }
 
 export function Done(): JSX.Element {
