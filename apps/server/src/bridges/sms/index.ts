@@ -249,8 +249,12 @@ async function resolveSmsProviderKind(): Promise<'mock' | 'textlink' | 'twilio'>
   return env.smsProvider;
 }
 
-export async function getSmsProvider(): Promise<SmsProvider> {
-  switch (await resolveSmsProviderKind()) {
+export type SmsProviderKind = 'mock' | 'textlink' | 'twilio';
+
+/** Factory for a SPECIFIC SMS provider, bypassing the resolver. Used by
+ *  the Admin → Providers "Test" button. See bridges/email for rationale. */
+export function buildSmsProvider(kind: SmsProviderKind): SmsProvider {
+  switch (kind) {
     case 'textlink':
       return new TextLinkSms();
     case 'twilio':
@@ -259,4 +263,12 @@ export async function getSmsProvider(): Promise<SmsProvider> {
     default:
       return new MockSms();
   }
+}
+
+export async function currentSmsProviderKind(): Promise<SmsProviderKind> {
+  return resolveSmsProviderKind();
+}
+
+export async function getSmsProvider(): Promise<SmsProvider> {
+  return buildSmsProvider(await resolveSmsProviderKind());
 }

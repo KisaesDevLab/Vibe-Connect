@@ -683,6 +683,20 @@ export const api = {
       };
     }>(`/admin/providers/${encodeURIComponent(key)}`, { method: 'DELETE' }),
 
+  // Provider test send — fires a real test message via the named
+  // provider (independent of the currently-active firm_settings choice)
+  // so an admin can verify credentials before flipping the switch.
+  testEmailProvider: (provider: 'postmark' | 'postfix' | 'emailit' | 'mock', to: string) =>
+    json<{ ok: true; providerMessageId: string; status: string }>('/admin/providers/test/email', {
+      method: 'POST',
+      body: JSON.stringify({ provider, to }),
+    }),
+  testSmsProvider: (provider: 'twilio' | 'textlink' | 'mock', to: string) =>
+    json<{ ok: true; providerMessageId: string; status: string }>('/admin/providers/test/sms', {
+      method: 'POST',
+      body: JSON.stringify({ provider, to }),
+    }),
+
   reinviteClient: (id: string, via?: 'email' | 'sms') =>
     json<{ ok: true; invitePublicKey: string; inviteSent: boolean; sendError?: string }>(
       `/admin/clients/${id}/reinvite`,
