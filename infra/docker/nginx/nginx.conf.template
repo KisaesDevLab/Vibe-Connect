@@ -191,20 +191,30 @@ http {
       # search /usr/share/nginx/html/intake/intake/index.html which doesn't
       # exist.)
       rewrite ^/intake/?(.*)$ /$1 break;
-      # Do NOT include `$uri/` in this try_files: when the rewrite collapses
-      # the URI to bare `/`, nginx finds the intake root as a directory and
-      # internal-redirects to `/` — which then falls through to the catch-all
-      # `location /` below (the staff bundle, or the portal bundle on the
-      # portal block) and the visitor lands on the wrong app. Skipping the
-      # directory check makes nginx fall straight to `/index.html` which the
-      # current `root` directive resolves under `/usr/share/nginx/html/intake/`.
-      try_files $uri /index.html;
+      # Fallback MUST be a named location, not a URI like `/index.html`.
+      # The LAST element of try_files is always treated as a fallback URI
+      # that triggers an internal redirect — even if the file would exist —
+      # and that internal redirect re-runs location matching, falling out
+      # of `^~ /intake` into the catch-all `location /` below and serving
+      # the wrong bundle. A `@named` fallback is served inline without
+      # re-matching, so the response actually comes from the intake root.
+      try_files $uri @intake_shell;
       # Phase 28.17 — substitute __BASE_HREF__ inside the PWA manifest as
       # well as the HTML shell, so start_url / scope resolve correctly in
       # both single-app and multi-app modes from one build.
-      # nginx's default already includes text/html; this only ADDS
-      # application/manifest+json so PWA manifests get __BASE_HREF__
-      # substituted alongside the HTML shell.
+      sub_filter_types application/manifest+json;
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+
+    location @intake_shell {
+      # Serve the intake SPA shell for any /intake path that didn't match
+      # a real asset on disk. Named-location scope keeps us inside the
+      # intake root — `try_files /index.html` with `=404` as the final
+      # element means the file is served directly (it exists), and the
+      # `=404` only fires if someone removed index.html from the bundle.
+      root /usr/share/nginx/html/intake;
+      try_files /index.html =404;
       sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
@@ -295,11 +305,19 @@ http {
     location ^~ /intake {
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
-      # See the staff /intake block above for why `$uri/` is omitted —
-      # without this, a bare `/intake` request internal-redirects to `/`
-      # and the portal catch-all below answers, dumping the portal SPA
-      # at the visitor (whose React Router then bounces them to /login).
-      try_files $uri /index.html;
+      # See the staff /intake block for the named-location rationale: a
+      # URI fallback escapes into the catch-all (here the portal SPA,
+      # which then bounces /intake to /login). A named-location fallback
+      # is served inline without re-matching.
+      try_files $uri @intake_shell;
+      sub_filter_types application/manifest+json;
+      sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+
+    location @intake_shell {
+      root /usr/share/nginx/html/intake;
+      try_files /index.html =404;
       sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
       sub_filter_once off;
@@ -427,13 +445,18 @@ http {
       }
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
-      # See the staff TLS-internal /intake block for why `$uri/` is omitted
-      # from try_files — bare `/intake` otherwise internal-redirects to `/`
-      # and the catch-all answers with the wrong bundle.
-      try_files $uri /index.html;
-      # nginx's default already includes text/html; this only ADDS
-      # application/manifest+json so PWA manifests get __BASE_HREF__
-      # substituted alongside the HTML shell.
+      # Named-location fallback — see the staff TLS-internal /intake
+      # block for the full reasoning. A `/index.html` fallback would
+      # internal-redirect out of `^~ /intake` into the catch-all.
+      try_files $uri @intake_shell;
+      sub_filter_types application/manifest+json;
+      sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+
+    location @intake_shell {
+      root /usr/share/nginx/html/intake;
+      try_files /index.html =404;
       sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${BASE_PATH_HREF}';
       sub_filter_once off;
@@ -514,11 +537,18 @@ http {
     location ^~ /intake {
       root /usr/share/nginx/html/intake;
       rewrite ^/intake/?(.*)$ /$1 break;
-      # See the staff /intake block above for why `$uri/` is omitted —
-      # without this, a bare `/intake` request internal-redirects to `/`
-      # and the portal catch-all below answers, dumping the portal SPA
-      # at the visitor (whose React Router then bounces them to /login).
-      try_files $uri /index.html;
+      # Named-location fallback — a `/index.html` URI here would
+      # internal-redirect out of `^~ /intake` into the portal catch-all
+      # below, dumping the portal SPA on the visitor.
+      try_files $uri @intake_shell;
+      sub_filter_types application/manifest+json;
+      sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
+      sub_filter_once off;
+    }
+
+    location @intake_shell {
+      root /usr/share/nginx/html/intake;
+      try_files /index.html =404;
       sub_filter_types application/manifest+json;
       sub_filter '__BASE_HREF__' '${PORTAL_BASE_PATH_HREF}';
       sub_filter_once off;
