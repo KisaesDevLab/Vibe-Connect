@@ -71,6 +71,13 @@ const listQuerySchema = z.object({
   fromDate: z.string().optional(), // ISO date or datetime
   toDate: z.string().optional(),
   includeArchived: z.coerce.boolean().optional().default(false),
+  // POST /api/public/intake/sessions creates a session row the moment a
+  // client fills name/email and clicks Next, BEFORE any tus upload.
+  // Visitors who bounce after that produce `status='open' AND
+  // file_count=0` ghost rows that pollute the staff list. Default-hide
+  // them — staff want to see actual submissions. `includeAbandoned=true`
+  // brings them back for admins triaging "why are clients not finishing".
+  includeAbandoned: z.coerce.boolean().optional().default(false),
   sort: z
     .enum(['received_at_desc', 'received_at_asc', 'size_desc', 'size_asc'])
     .optional()
@@ -155,6 +162,14 @@ intakeAdminRouter.get(
     if (q.fromDate) query = query.where('s.created_at', '>=', q.fromDate);
     if (q.toDate) query = query.where('s.created_at', '<=', q.toDate);
     if (!q.includeArchived) query = query.whereNull('a.archived_at');
+    // Filter out form-bounce ghost rows (open + 0 files). Skipped when
+    // the caller explicitly asks for them OR when filtering by a
+    // non-'open' status (in which case file_count=0 is meaningful —
+    // e.g. an 'expired' session that ran out the clock with nothing
+    // uploaded is a real signal an admin might want to review).
+    if (!q.includeAbandoned && (!q.status || q.status === 'open')) {
+      query = query.whereRaw(`NOT (s.status = 'open' AND COALESCE(f."file_count", 0) = 0)`);
+    }
 
     // Sort
     switch (q.sort) {
@@ -652,6 +667,10 @@ intakeAdminRouter.get(
       .leftJoin('users as u', 'u.id', 's.staff_id')
       .whereNull('a.archived_at')
       .whereNull('a.read_at')
+      // Mirror the list-endpoint filter: form-bounce rows (open + 0
+      // files) shouldn't surface on the Inbox either — they're not
+      // actionable for staff.
+      .whereRaw(`NOT (s.status = 'open' AND COALESCE(f."file_count", 0) = 0)`)
       .modify((q) => {
         if (!isAdmin) q.where('s.staff_id', me);
       })

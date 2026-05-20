@@ -153,6 +153,7 @@ export const api = {
     status?: 'open' | 'finalized' | 'expired' | 'abandoned';
     staffId?: string;
     includeArchived?: boolean;
+    includeAbandoned?: boolean;
     sort?: 'received_at_desc' | 'received_at_asc' | 'size_desc' | 'size_asc';
   }) => {
     const q = new URLSearchParams();

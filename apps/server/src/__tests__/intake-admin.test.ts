@@ -51,7 +51,7 @@ async function loginAs(username: string, password: string): Promise<TestAgent> {
 
 async function createSessionFor(
   staffId: string,
-  opts: { name?: string; email?: string; phone?: string } = {},
+  opts: { name?: string; email?: string; phone?: string; withFile?: boolean } = {},
 ): Promise<string> {
   const r = await request(app)
     .post('/api/public/intake/sessions')
@@ -62,7 +62,26 @@ async function createSessionFor(
       phone: opts.phone ?? '+15551234567',
     });
   expect(r.status).toBe(201);
-  return r.body.sessionId as string;
+  const sessionId = r.body.sessionId as string;
+  // v0.4.19 server-side filter hides `status='open' AND file_count=0`
+  // ghost sessions from the staff list + Inbox feed by default. Most
+  // tests want a "real" session (one with a file), so default to
+  // inserting a dummy intake_files row. Pass withFile:false to assert
+  // the abandoned/empty path.
+  if (opts.withFile !== false) {
+    const { db } = await import('../db/knex.js');
+    await db('intake_files').insert({
+      session_id: sessionId,
+      original_filename: 'test.bin',
+      stored_path: `/tmp/test-${sessionId}.bin`,
+      mime_type: 'application/octet-stream',
+      size_bytes: 1,
+      sha256: 'a'.repeat(64),
+      kind: 'file',
+      virus_scan_status: 'clean',
+    });
+  }
+  return sessionId;
 }
 
 describe('Phase 28.11 — GET /admin/intake/sessions list + RBAC', () => {
@@ -96,6 +115,25 @@ describe('Phase 28.11 — GET /admin/intake/sessions list + RBAC', () => {
     expect(r.status).toBe(200);
     const ids = r.body.sessions.map((s: { id: string }) => s.id);
     expect(ids).toEqual([bobSess]);
+  });
+
+  it('abandoned-empty sessions (open + 0 files) hide by default; includeAbandoned brings them back', async () => {
+    // Reproduces the report from v0.4.18: POST /sessions creates a row
+    // the moment a client clicks Next, so a form-bounce leaves a ghost
+    // open/0-file session. Staff want the list to show real submissions.
+    const ghostSess = await createSessionFor(aliceStaffId, { withFile: false });
+    const realSess = await createSessionFor(aliceStaffId); // withFile defaults to true
+    const aliceAgent = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+
+    const def = await aliceAgent.get('/admin/intake/sessions');
+    const defIds = def.body.sessions.map((s: { id: string }) => s.id);
+    expect(defIds).toContain(realSess);
+    expect(defIds).not.toContain(ghostSess);
+
+    const all = await aliceAgent.get('/admin/intake/sessions?includeAbandoned=true');
+    const allIds = all.body.sessions.map((s: { id: string }) => s.id);
+    expect(allIds).toContain(realSess);
+    expect(allIds).toContain(ghostSess);
   });
 
   it('archived sessions are hidden by default and visible with includeArchived', async () => {
