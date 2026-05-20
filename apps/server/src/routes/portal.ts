@@ -30,6 +30,46 @@ export const portalRouter = Router();
 
 const SESSION_COOKIE = 'vibe.portal';
 
+/**
+ * Per-request cookie path for the portal session cookie.
+ *
+ * Mirrors the host-aware basePath derivation in routes/bootstrap.ts:
+ * a multi-subdomain appliance puts the staff app at
+ * `vibe.<domain>/connect/` (so `SESSION_COOKIE_PATH=/connect`) AND the
+ * portal at `client.<domain>/` (which needs path `/`). With a single
+ * env-only `SESSION_COOKIE_PATH`, the portal would inherit `/connect`,
+ * the browser would refuse to send the cookie back for `/portal/*`
+ * requests, every /portal/me would 401, and the SPA would bounce the
+ * user back to the identify page — the user's verify-but-no-login
+ * report drops cleanly out of that chain.
+ *
+ * Resolution order:
+ *   1. Match the request's Host against the configured portalUrl /
+ *      siteUrl and use that URL's pathname (rstripped of `/`, falling
+ *      back to `/` if empty). This is the same algorithm bootstrap.ts
+ *      already runs for the SPA's basePath.
+ *   2. Fall back to the env default — preserves the prior shape for
+ *      single-app installs that don't override portalUrl/siteUrl.
+ */
+async function cookiePathForRequest(req: Request): Promise<string> {
+  const reqHost = req.get('host');
+  if (!reqHost) return env.sessionCookiePath;
+  const urls = await effectiveUrls();
+  for (const url of [urls.portalUrl, urls.siteUrl]) {
+    if (!url) continue;
+    try {
+      const parsed = new URL(url);
+      if (parsed.host === reqHost) {
+        const stripped = parsed.pathname.replace(/\/$/, '');
+        return stripped || '/';
+      }
+    } catch {
+      // Malformed URL — skip and try the next candidate.
+    }
+  }
+  return env.sessionCookiePath;
+}
+
 const identifyLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: env.rateLimitPortalCodePer10Min,
@@ -172,11 +212,12 @@ portalRouter.post(
 
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
-      // Distribution mode: scope to BASE_PATH so a sibling Vibe app on the
-      // same host can't read the portal cookie (single-app: '/'; multi-app:
-      // '/connect'). clearCookie below uses the same path so logout works
-      // regardless of mode.
-      path: env.sessionCookiePath,
+      // Per-request path derivation — see cookiePathForRequest. The
+      // multi-subdomain appliance puts portal on `client.<domain>/`
+      // (path needs to be `/`) and staff on `vibe.<domain>/connect/`
+      // (path needs to be `/connect`); a single `env.sessionCookiePath`
+      // would always pick one and silently break logins on the other.
+      path: await cookiePathForRequest(req),
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       maxAge: 8 * 60 * 60 * 1000,
@@ -266,11 +307,9 @@ portalRouter.post(
     });
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,
-      // Distribution mode: scope to BASE_PATH so a sibling Vibe app on the
-      // same host can't read the portal cookie (single-app: '/'; multi-app:
-      // '/connect'). clearCookie below uses the same path so logout works
-      // regardless of mode.
-      path: env.sessionCookiePath,
+      // Per-request path — see the matching block in /verify above for
+      // the multi-subdomain rationale.
+      path: await cookiePathForRequest(req),
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       maxAge: 8 * 60 * 60 * 1000,
@@ -361,7 +400,7 @@ portalRouter.post(
           targetType: 'client_session',
           targetId: session.id,
         });
-        res.clearCookie(SESSION_COOKIE, { path: env.sessionCookiePath });
+        res.clearCookie(SESSION_COOKIE, { path: await cookiePathForRequest(req) });
         res.status(401).json({ error: 'session_revoked' });
         return;
       }
@@ -406,7 +445,9 @@ portalRouter.post(
     });
     res.cookie(SESSION_COOKIE, newToken, {
       httpOnly: true,
-      path: env.sessionCookiePath,
+      // Per-request path (see /verify and /invite blocks above for the
+      // multi-subdomain rationale).
+      path: await cookiePathForRequest(req),
       secure: env.sessionSecure,
       sameSite: env.sessionSameSite,
       // Keep the same remaining lifetime as the absolute_expires_at on the
@@ -460,7 +501,7 @@ portalRouter.post(
         targetId: session.id,
       });
     }
-    res.clearCookie(SESSION_COOKIE, { path: env.sessionCookiePath });
+    res.clearCookie(SESSION_COOKIE, { path: await cookiePathForRequest(req) });
     res.json({ ok: true });
   }),
 );
