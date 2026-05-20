@@ -1612,8 +1612,22 @@ adminRouter.post(
     const { buildSmsProvider } = await import('../bridges/sms/index.js');
     const impl = buildSmsProvider(provider);
     const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    // E.164 normalisation: strip spaces / dashes / parens; ensure leading +.
-    const normalisedTo = to.replace(/[\s\-()]/g, '').replace(/^(?!\+)/, '+');
+    // Real E.164 normalisation (handles US 10-digit, 11-digit with
+    // leading 1, formatted variants like "(417) 555-4645", etc.). The
+    // older code just stripped formatting and prepended `+`, which
+    // turned a bare US 10-digit into `+4175554645` — `+4` isn't a
+    // valid country code and TextLink/Twilio would reject. See
+    // services/phoneFormat.ts for the full ruleset.
+    const { normalizeE164 } = await import('../services/phoneFormat.js');
+    const normalisedTo = normalizeE164(to);
+    if (!normalisedTo) {
+      res.status(400).json({
+        error: 'invalid_phone',
+        message:
+          "Couldn't parse as a phone number. Use E.164 (+15551234567), or a US 10-digit / 11-digit number.",
+      });
+      return;
+    }
     try {
       const result = await impl.sendMessage({
         to: normalisedTo,
