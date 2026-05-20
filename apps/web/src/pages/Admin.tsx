@@ -4668,6 +4668,11 @@ export function AdminIntakeSessions(): JSX.Element {
   const qc = useQueryClient();
   const [status, setStatus] = useState<'' | 'open' | 'finalized' | 'expired' | 'abandoned'>('');
   const [includeArchived, setIncludeArchived] = useState(false);
+  // Form-bounce rows (status=open AND 0 files) hide by default — the
+  // POST /sessions endpoint creates a row before any upload, so an
+  // abandoned form leaves a ghost session. Admins triaging drop-off
+  // can flip this on to see them.
+  const [includeAbandoned, setIncludeAbandoned] = useState(false);
   const [staffFilter, setStaffFilter] = useState<string>('');
   const [page, setPage] = useState(1);
   const [openDetailId, setOpenDetailId] = useState<string | null>(null);
@@ -4683,10 +4688,15 @@ export function AdminIntakeSessions(): JSX.Element {
   useEffect(() => {
     // Reset selection on any filter / page change.
     setSelected(new Set());
-  }, [status, includeArchived, staffFilter, page]);
+  }, [status, includeArchived, includeAbandoned, staffFilter, page]);
 
   const listQ = useQuery({
-    queryKey: ['admin', 'intake', 'sessions', { status, includeArchived, staffFilter, page }],
+    queryKey: [
+      'admin',
+      'intake',
+      'sessions',
+      { status, includeArchived, includeAbandoned, staffFilter, page },
+    ],
     queryFn: () =>
       api.listAdminIntakeSessions({
         page,
@@ -4694,6 +4704,7 @@ export function AdminIntakeSessions(): JSX.Element {
         status: status || undefined,
         staffId: staffFilter || undefined,
         includeArchived,
+        includeAbandoned,
       }),
     staleTime: 15_000,
   });
@@ -4783,6 +4794,17 @@ export function AdminIntakeSessions(): JSX.Element {
             onChange={(e) => setIncludeArchived(e.target.checked)}
           />
           Include archived
+        </label>
+        <label
+          className="text-xs text-slate-600 inline-flex items-center gap-1"
+          title="Sessions where the client filled the intake form but never uploaded a file. Hidden by default to keep the list focused on real submissions."
+        >
+          <input
+            type="checkbox"
+            checked={includeAbandoned}
+            onChange={(e) => setIncludeAbandoned(e.target.checked)}
+          />
+          Show form-bounce sessions
         </label>
       </div>
 
