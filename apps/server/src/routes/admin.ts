@@ -279,7 +279,13 @@ function normalizeAdminUrl(
 // discover every outbound notification failing at send time.
 const REQUIRED_SECRETS_BY_PROVIDER: Record<string, ProviderSecretKey[]> = {
   postmark: ['email.postmark.server_token'],
-  postfix: ['email.smtp.host', 'email.smtp.port'],
+  // SMTP: only HOST is truly required. PORT has an env default (587),
+  // user / pass are optional (some relays accept unauthenticated), and
+  // the `secure` flag defaults to STARTTLS. The pre-flight check is
+  // meant to catch "obviously broken" configs that would 100% fail at
+  // send time — partial / nuanced misconfigs (e.g. user without pass)
+  // are caught with friendlier errors at the actual send call.
+  postfix: ['email.smtp.host'],
   emailit: ['email.emailit.api_key'],
   textlink: ['sms.textlink.api_key'],
   twilio: ['sms.twilio.account_sid', 'sms.twilio.auth_token'],

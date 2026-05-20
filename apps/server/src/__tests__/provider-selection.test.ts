@@ -197,6 +197,26 @@ describe('DB-backed provider selection', () => {
         .send({ provider: 'mock', to: 'admin@example.com' });
       expect(res.status).toBe(403);
     });
+
+    it('SMTP pre-flight requires only host — port has an env default (regression for v0.4.21)', async () => {
+      // User reported on v0.4.20: configuring SMTP host + password, then
+      // clicking Test, surfaced "Missing credentials: email.smtp.port".
+      // Port has an env default (587) so it's not actually required for
+      // the bridge to function. Only HOST is required up-front.
+      const { db } = await import('../db/knex.js');
+      const { set: setProviderSecret } = await import('../services/providerSecrets.js');
+      await db('firm_provider_credentials').delete();
+      await setProviderSecret('email.smtp.host', 'smtp.example.com', null);
+      // intentionally NO email.smtp.port stored.
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin
+        .post('/admin/providers/test/email')
+        .send({ provider: 'postfix', to: 'admin@example.com' });
+      // The send will still fail at the actual SMTP-connect step
+      // (smtp.example.com doesn't exist), but it should NOT fail with
+      // `provider_secrets_missing` for port.
+      expect(res.body.error).not.toBe('provider_secrets_missing');
+    });
   });
 });
 
