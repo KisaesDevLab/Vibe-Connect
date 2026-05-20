@@ -198,6 +198,36 @@ describe('DB-backed provider selection', () => {
       expect(res.status).toBe(403);
     });
 
+    it('Test SMS accepts a bare US 10-digit number (E.164-normalised server-side)', async () => {
+      // Regression for v0.4.23: the prior normalisation just stripped
+      // formatting and prepended `+`, turning a bare `4175554645` into
+      // `+4175554645` — country code 4 doesn't exist. The endpoint now
+      // adds the `+1` country prefix for US 10-digit input.
+      const { set: setProviderSecret } = await import('../services/providerSecrets.js');
+      await setProviderSecret('sms.textlink.api_key', 'test-tl-key', null);
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin
+        .post('/admin/providers/test/sms')
+        .send({ provider: 'mock', to: '4175554645' });
+      // Mock provider always succeeds — assertion here is that we
+      // didn't reject with `invalid_phone` on the unprefixed input.
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+    });
+
+    it('Test SMS rejects un-parseable phone input with invalid_phone', async () => {
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      // 16 digits passes the zod min(7)/max(20) shape check but exceeds
+      // E.164's 15-digit limit — the normalizer returns null and the
+      // route surfaces `invalid_phone` (rather than the generic
+      // `validation` zod error) so the UI can show a useful message.
+      const res = await admin
+        .post('/admin/providers/test/sms')
+        .send({ provider: 'mock', to: '1234567890123456' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_phone');
+    });
+
     it('SMTP pre-flight requires only host — port has an env default (regression for v0.4.21)', async () => {
       // User reported on v0.4.20: configuring SMTP host + password, then
       // clicking Test, surfaced "Missing credentials: email.smtp.port".
