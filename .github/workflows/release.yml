@@ -18,28 +18,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-push:
+  # ---------- Tag validation + metadata ----------
+  # Pulled out so build-server / build-client can run in parallel; both
+  # consume `version`, `is_release`, `major`, `minor` from this job's
+  # outputs instead of re-deriving them.
+  meta:
     runs-on: ubuntu-latest
-    permissions:
-      packages: write   # push to ghcr.io
-      id-token: write   # cosign keyless via OIDC
-      contents: read
     outputs:
       version: ${{ steps.meta.outputs.version }}
       is_release: ${{ steps.meta.outputs.is_release }}
+      major: ${{ steps.meta.outputs.major }}
+      minor: ${{ steps.meta.outputs.minor }}
     steps:
-      - uses: actions/checkout@v5
-
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       # Derive `1.4.2` (X.Y.Z, immutable), `1.4` (rolling minor), and
       # `1` (rolling major) tags from the GIT_TAG (`v1.4.2`). `latest` is
       # only attached when the tag has no pre-release suffix (so a
@@ -66,7 +56,27 @@ jobs:
           echo "major=$major" >> "$GITHUB_OUTPUT"
           echo "minor=$minor" >> "$GITHUB_OUTPUT"
 
-      # ---------- Server image (Express API) ----------
+  # ---------- Server image (Express API) ----------
+  build-server:
+    needs: [meta]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write   # push to ghcr.io
+      id-token: write   # cosign keyless via OIDC
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build + push vibe-connect-server
         id: build_server
         uses: docker/build-push-action@v7
@@ -77,8 +87,15 @@ jobs:
           push: true
           provenance: mode=max
           sbom: true
+          # GHA layer cache. mode=max also caches intermediate stages
+          # (deps, build) — without it we'd only cache the final stage
+          # and `yarn install` would still re-run on every tag push.
+          # GHA scopes the cache by job name automatically, so the
+          # server and client builds don't fight over the same blob.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
-            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_VERSION=${{ needs.meta.outputs.version }}
           # OCI standard image labels. The Vibe-Appliance admin /admin
           # page reads these via `docker image inspect` and renders
           # them on each app card's `build` row, with the revision
@@ -94,38 +111,14 @@ jobs:
           #   source   — repo URL; the Vibe-Appliance turns this into
           #              <source>/commit/<revision> for the card link
           labels: |
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
-            ghcr.io/kisaesdevlab/vibe-connect-server:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-server:{0}', steps.meta.outputs.minor) || '' }}
-            ${{ steps.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-server:{0}', steps.meta.outputs.major) || '' }}
-            ${{ steps.meta.outputs.is_release == 'true' && 'ghcr.io/kisaesdevlab/vibe-connect-server:latest' || '' }}
-
-      # ---------- Client image (nginx serving SPA) ----------
-      - name: Build + push vibe-connect-client
-        id: build_client
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: infra/docker/nginx/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          provenance: mode=max
-          sbom: true
-          # Same OCI labels as the server image — both images carry
-          # the same version + git SHA so an operator can verify the
-          # client/server pair came from a single release.
-          labels: |
-            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-          tags: |
-            ghcr.io/kisaesdevlab/vibe-connect-client:${{ steps.meta.outputs.version }}
-            ${{ steps.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-client:{0}', steps.meta.outputs.minor) || '' }}
-            ${{ steps.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-client:{0}', steps.meta.outputs.major) || '' }}
-            ${{ steps.meta.outputs.is_release == 'true' && 'ghcr.io/kisaesdevlab/vibe-connect-client:latest' || '' }}
+            ghcr.io/kisaesdevlab/vibe-connect-server:${{ needs.meta.outputs.version }}
+            ${{ needs.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-server:{0}', needs.meta.outputs.minor) || '' }}
+            ${{ needs.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-server:{0}', needs.meta.outputs.major) || '' }}
+            ${{ needs.meta.outputs.is_release == 'true' && 'ghcr.io/kisaesdevlab/vibe-connect-server:latest' || '' }}
 
       # ---------- Cosign keyless signing ----------
       # Signs the immutable digest emitted by build-push-action so a later
@@ -145,6 +138,54 @@ jobs:
           DIGEST: ${{ steps.build_server.outputs.digest }}
         run: |
           cosign sign --yes "ghcr.io/kisaesdevlab/vibe-connect-server@${DIGEST}"
+
+  # ---------- Client image (nginx serving SPA) ----------
+  build-client:
+    needs: [meta]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push vibe-connect-client
+        id: build_client
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: infra/docker/nginx/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Same OCI labels as the server image — both images carry
+          # the same version + git SHA so an operator can verify the
+          # client/server pair came from a single release.
+          labels: |
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          tags: |
+            ghcr.io/kisaesdevlab/vibe-connect-client:${{ needs.meta.outputs.version }}
+            ${{ needs.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-client:{0}', needs.meta.outputs.minor) || '' }}
+            ${{ needs.meta.outputs.is_release == 'true' && format('ghcr.io/kisaesdevlab/vibe-connect-client:{0}', needs.meta.outputs.major) || '' }}
+            ${{ needs.meta.outputs.is_release == 'true' && 'ghcr.io/kisaesdevlab/vibe-connect-client:latest' || '' }}
+
+      - uses: sigstore/cosign-installer@v3
       - name: Sign vibe-connect-client
         env:
           DIGEST: ${{ steps.build_client.outputs.digest }}
@@ -154,7 +195,8 @@ jobs:
   # ---------- Windows desktop wrapper (Tauri 2) ----------
   #
   # Builds an unsigned-by-MSFT MSI + NSIS installer on `windows-latest` for
-  # x86_64. ARM64 deferred.
+  # x86_64. ARM64 deferred. Depends only on `meta` (not the docker images)
+  # so it can run in parallel with the GHCR builds.
   #
   # Tauri's own ed25519 update signing is currently OFF
   # (`createUpdaterArtifacts: false` in tauri.conf.json) because the
@@ -173,7 +215,7 @@ jobs:
   # SmartScreen workaround customers will see in the meantime.
   build-desktop-windows:
     runs-on: windows-latest
-    needs: [build-and-push]
+    needs: [meta]
     permissions:
       contents: write
     outputs:
@@ -216,10 +258,10 @@ jobs:
         # version comparison and the user-visible "Vibe Connect 1.4.2"
         # label both reflect what's actually shipping. Run only on real
         # release tags so a `vX.Y.Z-rc1` doesn't pollute Cargo.lock.
-        if: needs.build-and-push.outputs.is_release == 'true'
+        if: needs.meta.outputs.is_release == 'true'
         shell: pwsh
         run: |
-          $version = "${{ needs.build-and-push.outputs.version }}"
+          $version = "${{ needs.meta.outputs.version }}"
           $cargo = Get-Content apps/desktop/src-tauri/Cargo.toml -Raw
           $cargo = $cargo -replace '(?m)^version = "[^"]+"', "version = `"$version`""
           Set-Content apps/desktop/src-tauri/Cargo.toml -Value $cargo -NoNewline
@@ -261,7 +303,7 @@ jobs:
         if: steps.locate.outputs.msi_path != ''
         uses: actions/upload-artifact@v7
         with:
-          name: vibe-connect-desktop-msi-${{ needs.build-and-push.outputs.version }}
+          name: vibe-connect-desktop-msi-${{ needs.meta.outputs.version }}
           path: ${{ steps.locate.outputs.msi_path }}
           if-no-files-found: error
 
@@ -269,7 +311,7 @@ jobs:
         if: steps.locate.outputs.nsis_path != ''
         uses: actions/upload-artifact@v7
         with:
-          name: vibe-connect-desktop-nsis-${{ needs.build-and-push.outputs.version }}
+          name: vibe-connect-desktop-nsis-${{ needs.meta.outputs.version }}
           path: ${{ steps.locate.outputs.nsis_path }}
           if-no-files-found: error
 
@@ -277,14 +319,14 @@ jobs:
         if: steps.locate.outputs.updater_path != ''
         uses: actions/upload-artifact@v7
         with:
-          name: vibe-connect-desktop-updater-${{ needs.build-and-push.outputs.version }}
+          name: vibe-connect-desktop-updater-${{ needs.meta.outputs.version }}
           path: |
             ${{ steps.locate.outputs.updater_path }}
             ${{ steps.locate.outputs.updater_sig_path }}
           if-no-files-found: warn
 
       - name: Attach to GitHub release
-        if: needs.build-and-push.outputs.is_release == 'true'
+        if: needs.meta.outputs.is_release == 'true'
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -306,8 +348,8 @@ jobs:
   # discover the new version and new clients get the same answer.
   publish-updater-manifest:
     runs-on: ubuntu-latest
-    needs: [build-and-push, build-desktop-windows]
-    if: needs.build-and-push.outputs.is_release == 'true' && needs.build-desktop-windows.outputs.updater_path != ''
+    needs: [meta, build-desktop-windows]
+    if: needs.meta.outputs.is_release == 'true' && needs.build-desktop-windows.outputs.updater_path != ''
     permissions:
       contents: write
     steps:
@@ -336,12 +378,12 @@ jobs:
       - name: Download updater bundle
         uses: actions/download-artifact@v8
         with:
-          name: vibe-connect-desktop-updater-${{ needs.build-and-push.outputs.version }}
+          name: vibe-connect-desktop-updater-${{ needs.meta.outputs.version }}
           path: ./_updater
 
       - name: Generate latest.json
         env:
-          VERSION: ${{ needs.build-and-push.outputs.version }}
+          VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -e
           mkdir -p windows/x86_64/${VERSION} windows/x86_64/latest
@@ -392,6 +434,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "no manifest changes"
           else
-            git commit -m "chore(updater): publish latest.json for v${{ needs.build-and-push.outputs.version }}"
+            git commit -m "chore(updater): publish latest.json for v${{ needs.meta.outputs.version }}"
             git push origin gh-pages
           fi
