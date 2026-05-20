@@ -28,24 +28,32 @@ function relativeTime(iso: string): string {
 export function AccountPage(): JSX.Element {
   const { user, refresh } = useAuth();
   const qc = useQueryClient();
+  // AppShell allocates a flex column with a fixed-height main area.
+  // The previous wrapper was a plain padded div, which let the
+  // password / device / intake-card sections overflow the viewport
+  // without scrolling (the user couldn't reach the Save buttons at
+  // the bottom). Match Inbox.tsx's pattern: `h-full overflow-y-auto`
+  // on the outer wrapper, padding moved to an inner content div.
   return (
-    <div className="p-4 max-w-2xl space-y-6">
-      <div>
-        <h2 className="font-semibold text-slate-900">Account</h2>
-        <p className="text-sm text-slate-600">
-          Signed in as <strong>{user?.displayName}</strong>{' '}
-          <span className="text-slate-400">(@{user?.username})</span>
-        </p>
+    <div className="h-full overflow-y-auto">
+      <div className="p-4 max-w-2xl space-y-6 pb-8">
+        <div>
+          <h2 className="font-semibold text-slate-900">Account</h2>
+          <p className="text-sm text-slate-600">
+            Signed in as <strong>{user?.displayName}</strong>{' '}
+            <span className="text-slate-400">(@{user?.username})</span>
+          </p>
+        </div>
+        <AvatarCard
+          onUploaded={() => {
+            void refresh();
+            void qc.invalidateQueries({ queryKey: ['users'] });
+          }}
+        />
+        <IntakeCardSettings />
+        <ChangePasswordCard />
+        <MyDevicesCard />
       </div>
-      <AvatarCard
-        onUploaded={() => {
-          void refresh();
-          void qc.invalidateQueries({ queryKey: ['users'] });
-        }}
-      />
-      <IntakeCardSettings />
-      <ChangePasswordCard />
-      <MyDevicesCard />
     </div>
   );
 }
