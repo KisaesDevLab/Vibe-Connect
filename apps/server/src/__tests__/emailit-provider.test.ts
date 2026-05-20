@@ -106,18 +106,63 @@ describe('EmailitProvider', () => {
     );
   });
 
-  it('redacts long dash-free tokens but preserves UUID-shaped correlation IDs', async () => {
-    // The redact regex must drop bearer-token-shaped runs (20+ chars,
-    // dash-free) while leaving UUIDs readable so operators can file
-    // provider support tickets with the correlation ID in hand.
+  it('extracts the `message` field from Emailit JSON error responses', async () => {
+    // Per v2 spec, errors carry { error, message, details?, validation_errors? }.
+    // The Admin → Providers Test button surfaces our thrown error string
+    // directly, so the parser must extract `message` rather than dump
+    // the JSON envelope. The most common operator-facing failure is
+    // "sender domain not verified" on first integration.
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'sender_domain_unverified',
+          message: 'Sender domain example.com is not verified on this Emailit account.',
+        }),
+        { status: 422, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await expect(provider.send({ to: 'a@b.com', subject: 's', text: 't' })).rejects.toThrow(
+      /emailit_422: Sender domain example\.com is not verified/,
+    );
+  });
+
+  it('appends validation_errors to the surfaced error string', async () => {
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'validation_failed',
+          message: 'Request body is invalid.',
+          validation_errors: ['to: must be a valid email address', 'subject: required'],
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await expect(provider.send({ to: 'a@b.com', subject: 's', text: 't' })).rejects.toThrow(
+      /Request body is invalid.*to: must be a valid email/,
+    );
+  });
+
+  it('falls back to redactAndCap when the error body is not Emailit-shaped JSON', async () => {
+    // HTML error page from a misconfigured reverse-proxy in front of
+    // Emailit (e.g. a sandbox that returned 502 with an <html>...</html>
+    // body). Parser can't extract structured fields — the body still
+    // gets surfaced, with long dash-free token runs redacted and a
+    // 160-char cap.
     const { set } = await import('../services/providerSecrets.js');
     await set('email.emailit.api_key', 'test-key', null);
     const body =
-      '{"error":"invalid_token","leaked":"abcdefghijklmnopqrstuvwxyz1234567890","traceId":"12345678-1234-1234-1234-123456789012"}';
+      '<html><body>Bad Gateway: upstream gave back token abcdefghijklmnopqrstuvwxyz1234567890</body></html>';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(body, { status: 401, headers: { 'content-type': 'application/json' } }),
+      new Response(body, { status: 502, headers: { 'content-type': 'text/html' } }),
     );
-
     const { getEmailProvider } = await import('../bridges/email/index.js');
     const provider = await getEmailProvider();
     try {
@@ -125,12 +170,50 @@ describe('EmailitProvider', () => {
       throw new Error('expected throw');
     } catch (err) {
       const msg = (err as Error).message;
-      expect(msg).toMatch(/emailit_401/);
-      // Bearer-shaped token gone:
+      expect(msg).toMatch(/emailit_502/);
       expect(msg).not.toContain('abcdefghijklmnopqrstuvwxyz1234567890');
-      // UUID preserved:
-      expect(msg).toContain('12345678-1234-1234-1234-123456789012');
     }
+  });
+
+  it('sets an Idempotency-Key header on every send', async () => {
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'em_x' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await provider.send({ to: 'a@b.com', subject: 's', text: 't' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers['idempotency-key']).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+  });
+
+  it('omits `html` from the request body when the caller did not provide one', async () => {
+    // Emailit's contract is "html OR text". Our internal callers
+    // (invite, intake notify, etc.) build text-only messages, so we
+    // should not ship `"html": ""` or `"html": null` — Emailit might
+    // treat either as an empty HTML body.
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'em_x' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await provider.send({ to: 'a@b.com', subject: 's', text: 'plain only' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.text).toBe('plain only');
+    expect('html' in sent).toBe(false);
   });
 
   it('maps fetch timeout to a typed emailit_timeout error', async () => {
