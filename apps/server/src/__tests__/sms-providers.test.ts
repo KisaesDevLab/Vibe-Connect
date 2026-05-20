@@ -35,6 +35,69 @@ describe('TextLink SMS', () => {
     await set('sms.textlink.api_key', 'test-tl-key', null);
   });
 
+  it('posts to /api/send-sms with Bearer auth + spec-shaped body (phone_number + text)', async () => {
+    // Regression for the silent-failure bug in v0.4.21 and earlier: api
+    // key was in the JSON body instead of the Authorization header, and
+    // the body used `to`/`message` instead of `phone_number`/`text` as
+    // the spec requires. https://docs.textlinksms.com/api#sending-an-sms
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    const result = await provider.sendMessage({ to: '+15551234567', body: 'hi there' });
+    expect(result.status).toBe('sent');
+
+    const [urlArg, initArg] = fetchSpy.mock.calls[0]!;
+    expect(String(urlArg)).toBe('https://textlinksms.com/api/send-sms');
+    const init = initArg as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers.authorization).toBe('Bearer test-tl-key');
+    expect(headers['content-type']).toBe('application/json');
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.phone_number).toBe('+15551234567');
+    expect(sent.text).toBe('hi there');
+    // api_key MUST NOT appear in the body (it goes in the header).
+    expect('apiKey' in sent).toBe(false);
+    expect('api_key' in sent).toBe(false);
+  });
+
+  it('treats `queued: true` as success but reports status="queued"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, queued: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    const result = await provider.sendMessage({ to: '+15551234567', body: 'hi' });
+    expect(result.status).toBe('queued');
+  });
+
+  it('THROWS when response is HTTP 200 with `ok: false` (silent-failure regression)', async () => {
+    // The user-reported bug: TextLink returns 200 OK with { ok: false,
+    // message: "..." } on a failed send (no SIM available, phone offline,
+    // etc.). Pre-v0.4.22 we checked HTTP status only, so every failure
+    // was reported as "sent" to the staff invite toast — no SMS went out
+    // but the UI claimed it had. The fix must parse `ok` and throw with
+    // the `message` text.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: false, message: 'No SIM cards available' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    await expect(provider.sendMessage({ to: '+15551234567', body: 'hi' })).rejects.toThrow(
+      /textlink_send_failed: No SIM cards available/,
+    );
+  });
+
   it('maps timeout to textlink_timeout_after_*ms', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
       Promise.reject(new DOMException('aborted', 'TimeoutError')),
@@ -46,7 +109,10 @@ describe('TextLink SMS', () => {
     );
   });
 
-  it('redacts long dash-free tokens but preserves UUIDs in 4xx body', async () => {
+  it('surfaces a real HTTP error (non-200) with redacted body', async () => {
+    // Non-200 from TextLink means the API itself is broken (deploy /
+    // outage / rate limit), not a "send failed". Distinct error string
+    // so an operator can tell them apart.
     const body =
       '{"err":"bad","key":"abcdefghijklmnopqrstuvwxyz1234567890","traceId":"12345678-1234-1234-1234-123456789012"}';
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(

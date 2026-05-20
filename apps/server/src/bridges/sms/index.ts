@@ -91,6 +91,21 @@ class MockSms implements SmsProvider {
   }
 }
 
+// TextLinkSMS — BYOD Android-phone-as-SMS-gateway service.
+//   Endpoint:        POST https://textlinksms.com/api/send-sms
+//   Auth:            Authorization: Bearer <api_key>  (NOT in body)
+//   Body (JSON):     { phone_number: "+1...", text: "..." }
+//                    Optional: sim_card_id, custom_id
+//   Response:        HTTP 200 always. Success: { ok: true [, queued: true] }
+//                    Failure: { ok: false, message: "<reason>" }
+//   Spec reference:  https://docs.textlinksms.com/api#sending-an-sms
+//
+// This is the silent-failure path the user hit: prior versions of this
+// code put the api key in the request body, used the wrong field names
+// (`to`/`message` instead of `phone_number`/`text`), AND treated any
+// HTTP 200 as success — so a body of `{ok: false, message: "..."}` was
+// being reported as "sent" to the staff invite toast while no SMS ever
+// went out. Each of those three is fixed here.
 class TextLinkSms implements SmsProvider {
   name = 'textlink' as const;
   async sendMessage(req: SmsSendRequest) {
@@ -100,20 +115,47 @@ class TextLinkSms implements SmsProvider {
     try {
       res = await fetch('https://textlinksms.com/api/send-sms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, to: req.to, message: req.body }),
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ phone_number: req.to, text: req.body }),
         signal: AbortSignal.timeout(SMS_PROVIDER_TIMEOUT_MS),
       });
     } catch (err) {
       throw mapSmsFetchError('textlink', err);
     }
+    // TextLink uses HTTP 200 even for failures and signals success via
+    // the `ok` field. A non-200 here means the API itself is broken
+    // (rate-limit, deploy, etc.) — read the body for diagnostics.
     if (!res.ok) {
       const full = await res.text();
-      logger.warn('sms.textlink_send_failed', { status: res.status, body: full.slice(0, 500) });
+      logger.warn('sms.textlink_http_error', { status: res.status, body: full.slice(0, 500) });
       throw new Error(`textlink_${res.status}: ${redactAndCapSms(full)}`);
     }
-    const data = (await res.json()) as { messageId?: string };
-    return { id: data.messageId ?? crypto.randomUUID(), status: 'sent' as const };
+    interface TextLinkResponse {
+      ok?: boolean;
+      queued?: boolean;
+      message?: string;
+    }
+    let parsed: TextLinkResponse | null = null;
+    try {
+      parsed = (await res.json()) as TextLinkResponse;
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || parsed.ok !== true) {
+      const reason = parsed?.message ?? '<no reason given>';
+      logger.warn('sms.textlink_send_failed', { reason, body: parsed });
+      throw new Error(`textlink_send_failed: ${reason.slice(0, 200)}`);
+    }
+    // Spec returns no message id — synthesise one for our log + audit.
+    // `queued` is a second-state-of-success (handed to a SIM card but
+    // not yet acked) — both count as a successful send from our pov.
+    return {
+      id: `textlink-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+      status: parsed.queued ? ('queued' as const) : ('sent' as const),
+    };
   }
   parseInbound(req: { body: unknown }): SmsInbound | null {
     const b = req.body as {
