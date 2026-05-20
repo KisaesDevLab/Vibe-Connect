@@ -1,4 +1,5 @@
 // Email provider interface + mock + Postmark + Postfix-SMTP implementations.
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
@@ -121,15 +122,58 @@ class PostmarkProvider implements EmailProvider {
   }
 }
 
-// Emailit v2 transactional API (https://emailit.com/docs/api-reference/emails/send/).
-// Ported from the production client in Vibe-Payroll-Time —
-// notable details an earlier integration in another product got wrong:
-//   * URL is /v2/ (not /v1/).
-//   * `from` is an RFC 5322 string ("Name <email>" or bare email), not a
-//     {email, name} object.
-//   * `to` is a string or string[], not an [{email}] array.
-//   * Auth is Bearer <api_key>.
+// Emailit v2 transactional API.
+//   Endpoint:        POST https://api.emailit.com/v2/emails
+//   Auth:            Authorization: Bearer <api_key>
+//   Content-Type:    application/json
+//   Idempotency-Key: optional, dedups for 24h
+//   Required body:   from (RFC 5322 string), to (string | string[]),
+//                    subject (unless template), html OR text
+//   Optional body:   reply_to, cc, bcc, headers, meta, attachments,
+//                    template+variables, scheduled_at, tracking
+//   Spec reference:  https://emailit.com/docs/api-reference/emails/send/
+//
+// Common failure mode operators hit on first integration: Emailit
+// rejects sends from sender-domains that aren't verified on their
+// account. Symptom is a 422 with `{ "message": "Sender domain not
+// verified ..." }`. The error-extraction below surfaces that string
+// directly so the Admin → Providers Test button shows the real reason
+// instead of a generic emailit_422.
 const DEFAULT_EMAILIT_BASE_URL = 'https://api.emailit.com/v2';
+
+/**
+ * Pull the human-readable error string out of Emailit's JSON error
+ * response, with graceful fallback to the raw body if parsing fails.
+ * Response shape per spec: { error, message, details?, validation_errors? }.
+ */
+function extractEmailitError(rawBody: string): string {
+  if (!rawBody) return '<empty body>';
+  try {
+    const parsed = JSON.parse(rawBody) as {
+      error?: unknown;
+      message?: unknown;
+      details?: unknown;
+      validation_errors?: unknown;
+    };
+    // `message` is the friendly description; `error` is the type/title.
+    // `validation_errors` carries field-level reasons. Stitch them.
+    const parts: string[] = [];
+    if (typeof parsed.message === 'string' && parsed.message.trim()) parts.push(parsed.message);
+    else if (typeof parsed.error === 'string' && parsed.error.trim()) parts.push(parsed.error);
+    if (Array.isArray(parsed.validation_errors) && parsed.validation_errors.length > 0) {
+      const fieldMsgs = parsed.validation_errors
+        .map((e) => (typeof e === 'string' ? e : JSON.stringify(e)))
+        .filter((s) => s.length > 0)
+        .join('; ');
+      if (fieldMsgs) parts.push(`(${fieldMsgs})`);
+    }
+    if (parts.length > 0) return parts.join(' ');
+  } catch {
+    // Not JSON — fall through to the raw redacted body.
+  }
+  return redactAndCap(rawBody);
+}
+
 class EmailitProvider implements EmailProvider {
   name = 'emailit';
   async send(msg: EmailMessage) {
@@ -150,11 +194,18 @@ class EmailitProvider implements EmailProvider {
       from: env.emailFrom,
       to: msg.to,
       subject: msg.subject,
+      // `text` is optional; `html` is required only when neither template
+      // nor `text` is present. We always pass `text`, and only include
+      // `html` when the caller supplied one — Emailit accepts text-only.
       text: msg.text,
-      html: msg.html,
+      ...(msg.html ? { html: msg.html } : {}),
       ...(replyTo ? { reply_to: replyTo } : {}),
       ...(msg.headers && Object.keys(msg.headers).length > 0 ? { headers: msg.headers } : {}),
     };
+    // Idempotency-Key shields a flaky-network retry from creating a
+    // duplicate send. Emailit dedups by key for 24h. Random per request
+    // (we don't want two distinct sends to share a key).
+    const idempotencyKey = randomUUID();
     let res: Response;
     try {
       res = await fetch(`${base}/emails`, {
@@ -163,6 +214,7 @@ class EmailitProvider implements EmailProvider {
           authorization: `Bearer ${apiKey}`,
           'content-type': 'application/json',
           accept: 'application/json',
+          'idempotency-key': idempotencyKey,
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
@@ -172,8 +224,12 @@ class EmailitProvider implements EmailProvider {
     }
     if (!res.ok) {
       const full = await res.text();
-      logger.warn('email.emailit_send_failed', { status: res.status, body: full.slice(0, 500) });
-      throw new Error(`emailit_${res.status}: ${redactAndCap(full)}`);
+      logger.warn('email.emailit_send_failed', {
+        status: res.status,
+        body: full.slice(0, 500),
+        idempotencyKey,
+      });
+      throw new Error(`emailit_${res.status}: ${extractEmailitError(full)}`);
     }
     let parsed: unknown = null;
     try {
@@ -191,7 +247,7 @@ class EmailitProvider implements EmailProvider {
       pick(parsed, 'message_id') ??
       pick((parsed as { data?: unknown } | null)?.data, 'id') ??
       `emailit-${Date.now()}`;
-    logger.info('email.emailit_sent', { to: msg.to, id });
+    logger.info('email.emailit_sent', { to: msg.to, id, idempotencyKey });
     return { id, status: 'sent' as const };
   }
 }
