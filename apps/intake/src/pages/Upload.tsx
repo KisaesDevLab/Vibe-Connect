@@ -3,7 +3,7 @@ import * as tus from 'tus-js-client';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CameraModal, canUseCamera } from '../components/CameraModal.js';
 import { ScanBatch } from '../components/ScanBatch.js';
-import { ScannerReview } from '../components/ScannerReview.js';
+import { ScannerReview, type ScannerConfirmation } from '../components/ScannerReview.js';
 import { url } from '../lib/boot.js';
 
 /**
@@ -39,7 +39,16 @@ interface UploadRow {
   error?: string;
   cancel?: () => void;
   /** Optional extra tus metadata. Defaults: kind='file', orderIndex=0. */
-  extraMeta?: { kind?: 'file' | 'scanned_image'; orderIndex?: number };
+  extraMeta?: {
+    kind?: 'file' | 'scanned_image';
+    orderIndex?: number;
+    /** JSON string of `{quad, enhanceMode, sourceSize}`. tus-js-client
+     *  base64-encodes metadata values on the wire, and the server
+     *  `parseUploadMetadata` decodes them back, so we hand off plain
+     *  JSON here. Present only when the user came through the in-browser
+     *  scanner — informs the server's warp + enhance step. */
+    scannerMeta?: string;
+  };
 }
 
 // Per-file cap (50 MB default; firm setting can raise this).
@@ -108,12 +117,18 @@ export function Upload(): JSX.Element {
   // arrived at an empty ScanBatch with no error. A useEffect-watched
   // state field is reliably consumed once the child mounts, regardless
   // of effect ordering.
+  //
+  // The `scannerMeta` field carries the quad + enhance mode that the
+  // server-side warp consumes. It lives with the pending page (not on
+  // the file itself) because `File` is immutable + the metadata is per-
+  // upload, not per-blob.
   const [pendingBatchPage, setPendingBatchPage] = useState<{
     file: File;
     replaceIndex: number | null;
     /** Bumped on every queue so identical files (same File ref) still
      *  trigger the consume effect. */
     seq: number;
+    scannerMeta?: string;
   } | null>(null);
   const pendingSeq = useRef(0);
   const idCounter = useRef(0);
@@ -175,6 +190,14 @@ export function Upload(): JSX.Element {
     if (row.extraMeta?.orderIndex !== undefined) {
       metadata.orderIndex = String(row.extraMeta.orderIndex);
     }
+    // Server-side warp: ScannerReview now emits the original photo + a
+    // serialised `{quad, enhanceMode, sourceSize}` payload. We forward it
+    // as a tus metadata field; the upload-service parses it on finalize
+    // and writes to `intake_files.scanner_meta` for the conversion ticker
+    // to consume.
+    if (row.extraMeta?.scannerMeta) {
+      metadata.scannerMeta = row.extraMeta.scannerMeta;
+    }
     const upload = new tus.Upload(row.file, {
       endpoint: url('/api/public/intake/uploads'),
       retryDelays: [0, 1000, 3000, 5000],
@@ -230,9 +253,12 @@ export function Upload(): JSX.Element {
    * Push a captured/picked image into the upload queue using the same
    * machinery as the file picker. Used by both the in-page CameraModal
    * (28.6 native capture) and the &lt;input capture&gt; fallback for
-   * unsupported browsers.
+   * unsupported browsers. `scannerMeta` is the JSON-stringified
+   * `{quad, enhanceMode, sourceSize}` payload from ScannerReview; absent
+   * for the native-camera fallback (server falls through to its
+   * EXIF-rotate-only path for those rows).
    */
-  function enqueueScan(file: File): void {
+  function enqueueScan(file: File, scannerMeta?: string): void {
     if (!token) return;
     if (file.size > PER_FILE_CAP_BYTES) {
       setRows((prev) => [
@@ -254,6 +280,7 @@ export function Upload(): JSX.Element {
       bytesSent: 0,
       bytesTotal: file.size,
       status: 'queued',
+      extraMeta: scannerMeta ? { kind: 'scanned_image', scannerMeta } : undefined,
     };
     setRows((prev) => [...prev, row]);
     startUpload(row);
@@ -267,19 +294,25 @@ export function Upload(): JSX.Element {
     setReviewBlob(blob);
   }
 
-  function onScannerConfirm(file: File): void {
+  function onScannerConfirm(result: ScannerConfirmation): void {
     setReviewBlob(null);
+    const scannerMeta = JSON.stringify({
+      quad: result.quad,
+      enhanceMode: result.enhanceMode,
+      sourceSize: result.sourceSize,
+    });
     if (!batchActive) {
-      enqueueScan(file);
+      enqueueScan(result.file, scannerMeta);
       return;
     }
     // Hand the file off to ScanBatch via state instead of an imperative
     // ref — see `pendingBatchPage` for why.
     pendingSeq.current += 1;
     setPendingBatchPage({
-      file,
+      file: result.file,
       replaceIndex: retakeIndex,
       seq: pendingSeq.current,
+      scannerMeta,
     });
     if (retakeIndex !== null) setRetakeIndex(null);
   }
@@ -307,14 +340,14 @@ export function Upload(): JSX.Element {
     setCameraOpen(true);
   }
 
-  function onBatchSubmit(files: File[]): void {
+  function onBatchSubmit(pages: Array<{ file: File; scannerMeta?: string }>): void {
     // Convert the batched pages into upload rows with kind=scanned_image
     // and orderIndex matching their position in the review-confirmed
     // order. Each page is one tus upload — the 28.9 conversion job
     // re-assembles them into a single PDF on the server.
     setBatchActive(false);
-    for (let i = 0; i < files.length; i++) {
-      const f = files[i]!;
+    for (let i = 0; i < pages.length; i++) {
+      const { file: f, scannerMeta } = pages[i]!;
       if (f.size > PER_FILE_CAP_BYTES) {
         setRows((prev) => [
           ...prev,
@@ -335,7 +368,11 @@ export function Upload(): JSX.Element {
         bytesSent: 0,
         bytesTotal: f.size,
         status: 'queued',
-        extraMeta: { kind: 'scanned_image', orderIndex: i },
+        extraMeta: {
+          kind: 'scanned_image',
+          orderIndex: i,
+          ...(scannerMeta ? { scannerMeta } : {}),
+        },
       };
       setRows((prev) => [...prev, row]);
       startUpload(row);

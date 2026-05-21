@@ -39,6 +39,7 @@ export function IntakeForm(): JSX.Element {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [message, setMessage] = useState('');
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,10 +51,20 @@ export function IntakeForm(): JSX.Element {
   const emailLooksValid = email.length === 0 || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const phoneLooksValid = phone.length === 0 || /^[\d\s+()\-.]{7,32}$/.test(phone.trim());
   const contactPresent = email.trim().length > 0 || phone.trim().length > 0;
+  // Server caps at 2000 chars; we mirror the limit here so the user gets
+  // immediate feedback instead of a round-trip 400.
+  const MESSAGE_MAX = 2000;
+  const messageOk = message.length <= MESSAGE_MAX;
   const turnstileRequired = Boolean(boot.turnstileSiteKey);
   const turnstileOk = !turnstileRequired || Boolean(turnstileToken);
   const canSubmit =
-    !submitting && nameOk && emailLooksValid && phoneLooksValid && contactPresent && turnstileOk;
+    !submitting &&
+    nameOk &&
+    emailLooksValid &&
+    phoneLooksValid &&
+    contactPresent &&
+    messageOk &&
+    turnstileOk;
 
   useTurnstileWidget({
     siteKey: boot.turnstileSiteKey,
@@ -72,6 +83,7 @@ export function IntakeForm(): JSX.Element {
         name: name.trim(),
         email: email.trim() || undefined,
         phone: phone.trim() || undefined,
+        message: message.trim() || undefined,
         turnstileToken: turnstileToken ?? undefined,
       });
       // Stash the token in sessionStorage keyed by sessionId so the upload
@@ -203,6 +215,30 @@ export function IntakeForm(): JSX.Element {
               Enter at least one — an email address or a phone number — so we can confirm receipt.
             </div>
           )}
+
+          <label className="block">
+            <span className="text-sm text-slate-700">
+              Message <span className="text-slate-400">(optional)</span>
+            </span>
+            <textarea
+              rows={4}
+              maxLength={MESSAGE_MAX}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              className="input"
+              placeholder="Anything we should know about these files?"
+              aria-describedby="message-help"
+            />
+            <div
+              id="message-help"
+              className="text-xs text-slate-500 flex items-center justify-between mt-1"
+            >
+              <span>Shown to staff with your files.</span>
+              <span aria-live="polite">
+                {message.length}/{MESSAGE_MAX}
+              </span>
+            </div>
+          </label>
 
           {/*
             Turnstile widget mount-point. The lazy-loader hook above injects

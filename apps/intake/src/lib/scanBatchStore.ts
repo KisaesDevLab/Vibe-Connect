@@ -20,11 +20,16 @@ const STORE = 'scan-batches';
 export interface ScanPage {
   /** Random per-page id; survives reorders. */
   id: string;
-  /** Original captured/cropped JPEG. The upload pipe consumes this as a
-   *  File once the user clicks Done. */
+  /** Original captured photo (now uncropped — the perspective warp runs
+   *  server-side per `apps/server/src/services/intakeScannerWarp.ts`). */
   blob: Blob;
   /** Small data URL rendered in the thumbnail grid. */
   thumb: string;
+  /** JSON-stringified `{quad, enhanceMode, sourceSize}` payload from
+   *  ScannerReview. Absent when the page came from the OS camera. Kept
+   *  alongside the blob so reorder + retake operations preserve the
+   *  right warp inputs per page when the upload finally fires. */
+  scannerMeta?: string;
   /** Wall-clock when captured — informational only. */
   capturedAt: number;
 }

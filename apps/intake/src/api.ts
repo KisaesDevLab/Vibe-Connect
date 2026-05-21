@@ -39,6 +39,10 @@ export interface CreateSessionBody {
   name: string;
   email?: string;
   phone?: string;
+  /** Optional free-text note. Server caps at 2000 chars, trims, and
+   *  encrypts at rest under the firm's intake key. Rendered on the PDF
+   *  cover page and in the staff detail view. */
+  message?: string;
   turnstileToken?: string;
 }
 

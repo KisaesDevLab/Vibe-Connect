@@ -166,6 +166,7 @@ export const api = {
         id: string;
         staffId: string;
         staffDisplayName: string | null;
+        clientName: string | null;
         status: 'open' | 'finalized' | 'expired' | 'abandoned';
         source: 'public' | 'staff_link';
         contactMethod: 'email' | 'sms' | 'both';
@@ -200,6 +201,7 @@ export const api = {
         clientName: string | null;
         clientEmail: string | null;
         clientPhone: string | null;
+        clientMessage: string | null;
         linkedClient: { id: string; displayName: string } | null;
         linkedAt: string | null;
       };
