@@ -4921,7 +4921,6 @@ export function AdminIntakeSessions(): JSX.Element {
                 />
               </th>
               <th className="p-2">Received</th>
-              <th className="p-2">Client</th>
               <th className="p-2">Staff</th>
               <th className="p-2">Status</th>
               <th className="p-2">Files</th>
@@ -4968,13 +4967,6 @@ export function AdminIntakeSessions(): JSX.Element {
                     <span className="ml-2 text-[10px] uppercase text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
                       notify failed
                     </span>
-                  )}
-                </td>
-                <td className="p-2 text-slate-700">
-                  {s.clientName?.trim() ? (
-                    s.clientName
-                  ) : (
-                    <span className="text-slate-400 italic">unknown</span>
                   )}
                 </td>
                 <td className="p-2 text-slate-600">{s.staffDisplayName ?? '—'}</td>
@@ -5207,14 +5199,6 @@ function AdminIntakeDetail({
                 <dd className="col-span-2">{detailQ.data.session.clientPhone ?? '—'}</dd>
               </dl>
             </section>
-            {detailQ.data.session.clientMessage?.trim() && (
-              <section className="space-y-2">
-                <h4 className="font-medium text-slate-900">Message from client</h4>
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800 whitespace-pre-wrap break-words">
-                  {detailQ.data.session.clientMessage}
-                </div>
-              </section>
-            )}
             <section className="space-y-2">
               <h4 className="font-medium text-slate-900">Linked Connect client</h4>
               {detailQ.data.session.linkedClient ? (
