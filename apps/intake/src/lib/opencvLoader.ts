@@ -31,21 +31,54 @@ export async function ensureOpenCV(): Promise<unknown> {
     // unknown to extract the default export's `cv` namespace.
     const mod = (await import('@techstark/opencv-js')) as unknown;
     const cv = (mod as { default?: unknown }).default ?? mod;
-    // The package returns once the WASM runtime is initialised, but some
-    // builds resolve before `Mat`/`imread` are wired up. Wait for the
-    // runtime-initialised flag if it's exposed; otherwise trust the
-    // import promise. Either way, set window.cv so jscanify can find it.
-    const maybeReady = (cv as { onRuntimeInitialized?: unknown }).onRuntimeInitialized;
-    if (typeof maybeReady === 'function') {
-      // Some builds expose `onRuntimeInitialized` as a settable hook
-      // rather than a Promise. If it's already-initialised (Mat exists),
-      // skip the wait.
-      if (!(cv as { Mat?: unknown }).Mat) {
-        await new Promise<void>((resolve) => {
-          (cv as { onRuntimeInitialized: () => void }).onRuntimeInitialized = () => resolve();
-        });
+    // Wait for the WASM runtime to be ready. Three correctness traps
+    // we have to thread:
+    //
+    //   1. RACE: the prior version did `if (!cv.Mat) { await new
+    //      Promise(r => cv.onRuntimeInitialized = () => r()) }`. On
+    //      iOS Safari the WASM runtime frequently initialises BETWEEN
+    //      the Mat check and the hook assignment — the OpenCV.js
+    //      default `onRuntimeInitialized` (a no-op) has already fired
+    //      and OUR replacement hook never runs. Promise never
+    //      resolves; the ScannerReview "Loading…" screen hangs
+    //      forever. This was the user-reported freeze "after taking
+    //      the picture it freezes at loading" on iOS.
+    //
+    //      Fix: set the hook FIRST, then re-check Mat inside the
+    //      promise body. If Mat exists by that point, the runtime is
+    //      ready and we resolve directly. Otherwise the hook fires
+    //      when the runtime finishes. Either branch terminates.
+    //
+    //   2. NO-HOOK BUILDS: a future opencv-js build might not expose
+    //      onRuntimeInitialized at all. The Mat-poll fast path covers
+    //      that — if Mat is already there, we never need the hook.
+    //
+    //   3. WEDGED INIT: even with the race fixed, some Safari versions
+    //      have failed WASM compilations that leave the runtime in a
+    //      half-initialised state where neither the hook fires nor
+    //      Mat materialises. Backstop with a 10s timeout that rejects;
+    //      scannerMath.tryAutoDetect catches and the user gets the
+    //      default 8%-inset quad so manual corner-drag still works.
+    const OPENCV_INIT_TIMEOUT_MS = 10_000;
+    await new Promise<void>((resolve, reject) => {
+      const cvMut = cv as { onRuntimeInitialized?: () => void; Mat?: unknown };
+      const timer = setTimeout(
+        () => reject(new Error(`opencv_init_timeout_after_${OPENCV_INIT_TIMEOUT_MS}ms`)),
+        OPENCV_INIT_TIMEOUT_MS,
+      );
+      cvMut.onRuntimeInitialized = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      // Set the hook FIRST, then poll once. Mat being present here
+      // means the runtime fired before us (or never needed to fire);
+      // resolve immediately and don't wait for a hook that will
+      // never re-fire.
+      if (cvMut.Mat) {
+        clearTimeout(timer);
+        resolve();
       }
-    }
+    });
     (window as unknown as { cv: unknown }).cv = cv;
     return cv;
   })().catch((err) => {
