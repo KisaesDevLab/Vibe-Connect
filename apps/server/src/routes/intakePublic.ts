@@ -283,6 +283,11 @@ const sessionCreateLimiter = rateLimit({
 // intake_card_title/bio caps used elsewhere (60/280). Name limit is the
 // "120 char" line in §28.4.
 const NAME_MAX = 120;
+// Free-text "message from client" cap. 2000 chars is plenty for a
+// CPA-firm intake note ("here are my 1099s for Q3, plus the K-1 from
+// the LLC, let me know if you need the brokerage statements too") and
+// short enough that the PDF cover page can render it without paging.
+const CLIENT_MESSAGE_MAX = 2000;
 
 const sessionCreateSchema = z
   .object({
@@ -317,6 +322,18 @@ const sessionCreateSchema = z
       .max(32)
       .regex(/^[\d\s+()\-.]+$/, 'phone_format')
       .optional(),
+    // Optional free-text note. Trimmed; empty becomes undefined so the
+    // DB column stays NULL (we don't want to store "" and have the cover
+    // page render an empty block).
+    message: z
+      .string()
+      .max(CLIENT_MESSAGE_MAX)
+      .optional()
+      .transform((s) => {
+        if (!s) return undefined;
+        const trimmed = s.trim();
+        return trimmed.length > 0 ? trimmed : undefined;
+      }),
     turnstileToken: z.string().max(4096).optional(),
   })
   .strict()
@@ -536,6 +553,7 @@ intakePublicRouter.post(
     const nameEnc = await encryptField(data.name);
     const emailEnc = effectiveEmail ? await encryptField(effectiveEmail) : null;
     const phoneEnc = normalisedPhone ? await encryptField(normalisedPhone) : null;
+    const messageEnc = data.message ? await encryptField(data.message) : null;
 
     // Deterministic hashes for staff search (Phase 28.11). HKDF subkey,
     // independent of the intake content key — survives 28.16 rotation.
@@ -561,6 +579,7 @@ intakePublicRouter.post(
       client_name_enc: nameEnc,
       client_email_enc: emailEnc,
       client_phone_enc: phoneEnc,
+      client_message_enc: messageEnc,
       client_name_lower_hash: nameLowerHash,
       client_email_hash: emailHash,
       client_phone_hash: phoneHash,

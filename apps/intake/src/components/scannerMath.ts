@@ -1,23 +1,23 @@
-// Phase 28.7 — perspective transform + enhancement math for the scanner.
+// Phase 28.7 — auto-detect helpers + reference math for the in-browser
+// scanner.
 //
-// We intentionally do NOT depend on OpenCV.js at runtime: it's ~7 MB and
-// would blow the build plan's scanner-chunk size budget, and a CPA-firm
-// appliance running in TLS-internal mode often has no path to a public
-// CDN. jscanify (the suggested auto-detect library in the build plan) is
-// a thin wrapper around OpenCV — it stays in package.json so an operator
-// can vendor OpenCV alongside the appliance later if they want the
-// 8/10-auto-crop convenience, but the scanner works without it.
+// Originally this module ALSO performed the perspective warp + enhance
+// in-browser before upload. iOS Safari's ~250 MB JS heap couldn't carry
+// the source + scratch + output ImageData buffers reliably on Pro-model
+// camera sensors, so the warp has moved to the server (see
+// `apps/server/src/services/intakeScannerWarp.ts`).
 //
-// What's in this file:
-//   - `solvePerspective(src, dst)` — compute the 3x3 homography matrix that
-//     maps four source points to four destination points via the
-//     standard 8-unknown linear system. ~30 lines of Gaussian elimination.
-//   - `warpPerspective(src, srcQuad, outW, outH)` — sample the source canvas
-//     through the homography to produce a deskewed rectangular output.
-//     Per-pixel JS, ~200-500ms for a 2000×2828 result on a 2022 mid-tier
-//     Android (within the 800ms detection + 400ms transform budget the
-//     build plan calls for, combined).
-//   - `enhance(canvas, mode)` — color / grayscale / B&W canvas operation.
+// What stays here:
+//   - `defaultQuad` / `quadOutputSize` / types (used by ScannerReview
+//     for the corner-drag overlay and serialised payload).
+//   - `tryAutoDetect` — lazy-loaded OpenCV.js + jscanify corner-finder.
+//     Auto-detect runs against the DOWNSAMPLED preview image, not the
+//     full-resolution source, so it has none of the heap pressure of the
+//     old in-browser warp.
+//
+// `solvePerspective` / `warpPerspective` / `enhance` remain exported for
+// reference parity with the Node port — keep them in sync if you change
+// one to change the other. They are NOT called by any client code path.
 
 export interface Point {
   x: number;

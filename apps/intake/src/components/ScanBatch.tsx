@@ -33,8 +33,10 @@ import {
  */
 
 export interface PendingPage {
-  /** The cropped + enhanced JPEG handed back from ScannerReview, or the
-   *  raw OS-camera JPEG from the `<input capture>` fallback path. */
+  /** The original captured JPEG (not yet warped — the perspective
+   *  transform now happens server-side, see
+   *  apps/server/src/services/intakeScannerWarp.ts). The OS-camera
+   *  fallback path also lands here with `scannerMeta` undefined. */
   file: File;
   /** Non-null when the parent asked for a retake of page N — we replace
    *  rather than append, preserving the original order_index. */
@@ -44,6 +46,11 @@ export interface PendingPage {
    *  consecutive captures of the same File reference (rare but possible)
    *  still fire the effect. */
   seq: number;
+  /** JSON-stringified `{quad, enhanceMode, sourceSize}` from
+   *  ScannerReview. Absent when the page came from the OS camera (no
+   *  corner-drag UI). The batch list keeps this paired with the blob so
+   *  reorder/retake/submit preserves the right warp inputs per page. */
+  scannerMeta?: string;
 }
 
 export interface ScanBatchProps {
@@ -63,10 +70,10 @@ export interface ScanBatchProps {
   /** Same idea but the parent should reopen the camera in "retake page N"
    *  mode; the new pendingPage will carry replaceIndex = N. */
   onRetakePage: (index: number) => void;
-  /** User confirmed the batch — emit ordered File[] (page 1 first). The
-   *  parent clears its review state and calls back into the upload pipe
-   *  with kind='scanned_image' metadata. */
-  onSubmit: (files: File[]) => void;
+  /** User confirmed the batch — emit ordered pages (page 1 first). Each
+   *  page carries the renamed File + the optional scannerMeta payload
+   *  that the upload pipe forwards to the server as tus metadata. */
+  onSubmit: (pages: Array<{ file: File; scannerMeta?: string }>) => void;
   /** User discarded the batch (after confirmation) — parent closes the
    *  batch view; the IDB record is already cleared. */
   onDiscard: () => void;
@@ -110,7 +117,7 @@ export function ScanBatch({
     void saveScanBatch(sessionId, pages);
   }, [sessionId, pages, hydrated]);
 
-  const addPage = useCallback(async (file: File): Promise<void> => {
+  const addPage = useCallback(async (file: File, scannerMeta?: string): Promise<void> => {
     const thumb = await makeThumbnail(file);
     setPages((prev) => [
       ...prev,
@@ -118,25 +125,30 @@ export function ScanBatch({
         id: randomId(),
         blob: file,
         thumb,
+        scannerMeta,
         capturedAt: Date.now(),
       },
     ]);
   }, []);
 
-  const replacePage = useCallback(async (index: number, file: File): Promise<void> => {
-    const thumb = await makeThumbnail(file);
-    setPages((prev) => {
-      const next = prev.slice();
-      if (index < 0 || index >= next.length) return prev;
-      next[index] = {
-        id: next[index]!.id,
-        blob: file,
-        thumb,
-        capturedAt: Date.now(),
-      };
-      return next;
-    });
-  }, []);
+  const replacePage = useCallback(
+    async (index: number, file: File, scannerMeta?: string): Promise<void> => {
+      const thumb = await makeThumbnail(file);
+      setPages((prev) => {
+        const next = prev.slice();
+        if (index < 0 || index >= next.length) return prev;
+        next[index] = {
+          id: next[index]!.id,
+          blob: file,
+          thumb,
+          scannerMeta,
+          capturedAt: Date.now(),
+        };
+        return next;
+      });
+    },
+    [],
+  );
 
   // Consume the parent's pendingPage handoff once hydration completes.
   // Guarded on `hydrated` so we don't append a capture that arrives
@@ -148,13 +160,13 @@ export function ScanBatch({
     if (!hydrated || !pendingPage) return;
     if (lastConsumedSeq.current === pendingPage.seq) return;
     lastConsumedSeq.current = pendingPage.seq;
-    const { file, replaceIndex } = pendingPage;
+    const { file, replaceIndex, scannerMeta } = pendingPage;
     void (async () => {
       try {
         if (replaceIndex !== null) {
-          await replacePage(replaceIndex, file);
+          await replacePage(replaceIndex, file, scannerMeta);
         } else {
-          await addPage(file);
+          await addPage(file, scannerMeta);
         }
       } finally {
         onPendingConsumed();
@@ -180,15 +192,34 @@ export function ScanBatch({
   }
 
   async function submit(): Promise<void> {
-    const files = pages.map((p, i) => {
+    const out = pages.map((p, i) => {
       const idx = String(i + 1).padStart(3, '0');
-      return new File([p.blob], `scan-page-${idx}.jpg`, {
-        type: p.blob.type || 'image/jpeg',
+      const type = p.blob.type || 'image/jpeg';
+      const ext = mimeToExt(type);
+      const file = new File([p.blob], `scan-page-${idx}.${ext}`, {
+        type,
         lastModified: p.capturedAt,
       });
+      return { file, scannerMeta: p.scannerMeta };
     });
     await clearScanBatch(sessionId);
-    onSubmit(files);
+    onSubmit(out);
+  }
+
+  function mimeToExt(mime: string): string {
+    switch (mime.toLowerCase()) {
+      case 'image/png':
+        return 'png';
+      case 'image/webp':
+        return 'webp';
+      case 'image/heic':
+      case 'image/heif':
+        return 'heic';
+      case 'image/jpeg':
+      case 'image/jpg':
+      default:
+        return 'jpg';
+    }
   }
 
   async function discardConfirmed(): Promise<void> {

@@ -5,10 +5,7 @@ import {
   type Point,
   type Quad,
   defaultQuad,
-  enhance,
-  quadOutputSize,
   tryAutoDetect,
-  warpPerspective,
 } from './scannerMath.js';
 
 /**
@@ -17,33 +14,43 @@ import {
  *
  * Flow:
  *   1. Receive the captured blob from CameraModal.
- *   2. Load into an <img>, render onto a display canvas at a manageable
- *      preview size.
+ *   2. Load into an <img>, render to a manageable preview size.
  *   3. Try `tryAutoDetect` (only runs if OpenCV.js is preloaded — see
  *      scannerMath.ts header for the rationale). Falls back to a default
  *      8%-inset quad otherwise.
  *   4. Render 4 draggable corner handles (≥44px touch targets) over the
  *      preview. Each handle's CSS position is in display-canvas pixels;
- *      we re-scale to original-image pixels when computing the transform.
+ *      we re-scale to natural-image pixels when serialising the quad for
+ *      the server.
  *   5. Color / Grayscale (default) / B&W toggle.
- *   6. Confirm → warpPerspective at output dimensions (≤2000px long edge,
- *      `quadOutputSize`), enhance, `canvas.toBlob('image/jpeg', 0.85)`,
- *      handed back to the parent as a File.
- *
- * Performance: warpPerspective is per-pixel JS. For a 2000×2828 result
- * on a 2022 mid-tier Android we expect 200–500 ms. The user sees a
- * "Processing…" overlay during the call so the UI doesn't appear frozen.
+ *   6. Confirm → wrap the ORIGINAL captured blob in a File + emit the
+ *      quad in natural-image coords + the enhance mode. The conversion
+ *      worker on the server performs the perspective warp and enhance
+ *      during PDF assembly. Previously this step warped in-browser; on
+ *      iOS Safari the ImageData stack OOMed for Pro-model camera
+ *      sensors. Server-side moves the work off the device entirely.
  */
+
+export interface ScannerConfirmation {
+  /** The original captured photo, untouched. */
+  file: File;
+  /** Quad in NATURAL-image pixel coordinates (the upload payload). */
+  quad: Quad;
+  /** Natural-image dimensions, used by the server to sanity-check the
+   *  quad against the file's actual decoded size. */
+  sourceSize: { w: number; h: number };
+  /** User's choice of enhancement; applied server-side. */
+  enhanceMode: EnhanceMode;
+}
 
 export interface ScannerReviewProps {
   blob: Blob;
-  onConfirm: (file: File) => void;
+  onConfirm: (result: ScannerConfirmation) => void;
   onRetake: () => void;
   onCancel: () => void;
 }
 
 const DISPLAY_MAX = 800; // px on the long edge — keep DOM nodes light.
-const OUTPUT_MAX = 2000; // px on the long edge, per build plan §28.7.
 const HANDLE_PX = 44; // touch-target floor, per Apple HIG + WCAG.
 
 export function ScannerReview({
@@ -115,33 +122,34 @@ export function ScannerReview({
     window.addEventListener('pointerup', up);
   }
 
-  async function confirm(): Promise<void> {
+  function confirm(): void {
     if (!imgRef.current || !quad || !displaySize || !naturalSize) return;
     setProcessing(true);
     setError(null);
     try {
-      // Scale display-quad back into natural-image coords for the actual
-      // warp. The transform reads the full-resolution image so the output
-      // doesn't get a second resampling penalty.
+      // Scale display-quad back into natural-image coordinates and hand
+      // the original blob + quad + mode off to the parent. The actual
+      // perspective warp + enhance happens server-side during the PDF
+      // conversion ticker (see services/intakeScannerWarp.ts). Keeping
+      // the warp off the device fixes the iOS Safari OOM that the
+      // 2400 px source clamp could only paper over.
       const k = naturalSize.w / displaySize.w;
       const nat: Quad = scaleQuad(quad, k);
-      const out = quadOutputSize(nat, OUTPUT_MAX);
-      const warped = warpPerspective(imgRef.current, nat, out.w, out.h);
-      const enhanced = enhance(warped, mode);
-      const blobOut = await new Promise<Blob | null>((res) => {
-        enhanced.toBlob((b) => res(b), 'image/jpeg', 0.85);
-      });
-      if (!blobOut) {
-        setError('Could not encode the processed image.');
-        setProcessing(false);
-        return;
-      }
       const stamp = String(Date.now()).slice(-6);
-      const f = new File([blobOut], `scan-${stamp}.jpg`, {
-        type: 'image/jpeg',
+      // Preserve the original blob's MIME type so the server can decode
+      // HEIC, PNG, etc. via sharp without sniffing from the extension.
+      const type = blob.type || 'image/jpeg';
+      const ext = mimeToExt(type);
+      const file = new File([blob], `scan-${stamp}.${ext}`, {
+        type,
         lastModified: Date.now(),
       });
-      onConfirm(f);
+      onConfirm({
+        file,
+        quad: nat,
+        sourceSize: naturalSize,
+        enhanceMode: mode,
+      });
     } catch (err) {
       setError(formatErr(err));
       setProcessing(false);
@@ -328,6 +336,22 @@ function humanCorner(c: keyof Quad): string {
     .replace(/([A-Z])/g, ' $1')
     .toLowerCase()
     .trim();
+}
+
+function mimeToExt(mime: string): string {
+  switch (mime.toLowerCase()) {
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    case 'image/heic':
+    case 'image/heif':
+      return 'heic';
+    case 'image/jpeg':
+    case 'image/jpg':
+    default:
+      return 'jpg';
+  }
 }
 
 function formatErr(err: unknown): string {

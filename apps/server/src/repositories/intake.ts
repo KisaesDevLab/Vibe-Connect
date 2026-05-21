@@ -80,6 +80,10 @@ export interface IntakeSessionRow {
   client_name_enc: Buffer;
   client_email_enc: Buffer | null;
   client_phone_enc: Buffer | null;
+  /** Optional free-text message from the client. Encrypted with the intake
+   *  key (libsodium secretbox); no companion search hash because messages
+   *  are free-form. NULL when the client didn't fill the field. */
+  client_message_enc: Buffer | null;
   client_name_lower_hash: string | null;
   client_email_hash: string | null;
   client_phone_hash: string | null;
@@ -110,6 +114,10 @@ export interface IntakeFileRow {
   kind: IntakeFileKind;
   order_index: number;
   virus_scan_status: IntakeVirusScanStatus;
+  // JSONB carrying the four-corner quad + enhance mode for server-side
+  // warp. NULL for regular uploads, for OS-camera passthroughs, and for
+  // legacy rows uploaded before the migration. See `intakeScannerWarp.ts`.
+  scanner_meta: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -383,6 +391,7 @@ export interface IntakeSessionInsert {
   client_name_enc: Buffer;
   client_email_enc: Buffer | null;
   client_phone_enc: Buffer | null;
+  client_message_enc?: Buffer | null;
   client_name_lower_hash: string | null;
   client_email_hash: string | null;
   client_phone_hash: string | null;
@@ -439,6 +448,7 @@ export const intakeSessionsRepo = {
         client_name_enc: input.client_name_enc,
         client_email_enc: input.client_email_enc,
         client_phone_enc: input.client_phone_enc,
+        client_message_enc: input.client_message_enc ?? null,
         client_name_lower_hash: input.client_name_lower_hash,
         client_email_hash: input.client_email_hash,
         client_phone_hash: input.client_phone_hash,
@@ -511,6 +521,7 @@ export interface IntakeFileInsert {
   kind: IntakeFileKind;
   order_index?: number;
   virus_scan_status?: IntakeVirusScanStatus;
+  scanner_meta?: Record<string, unknown> | null;
 }
 
 export const intakeFilesRepo = {
@@ -548,6 +559,13 @@ export const intakeFilesRepo = {
         kind: input.kind,
         order_index: input.order_index ?? 0,
         virus_scan_status: input.virus_scan_status ?? 'pending',
+        // pg's JSONB column accepts a serialised string OR an object; we
+        // pass through whatever the caller assembled. NULL when absent so
+        // the column stays NULLable rather than {}.
+        scanner_meta:
+          input.scanner_meta === undefined
+            ? null
+            : (JSON.stringify(input.scanner_meta) as unknown as never),
       })
       .returning('*');
     return row!;

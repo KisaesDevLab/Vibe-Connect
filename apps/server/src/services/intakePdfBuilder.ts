@@ -41,6 +41,7 @@ import {
 } from '../repositories/intake.js';
 import { attachmentStorage } from './attachmentStorage.js';
 import { decryptBufferStreaming, decryptField } from './intakeCrypto.js';
+import { parseScannerMeta, warpAndEnhance } from './intakeScannerWarp.js';
 
 // A4 portrait in PDF user units (1/72 inch). 595×842 = 210×297mm.
 const A4_W = 595;
@@ -111,6 +112,11 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
   const clientPhone = session.client_phone_enc
     ? await decryptField(session.client_phone_enc)
     : null;
+  // Optional client-typed note. Decrypt failures fall back to null so a
+  // mangled blob doesn't poison the whole cover-page render.
+  const clientMessage = session.client_message_enc
+    ? await decryptField(session.client_message_enc).catch(() => null)
+    : null;
 
   const pdfDoc = await PDFDocument.create();
   const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -122,6 +128,7 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
       clientName,
       clientEmail,
       clientPhone,
+      clientMessage,
       finalizedAt: session.finalized_at ?? session.created_at,
       staffName: staff?.display_name ?? '(unknown staff)',
       staffTitle: staff?.intake_card_title ?? null,
@@ -139,9 +146,37 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
     try {
       const ct = await attachmentStorage().get(img.stored_path);
       const plain = await decryptBufferStreaming(ct);
-      // sharp.rotate() applies EXIF orientation; .jpeg() forces the
-      // output codec since pdf-lib's embed path is JPEG-or-PNG only.
-      const jpeg = await sharp(plain).rotate().jpeg({ quality: 85 }).toBuffer();
+      // Two paths converge here:
+      //
+      //   1. Rows with `scanner_meta` populated — uploaded by the in-
+      //      browser scanner under the server-side-warp protocol. We run
+      //      the perspective transform + enhance step (formerly done in
+      //      iOS Safari's tight heap) before embedding.
+      //   2. Rows without — regular image uploads, OS-native camera
+      //      passthroughs, and legacy scans uploaded before the
+      //      migration. Same EXIF-rotate-then-encode path as before.
+      //
+      // If the warp throws (degenerate quad, channel-count mismatch,
+      // sharp decode failure) we fall back to the legacy path rather
+      // than dropping the page — the user still gets their photo in the
+      // PDF, just un-cropped.
+      let jpeg: Buffer;
+      const meta = parseScannerMeta(img.scanner_meta);
+      if (meta) {
+        try {
+          const out = await warpAndEnhance(plain, meta);
+          jpeg = out.jpeg;
+        } catch (warpErr) {
+          logger.warn('intake.pdf_warp_failed_fallback', {
+            sessionId,
+            fileId: img.id,
+            msg: warpErr instanceof Error ? warpErr.message : String(warpErr),
+          });
+          jpeg = await sharp(plain).rotate().jpeg({ quality: 85 }).toBuffer();
+        }
+      } else {
+        jpeg = await sharp(plain).rotate().jpeg({ quality: 85 }).toBuffer();
+      }
       const embedded = await pdfDoc.embedJpg(jpeg);
       addImagePage(pdfDoc, embedded);
     } catch (err) {
@@ -163,6 +198,7 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
       clientName,
       clientEmail,
       clientPhone,
+      clientMessage,
       finalizedAt: session.finalized_at ?? session.created_at,
       staffName: staff?.display_name ?? '(unknown staff)',
       staffTitle: staff?.intake_card_title ?? null,
@@ -186,6 +222,7 @@ interface CoverFields {
   clientName: string;
   clientEmail: string | null;
   clientPhone: string | null;
+  clientMessage: string | null;
   finalizedAt: string;
   staffName: string;
   staffTitle: string | null;
@@ -267,6 +304,52 @@ function addCoverPage(
   // whole id (which carries the upload-token JTI by extension).
   const ref = createHash('sha256').update(fields.sessionId).digest('hex').slice(0, 8);
   drawField('Submission reference', ref);
+
+  // Client-typed message. Rendered above the manifests so the staff
+  // recipient reads the note before scanning file lists. Falls back to
+  // skipping the section entirely when empty — no "(none)" placeholder,
+  // since the field is optional and an absent note isn't a meaningful
+  // signal.
+  if (fields.clientMessage && fields.clientMessage.trim()) {
+    y -= 4;
+    page.drawText('Message from client', {
+      x: COVER_MARGIN,
+      y: y - COVER_LABEL_SIZE,
+      size: COVER_LABEL_SIZE,
+      font: helvBold,
+    });
+    y -= COVER_LABEL_SIZE + 4;
+    // Wrap user-entered text. Honour intentional newlines (a client who
+    // typed "Item 1\nItem 2" should see them as separate lines) and
+    // word-wrap each segment at the same width used for field values.
+    for (const segment of fields.clientMessage.replace(/\r\n/g, '\n').split('\n')) {
+      const lines = segment.length === 0 ? [''] : wrap(segment, 86);
+      for (const line of lines) {
+        if (y < COVER_MARGIN + 80) {
+          // Stop before colliding with the file manifests. The full
+          // message is still available in the staff detail view; the
+          // cover page is a summary surface.
+          page.drawText('…', {
+            x: COVER_MARGIN,
+            y: y - 10,
+            size: 10,
+            font: helv,
+          });
+          y -= 14;
+          break;
+        }
+        page.drawText(line, {
+          x: COVER_MARGIN,
+          y: y - 10,
+          size: 10,
+          font: helv,
+        });
+        y -= 14;
+      }
+      if (y < COVER_MARGIN + 80) break;
+    }
+    y -= COVER_LINE_GAP;
+  }
 
   // Scanned-pages manifest.
   y -= 8;

@@ -130,6 +130,7 @@ intakeAdminRouter.get(
           finalized_at: string | null;
           notification_failed: boolean;
           linked_connect_client_id: string | null;
+          client_name_enc: Buffer | null;
           file_count: string | null;
           total_bytes: string | null;
           archived_at: string | null;
@@ -146,6 +147,10 @@ intakeAdminRouter.get(
         's.finalized_at',
         's.notification_failed',
         's.linked_connect_client_id',
+        // Pull the encrypted client name so the list view can show who
+        // sent each submission. Decryption happens server-side below; a
+        // single audit row covers the whole page rather than per-row.
+        's.client_name_enc',
         db.raw('COALESCE(f."file_count", 0) as file_count'),
         db.raw('COALESCE(f."total_bytes", 0) as total_bytes'),
         'a.archived_at',
@@ -208,11 +213,44 @@ intakeAdminRouter.get(
     const totalRow = await countQ.count<{ count: string }>('* as count').first();
     const total = Number(totalRow?.count ?? 0);
 
-    res.json({
-      sessions: rows.map((r) => ({
+    // Decrypt client names for every row in the page. Bulk-audit ONE row
+    // for the listing (action `intake.sessions.list_decrypted`) rather
+    // than per-session — every page-load auditing N rows would dwarf the
+    // useful audit signal. The per-session detail view still writes
+    // `intake.session.decrypted_on_view` on individual opens.
+    const sessions: Array<{
+      id: string;
+      staffId: string;
+      staffDisplayName: string | null;
+      clientName: string | null;
+      status: string;
+      source: string;
+      contactMethod: string;
+      createdAt: string;
+      finalizedAt: string | null;
+      notificationFailed: boolean;
+      linkedConnectClientId: string | null;
+      fileCount: number;
+      totalBytes: number;
+      archivedAt: string | null;
+      autoDeleteAt: string | null;
+    }> = [];
+    let decryptedCount = 0;
+    for (const r of rows) {
+      let clientName: string | null = null;
+      if (r.client_name_enc) {
+        try {
+          clientName = await decryptField(r.client_name_enc);
+          decryptedCount++;
+        } catch {
+          clientName = null;
+        }
+      }
+      sessions.push({
         id: r.id,
         staffId: r.staff_id,
         staffDisplayName: r.staff_display_name,
+        clientName,
         status: r.status,
         source: r.source,
         contactMethod: r.contact_method,
@@ -224,11 +262,28 @@ intakeAdminRouter.get(
         totalBytes: Number(r.total_bytes ?? 0),
         archivedAt: r.archived_at,
         autoDeleteAt: r.auto_delete_at,
-      })),
-      page: q.page,
-      pageSize: q.pageSize,
-      total,
-    });
+      });
+    }
+    if (decryptedCount > 0) {
+      await auditRepo.write({
+        actorUserId: req.session.userId ?? null,
+        action: 'intake.sessions.list_decrypted',
+        targetType: 'intake_session',
+        // No single target — use a sentinel "list" id. The details JSON
+        // carries the count + filters that produced the listing so an
+        // audit reader can reconstruct what the viewer saw.
+        targetId: 'list',
+        details: {
+          row_count: decryptedCount,
+          status_filter: q.status ?? null,
+          staff_filter: q.staffId ?? null,
+          page: q.page,
+        },
+        ipAddress: req.ip ?? null,
+      });
+    }
+
+    res.json({ sessions, page: q.page, pageSize: q.pageSize, total });
   }),
 );
 
@@ -270,6 +325,9 @@ intakeAdminRouter.get(
     const clientPhone = session.client_phone_enc
       ? await decryptField(session.client_phone_enc).catch(() => null)
       : null;
+    const clientMessage = session.client_message_enc
+      ? await decryptField(session.client_message_enc).catch(() => null)
+      : null;
 
     const files = await intakeFilesRepo.listBySession(sessionId);
     const pdf = await db('intake_pdfs').where({ session_id: sessionId }).first();
@@ -298,6 +356,7 @@ intakeAdminRouter.get(
         clientName,
         clientEmail,
         clientPhone,
+        clientMessage,
         linkedClient: linkedClient
           ? { id: linkedClient.id, displayName: linkedClient.display_name }
           : null,
