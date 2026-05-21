@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { env } from '../../env.js';
 import { logger } from '../../logger.js';
 import { getOrEnvFallback } from '../../services/providerSecrets.js';
+import { normalizeE164 } from '../../services/phoneFormat.js';
 
 export interface SmsSendRequest {
   to: string;
@@ -61,17 +62,45 @@ function mapSmsFetchError(provider: string, err: unknown): Error {
   return new Error(`${provider}_network_error: ${msg.slice(0, 120)}`);
 }
 
+// Single chokepoint for outbound SMS recipient cleanup. Twilio and
+// TextLink both require strict E.164 (`+<country><subscriber>`) and
+// will reject `(555) 123-4567` / `555-123-4567` / `15551234567` — the
+// shapes a US user actually types into onboarding forms. Pre-fix, the
+// Admin → Providers Test endpoint was the only path that normalised;
+// every other caller (offline-notify, intake notify, smsBridge
+// outbound, portal access code, invite, intakeAdmin send-link) passed
+// `identity.phone` / `opts.phone` raw, so a phone stored without the
+// `+` would silently fail at the provider with a generic 4xx.
+//
+// Normalising at the provider boundary makes it impossible for any
+// future caller to forget. Refusal is loud (typed error) so the
+// caller can surface a real error instead of "send returned ok but
+// nobody got the text".
+function normaliseSmsRecipient(raw: string): string {
+  const normalised = normalizeE164(raw);
+  if (!normalised) {
+    throw new Error(
+      `sms_phone_invalid: cannot normalise "${raw}" to E.164. Use +<country><digits> or a US 10/11-digit number.`,
+    );
+  }
+  return normalised;
+}
+
 class MockSms implements SmsProvider {
   name = 'mock' as const;
   async sendMessage(req: SmsSendRequest) {
+    // Normalize in mock too so the .outbox/ artefact matches what a real
+    // provider would receive — makes dev/test inspection less surprising
+    // and surfaces malformed phones the same way in dev as in prod.
+    const to = normaliseSmsRecipient(req.to);
     const outbox = path.resolve(env.outboxDir, 'sms');
     await fs.mkdir(outbox, { recursive: true });
     const id = `mock-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     await fs.writeFile(
       path.join(outbox, `${id}.json`),
-      JSON.stringify({ ...req, id, at: new Date().toISOString() }, null, 2),
+      JSON.stringify({ ...req, to, id, at: new Date().toISOString() }, null, 2),
     );
-    logger.info('sms.mock_sent', { to: req.to });
+    logger.info('sms.mock_sent', { to });
     return { id, status: 'sent' as const };
   }
   parseInbound(req: { body: unknown }): SmsInbound | null {
@@ -109,6 +138,7 @@ class MockSms implements SmsProvider {
 class TextLinkSms implements SmsProvider {
   name = 'textlink' as const;
   async sendMessage(req: SmsSendRequest) {
+    const to = normaliseSmsRecipient(req.to);
     const apiKey = await getOrEnvFallback('sms.textlink.api_key', env.textlinkApiKey);
     if (!apiKey) throw new Error('textlink_api_key_not_configured');
     let res: Response;
@@ -119,7 +149,7 @@ class TextLinkSms implements SmsProvider {
           authorization: `Bearer ${apiKey}`,
           'content-type': 'application/json',
         },
-        body: JSON.stringify({ phone_number: req.to, text: req.body }),
+        body: JSON.stringify({ phone_number: to, text: req.body }),
         signal: AbortSignal.timeout(SMS_PROVIDER_TIMEOUT_MS),
       });
     } catch (err) {
@@ -196,6 +226,7 @@ class TextLinkSms implements SmsProvider {
 class TwilioSms implements SmsProvider {
   name = 'twilio' as const;
   async sendMessage(req: SmsSendRequest) {
+    const to = normaliseSmsRecipient(req.to);
     const [accountSid, authToken, fromNumber, messagingServiceSid] = await Promise.all([
       getOrEnvFallback('sms.twilio.account_sid', env.twilioAccountSid),
       getOrEnvFallback('sms.twilio.auth_token', env.twilioAuthToken),
@@ -207,7 +238,7 @@ class TwilioSms implements SmsProvider {
     }
     const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
     const form = new URLSearchParams();
-    form.set('To', req.to);
+    form.set('To', to);
     form.set('Body', req.body);
     if (messagingServiceSid) form.set('MessagingServiceSid', messagingServiceSid);
     else if (fromNumber) form.set('From', fromNumber);

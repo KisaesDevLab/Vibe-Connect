@@ -185,6 +185,74 @@ describe('Twilio SMS', () => {
   });
 });
 
+describe('Phone normalisation at the provider boundary', () => {
+  // Pre-fix, only the Admin → Providers Test endpoint normalised E.164.
+  // Every other caller (offline-notify, intake notify, smsBridge
+  // outbound, portal access code, invite, intakeAdmin send-link) passed
+  // the phone raw, so a value stored without the `+` was silently
+  // rejected by Twilio/TextLink. Pushing normalisation into the
+  // provider boundary means every caller benefits automatically.
+  beforeEach(async () => {
+    const { db } = await import('../db/knex.js');
+    await db('firm_settings').where({ id: 1 }).update({ sms_provider: 'textlink' });
+    const { set } = await import('../services/providerSecrets.js');
+    await set('sms.textlink.api_key', 'test-tl-key', null);
+  });
+
+  it('US 10-digit gets prefixed with +1 on the wire', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    await provider.sendMessage({ to: '5551234567', body: 'hi' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.phone_number).toBe('+15551234567');
+  });
+
+  it('US-formatted "(555) 123-4567" gets normalised to E.164', async () => {
+    // The shape a CPA-firm admin actually types into the intake send-
+    // link form. intakeAdmin's zod schema lets it through because the
+    // regex permits parens / dashes; the provider boundary canonicalises.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    await provider.sendMessage({ to: '(555) 123-4567', body: 'hi' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.phone_number).toBe('+15551234567');
+  });
+
+  it('rejects garbage input with sms_phone_invalid before hitting the network', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    await expect(provider.sendMessage({ to: 'not-a-phone', body: 'hi' })).rejects.toThrow(
+      /sms_phone_invalid/,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty `to` with sms_phone_invalid', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { getSmsProvider } = await import('../bridges/sms/index.js');
+    const provider = await getSmsProvider();
+    await expect(provider.sendMessage({ to: '   ', body: 'hi' })).rejects.toThrow(
+      /sms_phone_invalid/,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 afterAll(async () => {
   const { db } = await import('../db/knex.js');
   await db.destroy();

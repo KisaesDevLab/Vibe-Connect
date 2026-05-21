@@ -25,6 +25,7 @@ import {
 } from '../services/accessCodes.js';
 import { getEmailProvider } from '../bridges/email/index.js';
 import { getSmsProvider } from '../bridges/sms/index.js';
+import { logger } from '../logger.js';
 
 export const portalRouter = Router();
 
@@ -104,9 +105,15 @@ portalRouter.post(
     // Deactivated identities silently get no code. Response stays indistinguishable
     // from the unmatched-identifier case so the status isn't leaked.
     if (identity && !identity.deactivated_at) {
+      // The send path is wrapped so a provider failure can't change the
+      // HTTP response shape (see swallow-rationale below). But silent
+      // success on a real provider error leaves operators chasing
+      // "client never got their code" tickets with nothing to go on, so
+      // we surface the failure via warn-log + audit row instead.
+      let via: 'email' | 'sms' = 'email';
       try {
         const isEmail = parsed.data.identifier.includes('@');
-        const via = isEmail || !identity.phone ? 'email' : 'sms';
+        via = isEmail || !identity.phone ? 'email' : 'sms';
         const { code } = await issueAccessCode(identity, via);
         if (via === 'email') {
           const emailProvider = await getEmailProvider();
@@ -124,8 +131,35 @@ portalRouter.post(
             body: `Vibe Connect code: ${code} (10 min). Reply STOP to opt out.`,
           });
         }
-      } catch {
-        /* swallow to keep responses indistinguishable */
+      } catch (err) {
+        // Swallow at the response level (indistinguishable shape, no
+        // identifier-presence leak), but DO surface to operators. The
+        // audit row carries the identity id so a "no code arrived"
+        // ticket can be traced without re-running the user through
+        // /identify. The identifier itself is NOT logged — the
+        // identity id is enough for ops + doesn't add a PII risk.
+        const reason = (err instanceof Error ? err.message : String(err)).slice(0, 400);
+        logger.warn('portal.access_code_send_failed', {
+          identityId: identity.id,
+          via,
+          err: reason,
+        });
+        await auditRepo
+          .write({
+            actorExternalIdentityId: identity.id,
+            action: 'portal.access_code_send_failed',
+            targetType: 'external_identity',
+            targetId: identity.id,
+            details: { via, reason: reason.slice(0, 200) },
+            ipAddress: req.ip ?? null,
+          })
+          .catch((auditErr) => {
+            // Audit-write failure must not cascade into a 500 — the
+            // /identify response shape is load-bearing. Log only.
+            logger.warn('portal.access_code_audit_failed', {
+              err: auditErr instanceof Error ? auditErr.message : String(auditErr),
+            });
+          });
       }
     }
     // Always same response — do not reveal whether the identifier matched.

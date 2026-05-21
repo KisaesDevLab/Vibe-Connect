@@ -29,10 +29,13 @@ async function loginAs(username: string, password: string) {
 
 beforeEach(async () => {
   const { db } = await import('../db/knex.js');
-  // Reset providers to mock so tests start from a clean baseline.
+  // Reset providers to mock + clear any DB email_from override so tests
+  // start from a clean baseline. The email_from column was added in
+  // 20260520000003 — leaving stale state would let an earlier test's
+  // placeholder save bleed into a later test's "uses env fallback" check.
   await db('firm_settings')
     .where({ id: 1 })
-    .update({ sms_provider: 'mock', email_provider: 'mock' });
+    .update({ sms_provider: 'mock', email_provider: 'mock', email_from: null });
 });
 
 describe('DB-backed provider selection', () => {
@@ -226,6 +229,64 @@ describe('DB-backed provider selection', () => {
         .send({ provider: 'mock', to: '1234567890123456' });
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('invalid_phone');
+    });
+
+    it('GET /admin/settings exposes envEmailFrom alongside settings.email_from', async () => {
+      // The UI needs both to render a "currently overriding X, env
+      // default is Y" affordance under the Sender address field.
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin.get('/admin/settings');
+      expect(res.status).toBe(200);
+      expect(typeof res.body.envEmailFrom).toBe('string');
+      expect(res.body.envEmailFrom.length).toBeGreaterThan(0);
+      // beforeEach cleared email_from → DB column should be null.
+      expect(res.body.settings.email_from).toBeNull();
+    });
+
+    it('PATCH /admin/settings persists emailFrom and clears it on null', async () => {
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const set1 = await admin
+        .patch('/admin/settings')
+        .send({ emailFrom: 'Acme CPA <ops@acme-verified.com>' });
+      expect(set1.status).toBe(200);
+      const read1 = await admin.get('/admin/settings');
+      expect(read1.body.settings.email_from).toBe('Acme CPA <ops@acme-verified.com>');
+
+      const clear = await admin.patch('/admin/settings').send({ emailFrom: null });
+      expect(clear.status).toBe(200);
+      const read2 = await admin.get('/admin/settings');
+      expect(read2.body.settings.email_from).toBeNull();
+    });
+
+    it('PATCH /admin/settings rejects the bundled placeholder', async () => {
+      // An operator pasting EMAIL_FROM verbatim from the .env.example
+      // would otherwise save the same value they are trying to fix. Loud
+      // 400 with a field-tagged reason so the UI can show useful copy.
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin
+        .patch('/admin/settings')
+        .send({ emailFrom: 'Vibe Connect <noreply@vibeconnect.local>' });
+      expect(res.status).toBe(400);
+      expect(res.body.field).toBe('emailFrom');
+      expect(res.body.reason).toBe('placeholder_rejected');
+    });
+
+    it('PATCH /admin/settings rejects an address with no @', async () => {
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const res = await admin.patch('/admin/settings').send({ emailFrom: 'just-a-string' });
+      expect(res.status).toBe(400);
+      expect(res.body.field).toBe('emailFrom');
+      expect(res.body.reason).toBe('missing_at_sign');
+    });
+
+    it('PATCH /admin/settings trims whitespace and treats empty as clear', async () => {
+      const admin = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      // Seed a value then send only whitespace; should reset to null.
+      await admin.patch('/admin/settings').send({ emailFrom: 'ops@acme-verified.com' });
+      const blank = await admin.patch('/admin/settings').send({ emailFrom: '   ' });
+      expect(blank.status).toBe(200);
+      const read = await admin.get('/admin/settings');
+      expect(read.body.settings.email_from).toBeNull();
     });
 
     it('SMTP pre-flight requires only host — port has an env default (regression for v0.4.21)', async () => {

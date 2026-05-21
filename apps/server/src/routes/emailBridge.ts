@@ -468,12 +468,30 @@ async function processInbound(email: InboundEmail): Promise<void> {
 }
 
 async function sendBounce(to: string, reason: string): Promise<void> {
-  const provider = await getEmailProvider();
-  await provider.send({
-    to,
-    subject: 'Your message could not be delivered',
-    text: `We could not deliver your message: ${reason}\n\nIf this is a mistake, contact your firm.`,
-  });
+  // Bounce-mail failure must NOT propagate. If we let it throw, the
+  // outer asyncHandler converts it to a 500 on the inbound webhook
+  // response, the provider (Postmark / SES / etc) takes that as
+  // "delivery failed" and retries the webhook, which re-runs the
+  // inbound parser, which fails the same way, which bounces again —
+  // a tight feedback loop that floods logs and burns API quota. The
+  // worst case if the bounce itself can't be sent is that the original
+  // sender doesn't get a courtesy non-delivery notice; the inbound
+  // message itself is already audited and either stored or rejected
+  // upstream of this call.
+  try {
+    const provider = await getEmailProvider();
+    await provider.send({
+      to,
+      subject: 'Your message could not be delivered',
+      text: `We could not deliver your message: ${reason}\n\nIf this is a mistake, contact your firm.`,
+    });
+  } catch (err) {
+    logger.warn('email.bridge_bounce_send_failed', {
+      to,
+      reason,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // -------- Outbound (notification-only, content mode controlled by firm settings) --------

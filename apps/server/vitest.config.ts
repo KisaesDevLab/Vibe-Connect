@@ -42,6 +42,11 @@ export default defineConfig({
       DATABASE_URL:
         process.env.TEST_DATABASE_URL ?? 'postgres://vibe:vibe@localhost:5435/vibe_connect_test',
       SESSION_SECRET: process.env.SESSION_SECRET ?? 'ci-session-secret-not-real',
+      // Override the bundled EMAIL_FROM placeholder so the provider-boundary
+      // sender-domain guard (bridges/email/index.ts assertEmailFromConfigured)
+      // doesn't trip on the placeholder `vibeconnect.local` during tests that
+      // exercise the real provider implementations with fetch mocked.
+      EMAIL_FROM: process.env.EMAIL_FROM ?? 'Vibe Connect Test <test@example.com>',
       // Phase 28 — deterministic 32-byte intake key for tests so encryptField/
       // decryptField round-trips work and searchHash output is stable across
       // runs. NOT a production key; the test database is throwaway.

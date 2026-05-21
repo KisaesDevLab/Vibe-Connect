@@ -18,7 +18,14 @@ beforeAll(async () => {
 beforeEach(async () => {
   const { db } = await import('../db/knex.js');
   await db('firm_provider_credentials').del();
-  await db('firm_settings').where({ id: 1 }).update({ email_provider: 'emailit' });
+  // Clear any DB email_from override from a previous test so the
+  // resolveEmailFrom() lookup falls back to env (the vitest.config.ts
+  // default `Vibe Connect Test <test@example.com>`). Leaving stale state
+  // here would let a placeholder-rejection test from one run silently
+  // alter the From a non-placeholder test sees in the next run.
+  await db('firm_settings')
+    .where({ id: 1 })
+    .update({ email_provider: 'emailit', email_from: null });
 });
 
 afterEach(() => {
@@ -239,6 +246,114 @@ describe('EmailitProvider', () => {
     await expect(provider.send({ to: 'a@b.com', subject: 's', text: 't' })).rejects.toThrow(
       /emailit_api_key_not_configured/,
     );
+  });
+
+  it('rejects empty `to` with email_to_missing before hitting the network', async () => {
+    // Regression guard: the provider boundary normalises + validates `to`
+    // so a programmer-error empty string (`identity.email` is null,
+    // caller forgot to check) surfaces as a typed error instead of a
+    // generic 422 from Emailit. fetch must NOT be called.
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await expect(provider.send({ to: '   ', subject: 's', text: 't' })).rejects.toThrow(
+      /email_to_missing/,
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('normalises `to` (trim + lowercase) before sending', async () => {
+    // Whitespace + mixed case in `to` is the single most common cause of
+    // a provider 422. The boundary normalises so the wire form is
+    // predictable regardless of how the caller assembled it.
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'em_norm' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await provider.send({ to: '  Client@Example.COM\n', subject: 's', text: 't' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.to).toBe('client@example.com');
+  });
+
+  it('rejects the placeholder EMAIL_FROM with email_from_placeholder', async () => {
+    // The bundled placeholder `noreply@vibeconnect.local` will be rejected
+    // by every real provider (unverified sender domain that physically
+    // cannot exist on the public DNS). Catch it at the boundary with a
+    // self-describing error so first-deploy operators don't have to
+    // decode a generic emailit_422 to learn they need to set EMAIL_FROM.
+    const originalFrom = process.env.EMAIL_FROM;
+    vi.resetModules();
+    process.env.EMAIL_FROM = 'Vibe Connect <noreply@vibeconnect.local>';
+    try {
+      const { set } = await import('../services/providerSecrets.js');
+      await set('email.emailit.api_key', 'test-key', null);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const { getEmailProvider } = await import('../bridges/email/index.js');
+      const provider = await getEmailProvider();
+      await expect(provider.send({ to: 'a@b.com', subject: 's', text: 't' })).rejects.toThrow(
+        /email_from_placeholder/,
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      if (originalFrom === undefined) delete process.env.EMAIL_FROM;
+      else process.env.EMAIL_FROM = originalFrom;
+      vi.resetModules();
+    }
+  });
+
+  it('uses firm_settings.email_from when set, overriding env.emailFrom', async () => {
+    // Admin sets a verified sender in Admin → Providers; the next outbound
+    // send should use it instead of env.emailFrom. This is the load-bearing
+    // behaviour for the env-default-placeholder fix — operators can change
+    // From without an env edit + restart.
+    const { db } = await import('../db/knex.js');
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    await db('firm_settings')
+      .where({ id: 1 })
+      .update({ email_from: 'Acme CPA <ops@acme-verified.com>' });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'em_db_from' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await provider.send({ to: 'client@example.com', subject: 's', text: 't' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.from).toBe('Acme CPA <ops@acme-verified.com>');
+  });
+
+  it('falls back to env.emailFrom when firm_settings.email_from is null', async () => {
+    // The beforeEach explicitly clears email_from. With nothing in the DB,
+    // the resolver should return the env value (vitest.config.ts sets it
+    // to `Vibe Connect Test <test@example.com>` for the test suite).
+    const { set } = await import('../services/providerSecrets.js');
+    await set('email.emailit.api_key', 'test-key', null);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ id: 'em_env_from' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const { getEmailProvider } = await import('../bridges/email/index.js');
+    const provider = await getEmailProvider();
+    await provider.send({ to: 'client@example.com', subject: 's', text: 't' });
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(sent.from).toBe('Vibe Connect Test <test@example.com>');
   });
 });
 

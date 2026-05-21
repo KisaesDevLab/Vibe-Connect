@@ -41,6 +41,75 @@ function mapFetchError(provider: string, err: unknown): Error {
   return new Error(`${provider}_network_error: ${msg.slice(0, 120)}`);
 }
 
+// Single chokepoint for outbound recipient cleanup. Trims whitespace and
+// lowercases so a stray trailing space (common when callers pluck the
+// value off a CSV row or copy-pasted onboarding sheet) doesn't hit
+// Postmark / Emailit as a 422 "invalid recipient". RFC 5321 says the
+// local part is technically case-sensitive, but every consumer mailbox
+// provider treats it case-insensitively, and our own DB lookups already
+// lowercase — keeping the wire form consistent with that.
+//
+// Throws on empty input so a programmer error (caller passed `undefined`
+// or `""`) surfaces as a clear typed error instead of an opaque 4xx from
+// the provider. The provider impl below also re-validates From; together
+// these two checks turn "mysterious 422 from Postmark" into a self-
+// describing throw the Admin → Providers UI can render verbatim.
+function normalizeRecipient(raw: string): string {
+  const cleaned = (raw ?? '').trim().toLowerCase();
+  if (!cleaned) throw new Error('email_to_missing');
+  if (!cleaned.includes('@')) throw new Error('email_to_invalid');
+  return cleaned;
+}
+
+// Resolve the From address with the same DB → env precedence used by the
+// rest of the provider settings (firm_settings.email_provider,
+// firm_provider_credentials). DB value (firm_settings.email_from) wins
+// so an operator can fix a misconfigured sender from Admin → Providers
+// without an env edit + restart; env is the fallback for pre-migration
+// installs that already had EMAIL_FROM set.
+//
+// Validates that whatever we resolve is not the bundled placeholder
+// `vibeconnect.local`, which a real provider (Postmark / Emailit) WILL
+// reject because that domain is reserved-but-unregistered and therefore
+// can never be a verified sender. Most "no email arriving" tickets in
+// the field trace back to an operator shipping with the placeholder
+// still in place. Refuse early with a message that names BOTH locations
+// (DB-first, env-fallback) instead of letting the provider return a
+// generic 422.
+//
+// Postfix is exempt from the placeholder check because SMTP relays can
+// be configured to rewrite or accept arbitrary From addresses depending
+// on the operator's setup — the placeholder will still typically fail
+// downstream there, but we don't want to second-guess a working relay.
+async function resolveEmailFrom(providerKind: 'postmark' | 'emailit' | 'postfix'): Promise<string> {
+  let dbValue: string | null = null;
+  try {
+    const { db } = await import('../../db/knex.js');
+    const row = await db('firm_settings').where({ id: 1 }).first('email_from');
+    const raw = row?.email_from;
+    if (typeof raw === 'string' && raw.trim()) dbValue = raw.trim();
+  } catch (err) {
+    // DB unreachable at send time — fall through to env. Same posture as
+    // resolveEmailProviderKind below: don't let a maintenance window
+    // break outbound mail when env already has a working value.
+    logger.warn('email_from_db_lookup_failed', {
+      msg: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const from = (dbValue ?? env.emailFrom ?? '').trim();
+  if (!from) {
+    throw new Error(
+      'email_from_not_configured: no sender address set. Configure it in Admin → Providers → Sender address, or set EMAIL_FROM in the appliance env.',
+    );
+  }
+  if (providerKind !== 'postfix' && /vibeconnect\.local/i.test(from)) {
+    throw new Error(
+      'email_from_placeholder: sender address is still the bundled placeholder (noreply@vibeconnect.local). Set Admin → Providers → Sender address to an address whose sending domain you have verified on your email provider.',
+    );
+  }
+  return from;
+}
+
 export interface EmailProvider {
   send(msg: EmailMessage): Promise<{ id: string; status: 'sent' | 'queued' | 'bounced' }>;
   name: string;
@@ -49,12 +118,19 @@ export interface EmailProvider {
 class MockProvider implements EmailProvider {
   name = 'mock';
   async send(msg: EmailMessage) {
+    // Normalize even in mock so the .outbox/ artefact matches what a real
+    // provider would receive — makes dev/test inspection less surprising
+    // and catches `to: undefined` programmer errors here too.
+    const to = normalizeRecipient(msg.to);
     const outbox = path.resolve(env.outboxDir, 'email');
     await fs.mkdir(outbox, { recursive: true });
     const id = `mock-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const file = path.join(outbox, `${id}.json`);
-    await fs.writeFile(file, JSON.stringify({ ...msg, id, at: new Date().toISOString() }, null, 2));
-    logger.info('email.mock_sent', { file, to: msg.to, subject: msg.subject });
+    await fs.writeFile(
+      file,
+      JSON.stringify({ ...msg, to, id, at: new Date().toISOString() }, null, 2),
+    );
+    logger.info('email.mock_sent', { file, to, subject: msg.subject });
     return { id, status: 'sent' as const };
   }
 }
@@ -69,8 +145,14 @@ class MockProvider implements EmailProvider {
 class NoneProvider implements EmailProvider {
   name = 'none';
   async send(msg: EmailMessage) {
+    // Normalize so the warn log is consistent across providers. Skip the
+    // From validation — `none` is the explicit "outbound mail disabled"
+    // mode and operators shouldn't need a valid EMAIL_FROM just to keep
+    // unrelated callers (e.g. the portal /identify swallowing path) from
+    // crashing.
+    const to = normalizeRecipient(msg.to);
     logger.warn('email.disabled_send_skipped', {
-      to: msg.to,
+      to,
       subject: msg.subject,
       hint: 'EMAIL_PROVIDER=none — set EMAIL_PROVIDER and provider credentials to enable outbound mail.',
     });
@@ -81,11 +163,13 @@ class NoneProvider implements EmailProvider {
 class PostmarkProvider implements EmailProvider {
   name = 'postmark';
   async send(msg: EmailMessage) {
+    const from = await resolveEmailFrom('postmark');
+    const to = normalizeRecipient(msg.to);
     const token = await getOrEnvFallback('email.postmark.server_token', env.postmarkServerToken);
     if (!token) throw new Error('postmark_token_not_configured');
     const body = {
-      From: env.emailFrom,
-      To: msg.to,
+      From: from,
+      To: to,
       Subject: msg.subject,
       TextBody: msg.text,
       HtmlBody: msg.html,
@@ -177,6 +261,8 @@ function extractEmailitError(rawBody: string): string {
 class EmailitProvider implements EmailProvider {
   name = 'emailit';
   async send(msg: EmailMessage) {
+    const from = await resolveEmailFrom('emailit');
+    const to = normalizeRecipient(msg.to);
     const apiKey = await getOrEnvFallback('email.emailit.api_key', env.emailitApiKey);
     if (!apiKey) throw new Error('emailit_api_key_not_configured');
     const baseRaw =
@@ -191,8 +277,8 @@ class EmailitProvider implements EmailProvider {
     // "Name <email>" (the default) or a bare address — either way we hand
     // it through as a string.
     const body = {
-      from: env.emailFrom,
-      to: msg.to,
+      from,
+      to,
       subject: msg.subject,
       // `text` is optional; `html` is required only when neither template
       // nor `text` is present. We always pass `text`, and only include
@@ -247,7 +333,7 @@ class EmailitProvider implements EmailProvider {
       pick(parsed, 'message_id') ??
       pick((parsed as { data?: unknown } | null)?.data, 'id') ??
       `emailit-${Date.now()}`;
-    logger.info('email.emailit_sent', { to: msg.to, id, idempotencyKey });
+    logger.info('email.emailit_sent', { to, id, idempotencyKey });
     return { id, status: 'sent' as const };
   }
 }
@@ -285,17 +371,19 @@ class PostfixProvider implements EmailProvider {
   }
 
   async send(msg: EmailMessage) {
+    const from = await resolveEmailFrom('postfix');
+    const to = normalizeRecipient(msg.to);
     const transport = await this.buildTransport();
     const info = await transport.sendMail({
-      from: env.emailFrom,
-      to: msg.to,
+      from,
+      to,
       subject: msg.subject,
       text: msg.text,
       html: msg.html,
       headers: msg.headers,
       replyTo: msg.replyTo,
     });
-    logger.info('email.postfix_sent', { to: msg.to, id: info.messageId });
+    logger.info('email.postfix_sent', { to, id: info.messageId });
     return {
       id: info.messageId,
       status: (info.accepted?.length ? 'sent' : 'queued') as 'sent' | 'queued',

@@ -103,6 +103,13 @@ adminRouter.get(
       envPortalUrl: urls.envPortalUrl,
       effectiveSiteUrl: urls.siteUrl,
       effectivePortalUrl: urls.portalUrl,
+      // Same "currently overriding X, env default is Y" treatment for the
+      // sender address so the Admin → Providers UI can render the env
+      // fallback as a placeholder when the DB column is null. Pre-this
+      // setting, EMAIL_FROM was env-only and a misconfigured placeholder
+      // caused silent 422s at every real provider — the whole reason this
+      // column exists is so an operator can fix it from the UI.
+      envEmailFrom: env.emailFrom,
     });
   }),
 );
@@ -133,6 +140,16 @@ const settingsSchema = z.object({
   smsProvider: z.enum(['textlink', 'twilio', 'mock']).optional(),
   smsMonthlyCap: z.number().int().min(0).max(100_000).optional(),
   emailProvider: z.enum(['mock', 'postmark', 'postfix', 'emailit']).optional(),
+  // RFC 5322 sender address. Either a bare `user@host` or the friendly
+  // form `Display Name <user@host>` (which is what env.emailFrom
+  // defaults to). Full RFC 5322 grammar is too permissive to validate
+  // usefully with regex — we settle for: trimmed, ≤254 chars (RFC 5321
+  // path limit), must contain `@`. Null clears the override so
+  // env.emailFrom takes effect again. Provider boundary
+  // (bridges/email/index.ts resolveEmailFrom) does the final
+  // placeholder-rejection and is also wired into the validator below
+  // so an admin can't save the bundled placeholder.
+  emailFrom: z.string().max(254).nullable().optional(),
   exportExternalRequiresRecoveryPhrase: z.boolean().optional(),
   sidebarGroupsOrder: z.array(z.string().uuid()).optional(),
   // 0 = never lock; upper bound matches the DB constraint (24 h).
@@ -349,6 +366,42 @@ adminRouter.patch(
     if (parsed.data.smsProvider !== undefined) patch.sms_provider = parsed.data.smsProvider;
     if (parsed.data.smsMonthlyCap !== undefined) patch.sms_monthly_cap = parsed.data.smsMonthlyCap;
     if (parsed.data.emailProvider !== undefined) patch.email_provider = parsed.data.emailProvider;
+    if (parsed.data.emailFrom !== undefined) {
+      // Null / empty-string both mean "clear the override; fall back to
+      // env.emailFrom" — store as null so resolveEmailFrom doesn't have
+      // to distinguish empty strings from missing rows.
+      if (parsed.data.emailFrom === null) {
+        patch.email_from = null;
+      } else {
+        const trimmed = parsed.data.emailFrom.trim();
+        if (trimmed === '') {
+          patch.email_from = null;
+        } else {
+          // Cheap shape check — defer the full "is this a verified
+          // sender" judgement to the provider on first send. Reject the
+          // bundled placeholder here so the operator can't accidentally
+          // "save" the value they're trying to fix and walk away (the
+          // siteUrl validator uses the same trick).
+          if (!trimmed.includes('@')) {
+            res.status(400).json({
+              error: 'bad_request',
+              field: 'emailFrom',
+              reason: 'missing_at_sign',
+            });
+            return;
+          }
+          if (/vibeconnect\.local/i.test(trimmed)) {
+            res.status(400).json({
+              error: 'bad_request',
+              field: 'emailFrom',
+              reason: 'placeholder_rejected',
+            });
+            return;
+          }
+          patch.email_from = trimmed;
+        }
+      }
+    }
     if (parsed.data.exportExternalRequiresRecoveryPhrase !== undefined)
       patch.export_external_requires_recovery_phrase =
         parsed.data.exportExternalRequiresRecoveryPhrase;

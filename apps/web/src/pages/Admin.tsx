@@ -827,6 +827,7 @@ interface AdminSettingsResponse {
   envPortalUrl: string;
   effectiveSiteUrl: string;
   effectivePortalUrl: string;
+  envEmailFrom: string;
 }
 
 interface UrlOverrideFieldProps {
@@ -998,6 +999,7 @@ function AdminSettings(): JSX.Element {
     email_outbound_mode: 'summary' | 'content';
     sms_provider: 'textlink' | 'twilio' | 'mock';
     email_provider: 'mock' | 'postmark' | 'postfix' | 'emailit';
+    email_from: string | null;
     idle_lock_minutes: number;
     client_messaging_enabled: boolean;
     requests_enabled: boolean;
@@ -1334,6 +1336,30 @@ function AdminSettings(): JSX.Element {
         <span className="mt-1 text-[11px] text-slate-500 block">
           Configure credentials in <strong>Admin → Providers</strong> before switching off Mock.
         </span>
+      </label>
+      <label className="block">
+        <span className="text-sm text-slate-700">Sender address (From)</span>
+        <input
+          type="text"
+          defaultValue={s.email_from ?? ''}
+          placeholder={q.data.envEmailFrom}
+          onBlur={(e) => {
+            const trimmed = e.target.value.trim();
+            // Empty input clears the override → server stores null → resolver
+            // falls back to env.emailFrom. Anything else patches the row.
+            mut.mutate({ emailFrom: trimmed.length === 0 ? null : trimmed });
+          }}
+          className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm font-mono"
+        />
+        <p className="text-[11px] text-slate-500 mt-1">
+          The <code>From</code> address on every outbound email. Use either{' '}
+          <code>user@your-firm.com</code> or <code>Firm Name &lt;user@your-firm.com&gt;</code>. Must
+          be on a sending domain you have{' '}
+          <strong>verified in your email provider&apos;s dashboard</strong> (Postmark Sender
+          Signatures / Emailit Sending Domains) — unverified domains return a 422 and no mail goes
+          out. Leave blank to fall back to the <code>EMAIL_FROM</code> env var (currently{' '}
+          <span className="font-mono">{q.data.envEmailFrom}</span>).
+        </p>
       </label>
       <label className="block">
         <span className="text-sm text-slate-700">SMS provider</span>
@@ -4895,6 +4921,7 @@ export function AdminIntakeSessions(): JSX.Element {
                 />
               </th>
               <th className="p-2">Received</th>
+              <th className="p-2">Client</th>
               <th className="p-2">Staff</th>
               <th className="p-2">Status</th>
               <th className="p-2">Files</th>
@@ -4941,6 +4968,13 @@ export function AdminIntakeSessions(): JSX.Element {
                     <span className="ml-2 text-[10px] uppercase text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
                       notify failed
                     </span>
+                  )}
+                </td>
+                <td className="p-2 text-slate-700">
+                  {s.clientName?.trim() ? (
+                    s.clientName
+                  ) : (
+                    <span className="text-slate-400 italic">unknown</span>
                   )}
                 </td>
                 <td className="p-2 text-slate-600">{s.staffDisplayName ?? '—'}</td>
@@ -5173,6 +5207,14 @@ function AdminIntakeDetail({
                 <dd className="col-span-2">{detailQ.data.session.clientPhone ?? '—'}</dd>
               </dl>
             </section>
+            {detailQ.data.session.clientMessage?.trim() && (
+              <section className="space-y-2">
+                <h4 className="font-medium text-slate-900">Message from client</h4>
+                <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800 whitespace-pre-wrap break-words">
+                  {detailQ.data.session.clientMessage}
+                </div>
+              </section>
+            )}
             <section className="space-y-2">
               <h4 className="font-medium text-slate-900">Linked Connect client</h4>
               {detailQ.data.session.linkedClient ? (
