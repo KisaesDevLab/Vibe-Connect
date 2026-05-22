@@ -222,43 +222,77 @@ portalRouter.post(
       res.status(401).json({ error: 'invalid', reason: result.reason });
       return;
     }
-    const token = newSessionToken();
-    const tokenHash = hashSessionToken(token);
-    const expires = new Date(Date.now() + 8 * 60 * 60 * 1000); // 8h absolute
-    const rawUa = (req.headers['user-agent'] as string | undefined) ?? null;
-    const [row] = await db('client_sessions')
-      .insert({
-        external_identity_id: identity.id,
-        session_token_hash: tokenHash,
-        absolute_expires_at: expires,
-        user_agent: rawUa ? rawUa.slice(0, 255) : null,
-        ip_address: req.ip ?? null,
-        session_public_key: parsed.data.sessionPublicKey,
-      })
-      .returning(['id']);
+    // Post-verify success block — wrapped so a failure HERE (a constraint
+    // violation on client_sessions, a transient audit_log write error,
+    // an effectiveUrls/cookie-path lookup throwing) names exactly which
+    // step failed in the server log rather than blending into the
+    // catch-all `request_error` line from the asyncHandler. User-reported
+    // symptom was "Something went wrong" after entering a correct code —
+    // the verify step was succeeding but ONE of the steps below was
+    // throwing without telling us which.
+    let sessionRowId: string;
+    try {
+      const token = newSessionToken();
+      const tokenHash = hashSessionToken(token);
+      const expires = new Date(Date.now() + 8 * 60 * 60 * 1000); // 8h absolute
+      const rawUa = (req.headers['user-agent'] as string | undefined) ?? null;
+      const [row] = await db('client_sessions')
+        .insert({
+          external_identity_id: identity.id,
+          session_token_hash: tokenHash,
+          absolute_expires_at: expires,
+          user_agent: rawUa ? rawUa.slice(0, 255) : null,
+          ip_address: req.ip ?? null,
+          session_public_key: parsed.data.sessionPublicKey,
+        })
+        .returning(['id']);
+      sessionRowId = row!.id as string;
 
-    await auditRepo.write({
-      actorExternalIdentityId: identity.id,
-      action: 'portal.login',
-      targetType: 'client_session',
-      targetId: row!.id,
-    });
+      await auditRepo.write({
+        actorExternalIdentityId: identity.id,
+        action: 'portal.login',
+        targetType: 'client_session',
+        targetId: sessionRowId,
+      });
 
-    res.cookie(SESSION_COOKIE, token, {
-      httpOnly: true,
-      // Per-request path derivation — see cookiePathForRequest. The
-      // multi-subdomain appliance puts portal on `client.<domain>/`
-      // (path needs to be `/`) and staff on `vibe.<domain>/connect/`
-      // (path needs to be `/connect`); a single `env.sessionCookiePath`
-      // would always pick one and silently break logins on the other.
-      path: await cookiePathForRequest(req),
-      secure: env.sessionSecure,
-      sameSite: env.sessionSameSite,
-      maxAge: 8 * 60 * 60 * 1000,
-    });
+      res.cookie(SESSION_COOKIE, token, {
+        httpOnly: true,
+        // Per-request path derivation — see cookiePathForRequest. The
+        // multi-subdomain appliance puts portal on `client.<domain>/`
+        // (path needs to be `/`) and staff on `vibe.<domain>/connect/`
+        // (path needs to be `/connect`); a single `env.sessionCookiePath`
+        // would always pick one and silently break logins on the other.
+        path: await cookiePathForRequest(req),
+        secure: env.sessionSecure,
+        sameSite: env.sessionSameSite,
+        maxAge: 8 * 60 * 60 * 1000,
+      });
+    } catch (err) {
+      // Specific log line — operator greps for this to find post-verify
+      // failures vs. earlier-stage ones. Audit row too so the trail
+      // exists even if log retention is short.
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('portal.verify_post_success_failed', {
+        identityId: identity.id,
+        err: msg,
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      await auditRepo
+        .write({
+          actorExternalIdentityId: identity.id,
+          action: 'portal.verify_post_success_failed',
+          targetType: 'external_identity',
+          targetId: identity.id,
+          details: { error: msg.slice(0, 400) },
+        })
+        .catch(() => {
+          /* audit write itself failed — already logged via err above */
+        });
+      throw err;
+    }
     res.json({
       ok: true,
-      sessionId: row!.id,
+      sessionId: sessionRowId,
       verificationRequired:
         identity.verification_required && Boolean(identity.verification_last4_hash),
       verificationType: identity.verification_type,

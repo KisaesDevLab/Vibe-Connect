@@ -28,7 +28,26 @@ export function VerifyPage(): JSX.Element {
       }
     } catch (err) {
       const e = err as { status?: number; body?: string };
-      setError(e.status === 401 ? 'Invalid or expired code.' : 'Something went wrong.');
+      if (e.status === 401) {
+        setError('Invalid or expired code.');
+      } else {
+        // For non-401s (500 / 400 / network), surface the server's
+        // reqId so the operator can grep docker logs for the matching
+        // request_error line. The server's global error middleware
+        // always includes reqId in the response body even for 500s.
+        let reqId: string | null = null;
+        if (e.body) {
+          try {
+            const parsed = JSON.parse(e.body) as { reqId?: string };
+            if (typeof parsed.reqId === 'string') reqId = parsed.reqId;
+          } catch {
+            /* body wasn't JSON — fall through */
+          }
+        }
+        setError(
+          reqId ? `Something went wrong. Reference ${reqId} for support.` : 'Something went wrong.',
+        );
+      }
     } finally {
       setBusy(false);
     }
