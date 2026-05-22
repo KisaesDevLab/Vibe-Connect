@@ -30,7 +30,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-qemu-action@v4
+      # QEMU is only needed for cross-architecture image builds. The
+      # release matrix is amd64-only (see `platforms:` below), so the
+      # GitHub-hosted ubuntu-latest runners (also amd64) build natively
+      # and we drop the setup-qemu-action that would otherwise emulate
+      # arm64. Background: arm64 emulation via QEMU + sharp's native
+      # libvips bindings produced a ~10% rate of multi-hour build hangs
+      # in v0.4.27 / v0.4.30 that occasionally hit Actions' 6h job
+      # timeout. The appliance ships amd64-only; if arm64 ever needs to
+      # ship again, re-add this step and the linux/arm64 platforms.
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
@@ -73,7 +81,9 @@ jobs:
         with:
           context: .
           file: infra/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # amd64-only: see QEMU comment above for the v0.4.27/v0.4.30
+          # hang history that motivated dropping arm64.
+          platforms: linux/amd64
           push: true
           provenance: mode=max
           sbom: true
@@ -110,7 +120,11 @@ jobs:
         with:
           context: .
           file: infra/docker/nginx/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # amd64-only: see QEMU comment above. The client image is just
+          # nginx + static assets so the build itself is fast under
+          # emulation, but keeping the platform list consistent with the
+          # server image avoids a mismatched multi-arch manifest.
+          platforms: linux/amd64
           push: true
           provenance: mode=max
           sbom: true
