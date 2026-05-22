@@ -2051,32 +2051,66 @@ export function AdminClients(): JSX.Element {
                 )}
               </td>
               <td className="p-2 text-right whitespace-nowrap space-x-3">
-                {isAdmin && !c.deactivatedAt && !c.lastActiveAt && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      reinvite.mutate({
-                        id: c.id,
-                        via: c.invitedVia ?? (c.email ? 'email' : 'sms'),
-                      })
+                {isAdmin &&
+                  (() => {
+                    // Single re-invite button that adapts to client state. The
+                    // server endpoint (`/admin/clients/:id/reinvite`) rotates
+                    // the invite token, clears `deactivated_at`, and emails /
+                    // texts a fresh link — independent of whether the client
+                    // has logged in before. The UI decides the label and
+                    // whether to confirm based on the perceived destructiveness:
+                    //   - Never invited: silent send, button = "Send invite"
+                    //   - Pending (invited, not active): silent re-send, "Resend invite"
+                    //   - Active (logged in before): confirm, "Send new invite"
+                    //     — rotating mid-session invalidates any prior
+                    //     unconsumed invite link the client might still have.
+                    //   - Deactivated: confirm, "Reactivate & re-invite"
+                    //     — combines reactivate + invite in one click since
+                    //     the server already does both atomically.
+                    let label: string;
+                    let needsConfirm = false;
+                    let confirmText = '';
+                    if (c.deactivatedAt) {
+                      label = 'Reactivate & re-invite';
+                      needsConfirm = true;
+                      confirmText = `Reactivate ${c.displayName} and send a fresh invite? Their previous invite link (if any) will stop working.`;
+                    } else if (c.lastActiveAt) {
+                      label = 'Send new invite';
+                      needsConfirm = true;
+                      confirmText = `Send ${c.displayName} a fresh invite link? Any prior unconsumed invite link will stop working. Active sessions are not affected.`;
+                    } else if (c.invitedAt) {
+                      label = 'Resend invite';
+                    } else {
+                      label = 'Send invite';
                     }
-                    disabled={reinvite.isPending}
-                    className="text-brand-700 hover:underline disabled:opacity-50"
-                    title={
-                      c.invitedAt
-                        ? `Last invite sent ${new Date(c.invitedAt).toLocaleString()} — resending rotates the link.`
-                        : 'Send invite link'
-                    }
-                  >
-                    {c.invitedAt ? 'Resend invite' : 'Send invite'}
-                  </button>
-                )}
+                    const title = c.invitedAt
+                      ? `Last invite sent ${new Date(c.invitedAt).toLocaleString()} — re-sending rotates the link.`
+                      : 'Send invite link';
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (needsConfirm && !confirm(confirmText)) return;
+                          reinvite.mutate({
+                            id: c.id,
+                            via: c.invitedVia ?? (c.email ? 'email' : 'sms'),
+                          });
+                        }}
+                        disabled={reinvite.isPending}
+                        className="text-brand-700 hover:underline disabled:opacity-50"
+                        title={title}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })()}
                 {isAdmin &&
                   (c.deactivatedAt ? (
                     <button
                       type="button"
                       onClick={() => reactivate.mutate(c.id)}
                       className="text-brand-700 hover:underline"
+                      title="Restore access without sending a new invite. Use Reactivate & re-invite if the client also needs a fresh link."
                     >
                       Reactivate
                     </button>

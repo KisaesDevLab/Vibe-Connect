@@ -415,6 +415,84 @@ describe('GET /admin/clients — staff-readable, admin-writable', () => {
   });
 });
 
+describe('POST /admin/clients/:id/reinvite — re-invite scenarios', () => {
+  // Regression guards for the v0.4.30 UI gate-lift. The admin Clients
+  // table now exposes a single re-invite button across four client
+  // states (never-invited / pending / active / deactivated). The
+  // server endpoint MUST keep accepting all four — a future "only
+  // pending" guard added server-side would silently strand the UI.
+
+  async function seedClient(displayName: string, email: string): Promise<string> {
+    const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const r = await kurt.post('/clients/invite').send({
+      displayName,
+      channels: {
+        email: { enabled: true, value: email },
+        sms: { enabled: false, value: null },
+      },
+      verification: { type: 'ssn', last4: '0001', reverifyEveryHours: 24 },
+    });
+    expect(r.status).toBe(201);
+    return r.body.externalIdentityId as string;
+  }
+
+  it('reinvite on an active client (lastActiveAt set) rotates the token + audits', async () => {
+    const id = await seedClient('Active Reinvite Subject', 'active-reinvite@test.com');
+    const { db } = await import('../db/knex.js');
+    // Simulate prior successful login: stamp last_active_at + capture
+    // the current invite_token_hash so we can assert it actually rotated.
+    const before = await db('external_identities').where({ id }).first();
+    await db('external_identities').where({ id }).update({ last_active_at: db.fn.now() });
+
+    const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const r = await kurt.post(`/admin/clients/${id}/reinvite`).send({});
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(true);
+
+    const after = await db('external_identities').where({ id }).first();
+    // Token must have rotated; bytea comparison is value-based in
+    // node-pg so a deep equal is enough.
+    expect(after.invite_token_hash).not.toEqual(before.invite_token_hash);
+    // last_active_at must be preserved — re-inviting doesn't
+    // invalidate the active session, just sends a fresh link.
+    expect(after.last_active_at).not.toBeNull();
+
+    const audit = await db('audit_log')
+      .where({ action: 'admin.client_reinvited', target_id: id })
+      .orderBy('created_at', 'desc')
+      .first();
+    expect(audit).toBeDefined();
+  });
+
+  it('reinvite on a deactivated client clears deactivated_at and rotates the token in one call', async () => {
+    const id = await seedClient('Deactivated Reinvite Subject', 'dead-reinvite@test.com');
+    const { db } = await import('../db/knex.js');
+
+    // Deactivate first (the explicit two-step flow the UI's
+    // "Reactivate & re-invite" button collapses to one click).
+    const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+    const deactivate = await kurt.post(`/admin/clients/${id}/deactivate`).send({});
+    expect(deactivate.status).toBe(200);
+    const mid = await db('external_identities').where({ id }).first();
+    expect(mid.deactivated_at).not.toBeNull();
+    const beforeToken = mid.invite_token_hash;
+
+    const r = await kurt.post(`/admin/clients/${id}/reinvite`).send({});
+    expect(r.status).toBe(200);
+
+    const after = await db('external_identities').where({ id }).first();
+    expect(after.deactivated_at).toBeNull();
+    expect(after.invite_token_hash).not.toEqual(beforeToken);
+  });
+
+  it('non-admin staff cannot hit /reinvite', async () => {
+    const id = await seedClient('RBAC Reinvite Subject', 'rbac-reinvite@test.com');
+    const alice = await loginAs('alice', 'alice-dev-only-ChangeMe!');
+    const r = await alice.post(`/admin/clients/${id}/reinvite`).send({});
+    expect(r.status).toBe(403);
+  });
+});
+
 afterAll(async () => {
   // Release the pg pool so Vitest can exit cleanly.
   const { db } = await import('../db/knex.js');
