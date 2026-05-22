@@ -29,6 +29,19 @@ exports.up = async function up(knex) {
   await knex.schema.alterTable('messages', (t) => {
     t.timestamp('nudge_sent_at', { useTz: true }).nullable();
   });
+  // CRITICAL BACKFILL: every pre-existing message is older than the
+  // 15-minute threshold AND has NULL nudge_sent_at. Without this
+  // backfill, the first ticker tick after deploy would claim
+  // EVERY historical staff-sent message and try to dispatch a
+  // notification per row — flooding Postmark / Emailit / Twilio
+  // with thousands of "you have a new secure message" pings for
+  // messages from days or months ago.
+  //
+  // Stamp every existing row to NOW() so they look "already
+  // nudged". The ticker's hot query becomes a small partial-index
+  // scan that picks up only messages created from this point
+  // forward — the intended behavior.
+  await knex.raw(`UPDATE messages SET nudge_sent_at = NOW() WHERE nudge_sent_at IS NULL`);
   await knex.raw(`
     CREATE INDEX IF NOT EXISTS messages_nudge_pending_idx
       ON messages (created_at)

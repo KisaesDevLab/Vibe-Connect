@@ -55,6 +55,16 @@ import { notifyExternalRecipients } from './offlineNotify.js';
 
 const DEFAULT_INTERVAL_MS = 60_000;
 const NUDGE_THRESHOLD_MINUTES = 15;
+// Per-tick cap on how many messages get claimed (and dispatched) in a
+// single iteration. Defense in depth: the migration backfills
+// nudge_sent_at on every pre-existing row so the steady-state pending
+// pool is small, but if anything ever produces a pile-up (operator
+// disabled the ticker for a few hours, a multi-instance scheduled-
+// broadcast pushed N messages into the eligible window at once,
+// retroactive schema changes), this caps the parallel-fanout blast
+// radius. Excess rows are picked up on the next tick(s) without
+// dropping any.
+const PER_TICK_CAP = 200;
 
 let timer: NodeJS.Timeout | null = null;
 
@@ -90,14 +100,27 @@ export async function runOnce(): Promise<number> {
   const result = await db.raw<{
     rows: { id: string; conversation_id: string }[];
   }>(
+    // Subquery-claim pattern lets us cap how many rows a single tick
+    // takes. Plain `UPDATE ... LIMIT` isn't standard Postgres — we
+    // pick the row set first, then UPDATE the chosen ids. The CAP
+    // is intentionally generous (200 messages × ≤2 channels = 400
+    // provider calls/min worst case, well under Postmark's 10 req/s
+    // default) but bounded so a pile-up can't translate into a
+    // single-tick fanout flood.
     `UPDATE messages
        SET nudge_sent_at = NOW()
-     WHERE nudge_sent_at IS NULL
-       AND sender_id IS NOT NULL
-       AND source = 'app'
-       AND deleted_at IS NULL
-       AND created_at <= NOW() - INTERVAL '${NUDGE_THRESHOLD_MINUTES} minutes'
-       AND (scheduled_for IS NULL OR scheduled_broadcast_at IS NOT NULL)
+     WHERE id IN (
+       SELECT id FROM messages
+       WHERE nudge_sent_at IS NULL
+         AND sender_id IS NOT NULL
+         AND source = 'app'
+         AND deleted_at IS NULL
+         AND created_at <= NOW() - INTERVAL '${NUDGE_THRESHOLD_MINUTES} minutes'
+         AND (scheduled_for IS NULL OR scheduled_broadcast_at IS NOT NULL)
+       ORDER BY created_at ASC
+       LIMIT ${PER_TICK_CAP}
+       FOR UPDATE SKIP LOCKED
+     )
      RETURNING id, conversation_id`,
   );
   const rows = result.rows ?? [];
