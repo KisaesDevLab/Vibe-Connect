@@ -12,6 +12,10 @@ import {
   stopScheduledMessageTicker,
 } from './services/scheduledMessages.js';
 import {
+  startClientMessageNudgeTicker,
+  stopClientMessageNudgeTicker,
+} from './services/clientMessageNudgeTicker.js';
+import {
   setDestructBroadcaster,
   startDestructTicker,
   stopDestructTicker,
@@ -61,6 +65,10 @@ async function main(): Promise<void> {
     },
   });
   startScheduledMessageTicker();
+  // v0.4.33: 15-min unread-message nudge for portal clients. See
+  // services/clientMessageNudgeTicker.ts for the metadata-only
+  // dispatch contract + the atomic-claim semantics.
+  startClientMessageNudgeTicker();
   setDestructBroadcaster({
     broadcastMessageDestructed: async (m) => {
       const { publish } = await import('./realtime/pgFanout.js');
@@ -196,6 +204,7 @@ async function main(): Promise<void> {
     hardTimeout.unref();
     // Tickers stop synchronously.
     stopScheduledMessageTicker();
+    stopClientMessageNudgeTicker();
     stopDestructTicker();
     stopAutoNudgeJob();
     stopRetentionTicker();

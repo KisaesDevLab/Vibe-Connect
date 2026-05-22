@@ -1925,7 +1925,8 @@ export function AdminClients(): JSX.Element {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'clients'] }),
   });
   const reinvite = useMutation({
-    mutationFn: ({ id, via }: { id: string; via?: 'email' | 'sms' }) => api.reinviteClient(id, via),
+    mutationFn: ({ id, via }: { id: string; via?: 'email' | 'sms' | 'both' }) =>
+      api.reinviteClient(id, via),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'clients'] }),
   });
   const clients = q.data?.clients ?? [];
@@ -2091,10 +2092,10 @@ export function AdminClients(): JSX.Element {
                         type="button"
                         onClick={() => {
                           if (needsConfirm && !confirm(confirmText)) return;
-                          reinvite.mutate({
-                            id: c.id,
-                            via: c.invitedVia ?? (c.email ? 'email' : 'sms'),
-                          });
+                          // v0.4.33+: omit `via` and the server sends
+                          // through every channel the client has on
+                          // file (email AND sms when both are present).
+                          reinvite.mutate({ id: c.id });
                         }}
                         disabled={reinvite.isPending}
                         className="text-brand-700 hover:underline disabled:opacity-50"

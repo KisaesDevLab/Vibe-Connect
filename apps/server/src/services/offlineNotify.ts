@@ -394,6 +394,16 @@ export interface ClientNotifyArgs {
   shortBody: string;
   /** Subject line for email. */
   subject: string;
+  /**
+   * v0.4.33: when set, skip any recipient who already has a
+   * `read_receipts` row for this message id. Used by the
+   * client-message nudge ticker (services/clientMessageNudgeTicker.ts)
+   * so the 15-min "you have an unread message" fanout doesn't ping
+   * clients who actually read the message in time. Omit for
+   * conversation-wide fanouts (request nudges, scheduled broadcasts)
+   * where per-recipient read state doesn't apply.
+   */
+  excludeReadOfMessageId?: string;
 }
 
 interface ClientDispatchResult {
@@ -420,8 +430,21 @@ export async function notifyExternalRecipients(
 ): Promise<ClientDispatchResult[]> {
   const out: ClientDispatchResult[] = [];
   try {
-    const recipients = await loadExternalRecipients(args.conversationId);
+    let recipients = await loadExternalRecipients(args.conversationId);
     if (recipients.length === 0) return out;
+    // v0.4.33 — when the caller is dispatching for a specific message,
+    // strip recipients who already have a read receipt. The nudge
+    // ticker uses this so a client who read the message in time
+    // doesn't get a "you have an unread message" email/SMS.
+    if (args.excludeReadOfMessageId) {
+      const readers = await db('read_receipts')
+        .where({ message_id: args.excludeReadOfMessageId })
+        .whereNotNull('external_identity_id')
+        .select('external_identity_id');
+      const readerIds = new Set(readers.map((r) => String(r.external_identity_id)));
+      recipients = recipients.filter((r) => !readerIds.has(r.external_identity_id));
+      if (recipients.length === 0) return out;
+    }
     // Honors admin-side DB override of PORTAL_URL / SITE_URL via firm_settings.
     const urls = await effectiveUrls();
     const portalUrl = urls.portalUrl.replace(/\/$/, '') || urls.siteUrl;

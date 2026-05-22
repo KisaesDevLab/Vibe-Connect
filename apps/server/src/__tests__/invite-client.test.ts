@@ -491,6 +491,80 @@ describe('POST /admin/clients/:id/reinvite — re-invite scenarios', () => {
     const r = await alice.post(`/admin/clients/${id}/reinvite`).send({});
     expect(r.status).toBe(403);
   });
+
+  // v0.4.33: reinvite defaults to "via every channel on file" so a
+  // client with both email and phone gets both notifications. The
+  // server still accepts an explicit single-channel via override for
+  // legacy callers.
+  describe('v0.4.33 multi-channel default', () => {
+    async function seedClientWithBothChannels(
+      displayName: string,
+      email: string,
+      phone: string,
+    ): Promise<string> {
+      const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const r = await kurt.post('/clients/invite').send({
+        displayName,
+        channels: {
+          email: { enabled: true, value: email },
+          sms: { enabled: true, value: phone },
+        },
+        verification: { type: 'none' },
+      });
+      expect(r.status).toBe(201);
+      return r.body.externalIdentityId as string;
+    }
+
+    it('with both email + phone on file, default via=both dispatches both channels', async () => {
+      const id = await seedClientWithBothChannels(
+        'Both Channels',
+        'both-channels@test.com',
+        '+15555550100',
+      );
+      const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const r = await kurt.post(`/admin/clients/${id}/reinvite`).send({});
+      expect(r.status).toBe(200);
+      expect(r.body.ok).toBe(true);
+      expect(r.body.inviteSent).toBe(true);
+      expect(r.body.delivery.email).toBe('sent');
+      expect(r.body.delivery.sms).toBe('sent');
+
+      // Audit row should carry both per-channel statuses.
+      const { db } = await import('../db/knex.js');
+      const audit = await db('audit_log')
+        .where({ action: 'admin.client_reinvited', target_id: id })
+        .orderBy('created_at', 'desc')
+        .first();
+      expect(audit.details.via).toBe('both');
+      expect(audit.details.emailStatus).toBe('sent');
+      expect(audit.details.smsStatus).toBe('sent');
+    });
+
+    it('with only email on file, default downgrades to email-only (no phone error)', async () => {
+      const id = await seedClient('Email Only', 'email-only-reinvite@test.com');
+      const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const r = await kurt.post(`/admin/clients/${id}/reinvite`).send({});
+      expect(r.status).toBe(200);
+      expect(r.body.inviteSent).toBe(true);
+      expect(r.body.delivery.email).toBe('sent');
+      expect(r.body.delivery.sms).toBe('skipped');
+    });
+
+    it('explicit via=email still works (single-channel override)', async () => {
+      const id = await seedClientWithBothChannels(
+        'Override Email',
+        'override-email@test.com',
+        '+15555550101',
+      );
+      const kurt = await loginAs('kurt', 'kurt-dev-only-ChangeMe!');
+      const r = await kurt.post(`/admin/clients/${id}/reinvite`).send({ via: 'email' });
+      expect(r.status).toBe(200);
+      expect(r.body.delivery.email).toBe('sent');
+      // sms was not attempted — both channels configured but caller
+      // explicitly asked for email only.
+      expect(r.body.delivery.sms).toBe('skipped');
+    });
+  });
 });
 
 afterAll(async () => {

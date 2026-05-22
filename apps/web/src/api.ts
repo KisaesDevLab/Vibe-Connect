@@ -719,11 +719,25 @@ export const api = {
       body: JSON.stringify({ provider, to }),
     }),
 
-  reinviteClient: (id: string, via?: 'email' | 'sms') =>
-    json<{ ok: true; invitePublicKey: string; inviteSent: boolean; sendError?: string }>(
-      `/admin/clients/${id}/reinvite`,
-      { method: 'POST', body: JSON.stringify(via ? { via } : {}) },
-    ),
+  // v0.4.33+: `via` is no longer passed from the UI. The server defaults
+  // to 'both' when the client has both email and phone on file (so a
+  // resend goes to every channel they have, not just whichever the
+  // original invite used). Callers that need a single-channel send
+  // (admin Test button, etc.) can still pass via explicitly.
+  reinviteClient: (id: string, via?: 'email' | 'sms' | 'both') =>
+    json<{
+      ok: true;
+      invitePublicKey: string;
+      inviteSent: boolean;
+      sendError?: string;
+      delivery?: {
+        email: 'sent' | 'failed' | 'skipped';
+        sms: 'sent' | 'failed' | 'skipped';
+      };
+    }>(`/admin/clients/${id}/reinvite`, {
+      method: 'POST',
+      body: JSON.stringify(via ? { via } : {}),
+    }),
 
   // Staff-facing: list clients (external identities) reachable from this appliance
   // — either with a live invite public key or an active portal session. Used by

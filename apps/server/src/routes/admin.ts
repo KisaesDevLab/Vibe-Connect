@@ -941,25 +941,57 @@ adminRouter.post(
       res.status(404).json({ error: 'not_found' });
       return;
     }
-    const body = z.object({ via: z.enum(['email', 'sms']).optional() }).safeParse(req.body ?? {});
-    const via =
-      body.success && body.data.via
-        ? body.data.via
-        : ((row.invited_via as 'email' | 'sms' | null) ?? 'email');
+    // v0.4.33: default behavior is now "send via every channel the
+    // client has on file" — a client with both email and phone gets
+    // both, raising the odds they spot the invite on whichever inbox
+    // they check first. The optional `via` body param still honors an
+    // explicit single-channel override (legacy callers / admin Test
+    // button) but is no longer required.
+    const body = z
+      .object({ via: z.enum(['email', 'sms', 'both']).optional() })
+      .safeParse(req.body ?? {});
+    const explicitVia = body.success ? body.data.via : undefined;
+    const hasEmail = typeof row.email === 'string' && row.email.length > 0;
+    const hasPhone = typeof row.phone === 'string' && row.phone.length > 0;
+    // When the client has only one channel configured, downgrade
+    // 'both' to that channel rather than triggering the
+    // no_channel_configured throw inside sendClientInvite.
+    let via: 'email' | 'sms' | 'both';
+    if (explicitVia) {
+      via = explicitVia;
+    } else if (hasEmail && hasPhone) {
+      via = 'both';
+    } else if (hasEmail) {
+      via = 'email';
+    } else if (hasPhone) {
+      via = 'sms';
+    } else {
+      // No channels at all on the row — record on invited_via to keep
+      // the schema honest, but sendClientInvite would reject anyway.
+      via = (row.invited_via as 'email' | 'sms' | null) ?? 'email';
+    }
     const invite = await generateInviteMaterial();
-    await db('external_identities').where({ id: req.params.id! }).update({
-      invite_token_hash: invite.tokenHash,
-      invite_public_key: invite.publicKey,
-      invited_at: db.fn.now(),
-      invited_via: via,
-      deactivated_at: null,
-    });
+    await db('external_identities')
+      .where({ id: req.params.id! })
+      .update({
+        invite_token_hash: invite.tokenHash,
+        invite_public_key: invite.publicKey,
+        invited_at: db.fn.now(),
+        // `invited_via` on the row is a single-value enum-ish field;
+        // 'both' would break downstream lookups that expect 'email' or
+        // 'sms'. Store the primary channel (email when both, otherwise
+        // whichever was used) — `via` in the audit row captures the
+        // multi-channel intent.
+        invited_via: via === 'both' ? 'email' : via,
+        deactivated_at: null,
+      });
     const [firmSettingsRow, actorRow] = await Promise.all([
       db('firm_settings').where({ id: 1 }).first(),
       db('users').where({ id: req.session.userId! }).first(),
     ]);
+    let sendResult: Awaited<ReturnType<typeof sendClientInvite>> | null = null;
     try {
-      await sendClientInvite({
+      sendResult = await sendClientInvite({
         identityId: req.params.id!,
         displayName: row.display_name as string,
         via,
@@ -990,9 +1022,26 @@ adminRouter.post(
       action: 'admin.client_reinvited',
       targetType: 'external_identity',
       targetId: req.params.id!,
-      details: { via },
+      details: {
+        via,
+        emailStatus: sendResult.email.status,
+        smsStatus: sendResult.sms.status,
+      },
     });
-    res.json({ ok: true, invitePublicKey: invite.publicKey, inviteSent: true });
+    // Surface per-channel outcome so the staff UI can render
+    // "email sent, sms failed" instead of a single ok/fail bit. A
+    // 'both' call where one channel succeeded and the other failed
+    // is still inviteSent=true because the client has a working
+    // delivery path.
+    res.json({
+      ok: true,
+      invitePublicKey: invite.publicKey,
+      inviteSent: sendResult.email.status === 'sent' || sendResult.sms.status === 'sent',
+      delivery: {
+        email: sendResult.email.status,
+        sms: sendResult.sms.status,
+      },
+    });
   }),
 );
 

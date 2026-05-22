@@ -656,6 +656,54 @@ export function ConversationView(): JSX.Element {
                   </NavLink>
                 );
               })()}
+            {/* v0.4.33: Resend-invite shortcut in the chat header. Only
+              shown for conversations with an external_identity member —
+              internal staff threads have no invite to re-send. Calls
+              POST /admin/clients/:id/reinvite which defaults to
+              `via='both'`, dispatching to every channel the client has
+              on file. Wrapped in a confirm because rotating an invite
+              link while the client may have an unconsumed prior link in
+              their inbox invalidates that prior link. RBAC: the
+              endpoint is requireAdmin so a non-admin staffer who clicks
+              this gets a 403 toast — we don't gate the button itself,
+              consistent with how the Admin → Clients page exposes the
+              same button for the same RBAC check. */}
+            {(() => {
+              const ext = convQ.data?.members?.find((m) => m.externalIdentityId);
+              if (!ext?.externalIdentityId) return null;
+              const extId = ext.externalIdentityId;
+              // Use the already-computed conversation header title for
+              // the prompt — it's the same name the staffer is looking
+              // at, and avoids a second lookup just to render a
+              // friendly confirm string.
+              const extName = header.title || 'this client';
+              return (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const msg =
+                      `Send ${extName} a fresh invite link via every channel they have on file? ` +
+                      `Any prior unconsumed invite link will stop working. Active sessions are not affected.`;
+                    if (!confirm(msg)) return;
+                    void api.reinviteClient(extId).then((r) => {
+                      if (!r.inviteSent) {
+                        alert(`Resend failed: ${r.sendError ?? 'unknown error'}`);
+                        return;
+                      }
+                      const parts: string[] = [];
+                      if (r.delivery?.email === 'sent') parts.push('email');
+                      if (r.delivery?.sms === 'sent') parts.push('sms');
+                      const sent = parts.length > 0 ? parts.join(' + ') : 'invite';
+                      alert(`Invite re-sent via ${sent}.`);
+                    });
+                  }}
+                  className="text-xs rounded-md px-2 py-1 border border-slate-300 text-slate-700 hover:bg-slate-50"
+                  title="Send a fresh invite link to this client via every channel on file."
+                >
+                  Resend invite
+                </button>
+              );
+            })()}
           </div>
         </div>
 
