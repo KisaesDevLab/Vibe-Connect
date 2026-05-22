@@ -251,47 +251,61 @@ export function ConversationsPage(): JSX.Element {
         {/* relativeTick is read here so the render depends on it; a bare read
             in the map() below would also work but keeping the acknowledgement
             up-front makes the intent obvious. */}
-        <ul
-          className="bg-white rounded shadow divide-y divide-slate-100"
-          data-rel-tick={relativeTick}
-        >
-          {convs.map((c) => (
-            <li key={c.id}>
-              <button
-                type="button"
-                onClick={() => setActiveId(c.id)}
-                className={`w-full text-left px-4 py-3 hover:bg-slate-50 ${
-                  activeId === c.id ? 'bg-brand-50' : ''
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-medium flex-1 truncate">
-                    {c.displayName ?? '(conversation)'}
-                  </span>
-                  {c.lastMessageSource &&
-                    c.lastMessageSource !== 'app' &&
-                    c.lastMessageSource !== 'system' && (
-                      <span
-                        className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 px-2 py-0.5 text-[10px] font-semibold"
-                        title={`Latest reply arrived via ${c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}`}
-                      >
-                        <span aria-hidden="true">
-                          {c.lastMessageSource === 'email-in' ? '✉' : '💬'}
+        {/* Conversation list: only render when there's more than one to
+            choose from. With a single conversation it auto-selects below
+            and the list becomes pure noise stacked above the messaging
+            UI (user-reported: "remove the button for the client").
+            Multi-firm clients still get the picker so they can switch
+            threads. */}
+        {convs.length > 1 && (
+          <ul
+            className="bg-white rounded shadow divide-y divide-slate-100"
+            data-rel-tick={relativeTick}
+          >
+            {convs.map((c) => (
+              <li key={c.id}>
+                <button
+                  type="button"
+                  onClick={() => setActiveId(c.id)}
+                  className={`w-full text-left px-4 py-3 hover:bg-slate-50 ${
+                    activeId === c.id ? 'bg-brand-50' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium flex-1 truncate">
+                      {c.displayName ?? '(conversation)'}
+                    </span>
+                    {c.lastMessageSource &&
+                      c.lastMessageSource !== 'app' &&
+                      c.lastMessageSource !== 'system' && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-900 px-2 py-0.5 text-[10px] font-semibold"
+                          title={`Latest reply arrived via ${c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}`}
+                        >
+                          <span aria-hidden="true">
+                            {c.lastMessageSource === 'email-in' ? '✉' : '💬'}
+                          </span>
+                          {c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}
                         </span>
-                        {c.lastMessageSource === 'email-in' ? 'email' : 'SMS'}
-                      </span>
-                    )}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {formatRelative(c.lastMessageAt ?? c.updatedAt)}
-                </div>
-              </button>
-            </li>
-          ))}
-          {convs.length === 0 && (
-            <li className="px-4 py-6 text-sm text-slate-500 text-center">No conversations yet.</li>
-          )}
-        </ul>
+                      )}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {formatRelative(c.lastMessageAt ?? c.updatedAt)}
+                  </div>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {/* Zero-state when the client has no firm relationships yet.
+            Previously inlined as the last <li> of the list — extracted
+            so the list itself can hide entirely in the single-conversation
+            case without losing the empty state for the no-conversation case. */}
+        {convs.length === 0 && (
+          <div className="bg-white rounded shadow px-4 py-6 text-sm text-slate-500 text-center">
+            No conversations yet.
+          </div>
+        )}
         {activeId && me && <ActiveConversation id={activeId} myIdentityId={me.identityId} />}
       </main>
     </div>
@@ -606,7 +620,23 @@ function ActiveConversation({
   }, [id]);
 
   useEffect(() => {
-    if (!detail || !session || !detail.wrappedKeys) return;
+    if (!detail || !session) return;
+    // v0.4.36 fix: handle BOTH the "wrappedKeys is null" case (no
+    // conversation_keys row, or step-up not satisfied — the server
+    // returns null) AND the "wrappedKeys is {} or has entries but
+    // none match this session" case. Both should surface as
+    // keyMissing so the UI shows "Waiting for your firm…" instead
+    // of hanging on "decrypting…" forever.
+    //
+    // Pre-v0.4.36 the early return when detail.wrappedKeys was null
+    // meant keyMissing never flipped on for clients whose
+    // conversation had no wrapped-keys entries at all (the most
+    // common stuck-decrypt case in production), so the user kept
+    // seeing "decrypting…" with no diagnostic.
+    if (!detail.wrappedKeys || Object.keys(detail.wrappedKeys).length === 0) {
+      setKeyMissing(true);
+      return;
+    }
     let cancelled = false;
     (async () => {
       const crypto = await loadCrypto();
