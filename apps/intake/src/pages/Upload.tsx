@@ -3,7 +3,6 @@ import * as tus from 'tus-js-client';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CameraModal, canUseCamera } from '../components/CameraModal.js';
 import { ScanBatch } from '../components/ScanBatch.js';
-import { ScannerReview, type ScannerConfirmation } from '../components/ScannerReview.js';
 import { url } from '../lib/boot.js';
 
 /**
@@ -42,12 +41,6 @@ interface UploadRow {
   extraMeta?: {
     kind?: 'file' | 'scanned_image';
     orderIndex?: number;
-    /** JSON string of `{quad, enhanceMode, sourceSize}`. tus-js-client
-     *  base64-encodes metadata values on the wire, and the server
-     *  `parseUploadMetadata` decodes them back, so we hand off plain
-     *  JSON here. Present only when the user came through the in-browser
-     *  scanner — informs the server's warp + enhance step. */
-    scannerMeta?: string;
   };
 }
 
@@ -98,11 +91,11 @@ export function Upload(): JSX.Element {
   // back to the native <input capture> path which is the camera-fallback
   // hidden file input below.
   const [cameraOpen, setCameraOpen] = useState(false);
-  // Phase 28.7 — the review-and-crop step between the camera capture and
-  // the upload pipeline. When a blob comes back from CameraModal, we
-  // stash it here, close the camera, and let ScannerReview drive the
-  // crop / enhance UI.
-  const [reviewBlob, setReviewBlob] = useState<Blob | null>(null);
+  // Phase 28.7 review step removed in v0.4.29 — see commit log. The
+  // in-browser cropping UI required OpenCV.js (~7 MB WASM) which had a
+  // race in its init that hung iOS Safari at "Loading…". Captures now
+  // go straight from CameraModal to upload/batch; the server does any
+  // edge-detection / warp during PDF assembly.
   // Phase 28.8 — multi-page scan batch. Once the user enters scan mode
   // (clicks "Scan a document"), pages accumulate in ScanBatch until they
   // hit "Use these N pages" → all pages enqueue at once with
@@ -117,18 +110,12 @@ export function Upload(): JSX.Element {
   // arrived at an empty ScanBatch with no error. A useEffect-watched
   // state field is reliably consumed once the child mounts, regardless
   // of effect ordering.
-  //
-  // The `scannerMeta` field carries the quad + enhance mode that the
-  // server-side warp consumes. It lives with the pending page (not on
-  // the file itself) because `File` is immutable + the metadata is per-
-  // upload, not per-blob.
   const [pendingBatchPage, setPendingBatchPage] = useState<{
     file: File;
     replaceIndex: number | null;
     /** Bumped on every queue so identical files (same File ref) still
      *  trigger the consume effect. */
     seq: number;
-    scannerMeta?: string;
   } | null>(null);
   const pendingSeq = useRef(0);
   const idCounter = useRef(0);
@@ -190,14 +177,6 @@ export function Upload(): JSX.Element {
     if (row.extraMeta?.orderIndex !== undefined) {
       metadata.orderIndex = String(row.extraMeta.orderIndex);
     }
-    // Server-side warp: ScannerReview now emits the original photo + a
-    // serialised `{quad, enhanceMode, sourceSize}` payload. We forward it
-    // as a tus metadata field; the upload-service parses it on finalize
-    // and writes to `intake_files.scanner_meta` for the conversion ticker
-    // to consume.
-    if (row.extraMeta?.scannerMeta) {
-      metadata.scannerMeta = row.extraMeta.scannerMeta;
-    }
     const upload = new tus.Upload(row.file, {
       endpoint: url('/api/public/intake/uploads'),
       retryDelays: [0, 1000, 3000, 5000],
@@ -250,15 +229,15 @@ export function Upload(): JSX.Element {
   }
 
   /**
-   * Push a captured/picked image into the upload queue using the same
-   * machinery as the file picker. Used by both the in-page CameraModal
-   * (28.6 native capture) and the &lt;input capture&gt; fallback for
-   * unsupported browsers. `scannerMeta` is the JSON-stringified
-   * `{quad, enhanceMode, sourceSize}` payload from ScannerReview; absent
-   * for the native-camera fallback (server falls through to its
-   * EXIF-rotate-only path for those rows).
+   * Push a captured/picked image into the upload queue with
+   * `kind=scanned_image` so the server-side PDF assembly ticker picks
+   * it up. Used by both the in-page CameraModal and the
+   * &lt;input capture&gt; fallback. As of v0.4.29 the client no longer
+   * pre-cuts a quad — server runs edge detection during conversion
+   * (`intakeScannerWarp.ts`), falling back to a no-crop full-image
+   * page if the detector can't find a confident quadrilateral.
    */
-  function enqueueScan(file: File, scannerMeta?: string): void {
+  function enqueueScan(file: File): void {
     if (!token) return;
     if (file.size > PER_FILE_CAP_BYTES) {
       setRows((prev) => [
@@ -280,54 +259,30 @@ export function Upload(): JSX.Element {
       bytesSent: 0,
       bytesTotal: file.size,
       status: 'queued',
-      extraMeta: scannerMeta ? { kind: 'scanned_image', scannerMeta } : undefined,
+      extraMeta: { kind: 'scanned_image' },
     };
     setRows((prev) => [...prev, row]);
     startUpload(row);
   }
 
   function onCameraCapture(blob: Blob): void {
-    // 28.7 inserts the ScannerReview step between camera capture and the
-    // upload pipeline. The Scanner does its own crop + enhance + JPEG
-    // encode and hands us back a finished File via `onConfirm`.
+    // v0.4.29 — no more client-side review/crop step. The blob goes
+    // straight to upload (or the multi-page batch if scan mode is
+    // active). Server-side edge detection + warp + enhance happens
+    // during PDF assembly. See intakeScannerWarp.ts.
     setCameraOpen(false);
-    setReviewBlob(blob);
-  }
-
-  function onScannerConfirm(result: ScannerConfirmation): void {
-    setReviewBlob(null);
-    const scannerMeta = JSON.stringify({
-      quad: result.quad,
-      enhanceMode: result.enhanceMode,
-      sourceSize: result.sourceSize,
-    });
+    const file = blobToScanFile(blob);
     if (!batchActive) {
-      enqueueScan(result.file, scannerMeta);
+      enqueueScan(file);
       return;
     }
-    // Hand the file off to ScanBatch via state instead of an imperative
-    // ref — see `pendingBatchPage` for why.
     pendingSeq.current += 1;
     setPendingBatchPage({
-      file: result.file,
+      file,
       replaceIndex: retakeIndex,
       seq: pendingSeq.current,
-      scannerMeta,
     });
     if (retakeIndex !== null) setRetakeIndex(null);
-  }
-
-  function onScannerRetake(): void {
-    // Discard the current shot and re-open the camera. `retakeIndex`
-    // stays at whatever it was — if we were retaking page N, the next
-    // capture still replaces page N.
-    setReviewBlob(null);
-    setCameraOpen(true);
-  }
-
-  function onScannerCancel(): void {
-    setReviewBlob(null);
-    setRetakeIndex(null);
   }
 
   function onBatchAddMore(): void {
@@ -340,14 +295,15 @@ export function Upload(): JSX.Element {
     setCameraOpen(true);
   }
 
-  function onBatchSubmit(pages: Array<{ file: File; scannerMeta?: string }>): void {
+  function onBatchSubmit(pages: Array<{ file: File }>): void {
     // Convert the batched pages into upload rows with kind=scanned_image
     // and orderIndex matching their position in the review-confirmed
     // order. Each page is one tus upload — the 28.9 conversion job
-    // re-assembles them into a single PDF on the server.
+    // re-assembles them into a single PDF on the server, running
+    // edge-detection per page (intakeScannerWarp.ts) along the way.
     setBatchActive(false);
     for (let i = 0; i < pages.length; i++) {
-      const { file: f, scannerMeta } = pages[i]!;
+      const { file: f } = pages[i]!;
       if (f.size > PER_FILE_CAP_BYTES) {
         setRows((prev) => [
           ...prev,
@@ -371,7 +327,6 @@ export function Upload(): JSX.Element {
         extraMeta: {
           kind: 'scanned_image',
           orderIndex: i,
-          ...(scannerMeta ? { scannerMeta } : {}),
         },
       };
       setRows((prev) => [...prev, row]);
@@ -601,14 +556,6 @@ export function Upload(): JSX.Element {
 
       {cameraOpen && (
         <CameraModal onCapture={onCameraCapture} onClose={() => setCameraOpen(false)} />
-      )}
-      {reviewBlob && (
-        <ScannerReview
-          blob={reviewBlob}
-          onConfirm={onScannerConfirm}
-          onRetake={onScannerRetake}
-          onCancel={onScannerCancel}
-        />
       )}
     </div>
   );

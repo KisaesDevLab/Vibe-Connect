@@ -16,6 +16,11 @@
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import {
+  autoDetectAndWarp,
+  detectDocumentQuad,
+  extremeCorners,
+  largestConnectedComponent,
+  otsuThreshold,
   parseScannerMeta,
   warpAndEnhance,
   type ScannerMeta,
@@ -205,5 +210,222 @@ describe('warpAndEnhance', () => {
       sourceSize: { w: 100, h: 100 },
     };
     await expect(warpAndEnhance(src, meta)).rejects.toThrow();
+  });
+});
+
+// ---------- Server-side detection (v0.4.29 / no client OpenCV) ----------
+
+/**
+ * Build a JPEG of a bright `docFill`-coloured rectangle on a dark
+ * `bgFill`-coloured background. The rectangle occupies the inner area
+ * defined by `inset` on each side. Used to exercise the detection
+ * pipeline with deterministic geometry — Otsu should split bright
+ * from dark cleanly, BFS should grow the inner rectangle as the
+ * largest component, and the extreme-corner pass should land at the
+ * rect corners.
+ */
+function buildRectangleOnBackground(opts: {
+  imgW: number;
+  imgH: number;
+  rectInset: number;
+  bgFill: number;
+  docFill: number;
+}): Promise<Buffer> {
+  const { imgW, imgH, rectInset, bgFill, docFill } = opts;
+  const pixels = Buffer.alloc(imgW * imgH * 3);
+  for (let y = 0; y < imgH; y++) {
+    for (let x = 0; x < imgW; x++) {
+      const i = (y * imgW + x) * 3;
+      const inside =
+        x >= rectInset && x < imgW - rectInset && y >= rectInset && y < imgH - rectInset;
+      const v = inside ? docFill : bgFill;
+      pixels[i] = v;
+      pixels[i + 1] = v;
+      pixels[i + 2] = v;
+    }
+  }
+  // High-quality JPEG so block edges don't drift the corner positions
+  // and trip the detector's assertions.
+  return sharp(pixels, { raw: { width: imgW, height: imgH, channels: 3 } })
+    .jpeg({ quality: 98 })
+    .toBuffer();
+}
+
+describe('otsuThreshold', () => {
+  it('returns a threshold that cleanly separates two delta peaks', () => {
+    // Peaks at 30 and 220. With only two delta peaks, between-class
+    // variance is identical for every t ∈ [30, 219], so the algorithm
+    // picks the earliest one (30). What we care about: pixels at 220
+    // end up "foreground" (> threshold) and pixels at 30 end up
+    // "background" (≤ threshold). Assert that invariant rather than
+    // a specific numeric value the algorithm doesn't promise.
+    const h = new Uint32Array(256);
+    h[30] = 1000;
+    h[220] = 1000;
+    const t = otsuThreshold(h);
+    expect(30).toBeLessThanOrEqual(t);
+    expect(220).toBeGreaterThan(t);
+  });
+
+  it('handles an all-zero histogram (degenerate but plausible if mask is empty)', () => {
+    // Should not divide by zero / NaN; default 128 is the documented
+    // pre-loop value.
+    const t = otsuThreshold(new Uint32Array(256));
+    expect(t).toBe(128);
+  });
+});
+
+describe('largestConnectedComponent', () => {
+  it('finds a single rectangular component and ignores a smaller satellite', () => {
+    // 10×10 mask with a 6×6 component centred and a stray single pixel.
+    const w = 10;
+    const h = 10;
+    const mask = new Uint8Array(w * h);
+    // Stray pixel in the corner.
+    mask[0] = 1;
+    // 6×6 block at (2..8, 2..8).
+    for (let y = 2; y < 8; y++) {
+      for (let x = 2; x < 8; x++) {
+        mask[y * w + x] = 1;
+      }
+    }
+    const { bestLabel, bestSize, labels } = largestConnectedComponent(mask, w, h);
+    expect(bestLabel).not.toBe(0);
+    expect(bestSize).toBe(36);
+    // Stray pixel got a different label.
+    expect(labels[0]).not.toBe(bestLabel);
+  });
+
+  it('returns zero size for an entirely empty mask', () => {
+    const { bestLabel, bestSize } = largestConnectedComponent(new Uint8Array(25), 5, 5);
+    expect(bestLabel).toBe(0);
+    expect(bestSize).toBe(0);
+  });
+});
+
+describe('extremeCorners', () => {
+  it('picks the four extreme points of an axis-aligned rectangle', () => {
+    // 10×10 grid with a 6×6 component at (2..8, 2..8).
+    const w = 10;
+    const h = 10;
+    const labels = new Int32Array(w * h);
+    for (let y = 2; y < 8; y++) {
+      for (let x = 2; x < 8; x++) {
+        labels[y * w + x] = 1;
+      }
+    }
+    const corners = extremeCorners(labels, 1, w);
+    expect(corners).not.toBeNull();
+    expect(corners!.topLeft).toEqual({ x: 2, y: 2 });
+    expect(corners!.topRight).toEqual({ x: 7, y: 2 });
+    expect(corners!.bottomRight).toEqual({ x: 7, y: 7 });
+    expect(corners!.bottomLeft).toEqual({ x: 2, y: 7 });
+  });
+
+  it('returns null when no pixel matches the target label', () => {
+    const corners = extremeCorners(new Int32Array(25), 1, 5);
+    expect(corners).toBeNull();
+  });
+});
+
+describe('detectDocumentQuad', () => {
+  it('finds a bright rectangle on a dark background', async () => {
+    // 200×300 background (dark) with a centred 160×260 white rectangle
+    // (20 px inset on each side). The detector should land its corners
+    // at roughly the rectangle edges in natural coords.
+    const src = await buildRectangleOnBackground({
+      imgW: 200,
+      imgH: 300,
+      rectInset: 20,
+      bgFill: 20,
+      docFill: 240,
+    });
+    const result = await detectDocumentQuad(src);
+    expect(result).not.toBeNull();
+    const q = result!.quad;
+    // Allow generous tolerance — sharp downscale + Otsu + integer
+    // bucket boundaries can shift each corner a handful of pixels.
+    const TOL = 8;
+    expect(q.topLeft.x).toBeGreaterThanOrEqual(20 - TOL);
+    expect(q.topLeft.x).toBeLessThanOrEqual(20 + TOL);
+    expect(q.topLeft.y).toBeGreaterThanOrEqual(20 - TOL);
+    expect(q.topLeft.y).toBeLessThanOrEqual(20 + TOL);
+    expect(q.bottomRight.x).toBeGreaterThanOrEqual(180 - TOL);
+    expect(q.bottomRight.x).toBeLessThanOrEqual(180 + TOL);
+    expect(q.bottomRight.y).toBeGreaterThanOrEqual(280 - TOL);
+    expect(q.bottomRight.y).toBeLessThanOrEqual(280 + TOL);
+    expect(result!.sourceSize).toEqual({ w: 200, h: 300 });
+  });
+
+  it('returns null when the bright region is too small to be a document', async () => {
+    // 300×300 background with a tiny 20×20 white square — way below
+    // the 25%-area confidence floor.
+    const src = await buildRectangleOnBackground({
+      imgW: 300,
+      imgH: 300,
+      rectInset: 140,
+      bgFill: 20,
+      docFill: 240,
+    });
+    const result = await detectDocumentQuad(src);
+    expect(result).toBeNull();
+  });
+
+  it('returns null on a uniform (one-colour) image', async () => {
+    // No bimodal split → Otsu picks a meaningless threshold → mask is
+    // either all-zero or all-one → no component large enough to be a
+    // document, OR the entire frame is "document" with no
+    // distinguishing corners. Either way, low confidence.
+    const flat = Buffer.alloc(100 * 100 * 3, 128);
+    const src = await sharp(flat, { raw: { width: 100, height: 100, channels: 3 } })
+      .jpeg({ quality: 95 })
+      .toBuffer();
+    const result = await detectDocumentQuad(src);
+    // A uniform image's largest component will be the full frame
+    // (corners at image corners), but the confidence floor of 25%
+    // accepts that. Document detection on a uniform image gives the
+    // whole image as the "quad" — which warps to identity — which
+    // produces a sensible PDF page. Accept either null or
+    // full-image corners.
+    if (result) {
+      // Corners should be roughly at the image boundaries.
+      expect(result.quad.topLeft.x).toBeLessThan(20);
+      expect(result.quad.topLeft.y).toBeLessThan(20);
+      expect(result.quad.bottomRight.x).toBeGreaterThan(80);
+      expect(result.quad.bottomRight.y).toBeGreaterThan(80);
+    }
+  });
+});
+
+describe('autoDetectAndWarp', () => {
+  it('produces a warped JPEG when the input has a detectable document', async () => {
+    const src = await buildRectangleOnBackground({
+      imgW: 200,
+      imgH: 300,
+      rectInset: 20,
+      bgFill: 20,
+      docFill: 240,
+    });
+    const out = await autoDetectAndWarp(src);
+    expect(out).not.toBeNull();
+    expect(out!.jpeg.length).toBeGreaterThan(0);
+    // Output dimensions follow the detected quad's edge averages —
+    // roughly the inner rectangle (160×260) within a few px.
+    expect(out!.width).toBeGreaterThan(140);
+    expect(out!.width).toBeLessThan(180);
+    expect(out!.height).toBeGreaterThan(240);
+    expect(out!.height).toBeLessThan(280);
+  });
+
+  it('returns null when detection bails on a tiny bright region', async () => {
+    const src = await buildRectangleOnBackground({
+      imgW: 300,
+      imgH: 300,
+      rectInset: 140,
+      bgFill: 20,
+      docFill: 240,
+    });
+    const out = await autoDetectAndWarp(src);
+    expect(out).toBeNull();
   });
 });

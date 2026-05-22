@@ -41,7 +41,7 @@ import {
 } from '../repositories/intake.js';
 import { attachmentStorage } from './attachmentStorage.js';
 import { decryptBufferStreaming, decryptField } from './intakeCrypto.js';
-import { parseScannerMeta, warpAndEnhance } from './intakeScannerWarp.js';
+import { autoDetectAndWarp, parseScannerMeta, warpAndEnhance } from './intakeScannerWarp.js';
 
 // A4 portrait in PDF user units (1/72 inch). 595×842 = 210×297mm.
 const A4_W = 595;
@@ -146,20 +146,23 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
     try {
       const ct = await attachmentStorage().get(img.stored_path);
       const plain = await decryptBufferStreaming(ct);
-      // Two paths converge here:
+      // Three paths converge here, in priority order:
       //
-      //   1. Rows with `scanner_meta` populated — uploaded by the in-
-      //      browser scanner under the server-side-warp protocol. We run
-      //      the perspective transform + enhance step (formerly done in
-      //      iOS Safari's tight heap) before embedding.
-      //   2. Rows without — regular image uploads, OS-native camera
-      //      passthroughs, and legacy scans uploaded before the
-      //      migration. Same EXIF-rotate-then-encode path as before.
+      //   1. Rows with client-supplied `scanner_meta` (legacy, pre-
+      //      v0.4.29 — the client review/crop step that's since been
+      //      removed for the iOS hang it caused). Use the corners the
+      //      user placed.
+      //   2. Rows from the v0.4.29+ flow (no scanner_meta) — try the
+      //      server-side detector. If it finds a confident document
+      //      region, warp + enhance with the detected quad.
+      //   3. Anything else (OS-native camera passthroughs, low-contrast
+      //      photos the detector bailed on, errors anywhere upstream)
+      //      — embed the EXIF-rotated photo as-is. User still gets
+      //      their content in the PDF, just un-cropped.
       //
-      // If the warp throws (degenerate quad, channel-count mismatch,
-      // sharp decode failure) we fall back to the legacy path rather
-      // than dropping the page — the user still gets their photo in the
-      // PDF, just un-cropped.
+      // Every layer falls forward on its own error: a degenerate quad,
+      // a sharp decode failure, or an OOM in the warp pass should not
+      // drop the whole page from the PDF.
       let jpeg: Buffer;
       const meta = parseScannerMeta(img.scanner_meta);
       if (meta) {
@@ -175,7 +178,22 @@ export async function buildPdfForSession(sessionId: string): Promise<BuildPdfRes
           jpeg = await sharp(plain).rotate().jpeg({ quality: 85 }).toBuffer();
         }
       } else {
-        jpeg = await sharp(plain).rotate().jpeg({ quality: 85 }).toBuffer();
+        let detected: Awaited<ReturnType<typeof autoDetectAndWarp>> = null;
+        try {
+          detected = await autoDetectAndWarp(plain);
+        } catch (detectErr) {
+          // Detector throws are non-fatal — the photo still goes into
+          // the PDF un-cropped. Log so an operator can see a pattern
+          // if it starts failing on every page.
+          logger.warn('intake.pdf_detect_failed_fallback', {
+            sessionId,
+            fileId: img.id,
+            msg: detectErr instanceof Error ? detectErr.message : String(detectErr),
+          });
+        }
+        jpeg = detected
+          ? detected.jpeg
+          : await sharp(plain).rotate().jpeg({ quality: 85 }).toBuffer();
       }
       const embedded = await pdfDoc.embedJpg(jpeg);
       addImagePage(pdfDoc, embedded);

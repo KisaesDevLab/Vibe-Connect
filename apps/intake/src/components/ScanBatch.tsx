@@ -10,9 +10,9 @@ import {
 /**
  * Phase 28.8 — multi-page scan batch review.
  *
- * Sits between the per-page ScannerReview (28.7) and the tus upload pipe
- * (28.5). Each confirmed scan from ScannerReview lands here via
- * `onAddPage` rather than going straight to upload, so the user can:
+ * Sits between camera capture (28.6) and the tus upload pipe (28.5).
+ * Each capture lands here via `pendingPage` rather than going straight
+ * to upload, so the user can:
  *
  *   - Add more pages (button → reopens the camera flow)
  *   - Reorder pages by drag-and-drop
@@ -33,10 +33,9 @@ import {
  */
 
 export interface PendingPage {
-  /** The original captured JPEG (not yet warped — the perspective
-   *  transform now happens server-side, see
-   *  apps/server/src/services/intakeScannerWarp.ts). The OS-camera
-   *  fallback path also lands here with `scannerMeta` undefined. */
+  /** The original captured JPEG. As of v0.4.29 the client no longer
+   *  pre-warps — server runs edge detection + perspective warp during
+   *  PDF assembly (apps/server/src/services/intakeScannerWarp.ts). */
   file: File;
   /** Non-null when the parent asked for a retake of page N — we replace
    *  rather than append, preserving the original order_index. */
@@ -46,11 +45,6 @@ export interface PendingPage {
    *  consecutive captures of the same File reference (rare but possible)
    *  still fire the effect. */
   seq: number;
-  /** JSON-stringified `{quad, enhanceMode, sourceSize}` from
-   *  ScannerReview. Absent when the page came from the OS camera (no
-   *  corner-drag UI). The batch list keeps this paired with the blob so
-   *  reorder/retake/submit preserves the right warp inputs per page. */
-  scannerMeta?: string;
 }
 
 export interface ScanBatchProps {
@@ -70,10 +64,10 @@ export interface ScanBatchProps {
   /** Same idea but the parent should reopen the camera in "retake page N"
    *  mode; the new pendingPage will carry replaceIndex = N. */
   onRetakePage: (index: number) => void;
-  /** User confirmed the batch — emit ordered pages (page 1 first). Each
-   *  page carries the renamed File + the optional scannerMeta payload
-   *  that the upload pipe forwards to the server as tus metadata. */
-  onSubmit: (pages: Array<{ file: File; scannerMeta?: string }>) => void;
+  /** User confirmed the batch — emit ordered pages (page 1 first). The
+   *  upload pipe uploads each as kind=scanned_image; server-side PDF
+   *  assembly runs edge detection per page. */
+  onSubmit: (pages: Array<{ file: File }>) => void;
   /** User discarded the batch (after confirmation) — parent closes the
    *  batch view; the IDB record is already cleared. */
   onDiscard: () => void;
@@ -117,7 +111,7 @@ export function ScanBatch({
     void saveScanBatch(sessionId, pages);
   }, [sessionId, pages, hydrated]);
 
-  const addPage = useCallback(async (file: File, scannerMeta?: string): Promise<void> => {
+  const addPage = useCallback(async (file: File): Promise<void> => {
     const thumb = await makeThumbnail(file);
     setPages((prev) => [
       ...prev,
@@ -125,30 +119,25 @@ export function ScanBatch({
         id: randomId(),
         blob: file,
         thumb,
-        scannerMeta,
         capturedAt: Date.now(),
       },
     ]);
   }, []);
 
-  const replacePage = useCallback(
-    async (index: number, file: File, scannerMeta?: string): Promise<void> => {
-      const thumb = await makeThumbnail(file);
-      setPages((prev) => {
-        const next = prev.slice();
-        if (index < 0 || index >= next.length) return prev;
-        next[index] = {
-          id: next[index]!.id,
-          blob: file,
-          thumb,
-          scannerMeta,
-          capturedAt: Date.now(),
-        };
-        return next;
-      });
-    },
-    [],
-  );
+  const replacePage = useCallback(async (index: number, file: File): Promise<void> => {
+    const thumb = await makeThumbnail(file);
+    setPages((prev) => {
+      const next = prev.slice();
+      if (index < 0 || index >= next.length) return prev;
+      next[index] = {
+        id: next[index]!.id,
+        blob: file,
+        thumb,
+        capturedAt: Date.now(),
+      };
+      return next;
+    });
+  }, []);
 
   // Consume the parent's pendingPage handoff once hydration completes.
   // Guarded on `hydrated` so we don't append a capture that arrives
@@ -160,13 +149,13 @@ export function ScanBatch({
     if (!hydrated || !pendingPage) return;
     if (lastConsumedSeq.current === pendingPage.seq) return;
     lastConsumedSeq.current = pendingPage.seq;
-    const { file, replaceIndex, scannerMeta } = pendingPage;
+    const { file, replaceIndex } = pendingPage;
     void (async () => {
       try {
         if (replaceIndex !== null) {
-          await replacePage(replaceIndex, file, scannerMeta);
+          await replacePage(replaceIndex, file);
         } else {
-          await addPage(file, scannerMeta);
+          await addPage(file);
         }
       } finally {
         onPendingConsumed();
@@ -200,7 +189,7 @@ export function ScanBatch({
         type,
         lastModified: p.capturedAt,
       });
-      return { file, scannerMeta: p.scannerMeta };
+      return { file };
     });
     await clearScanBatch(sessionId);
     onSubmit(out);

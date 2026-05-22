@@ -57,6 +57,20 @@ export interface ScannerMeta {
 // client-side (legacy) or server-side (current).
 const OUTPUT_MAX = 2000;
 
+// Working-size cap for server-side document edge detection. 800 px on
+// the long edge keeps the BFS connected-component pass well under
+// 1 second on appliance-class CPUs while preserving corner positions
+// to within a few full-resolution pixels (the warp's bilinear sampler
+// smooths over that).
+const DETECT_WORK_EDGE = 800;
+
+// Minimum fraction of the working image area the "document" component
+// must occupy before we trust the detection. Phones in normal framing
+// put the document at 50-90% of the frame; the 0.25 floor rejects
+// "user took a picture of their desk with no paper" without rejecting
+// legitimate phone-held-far scans.
+const DETECT_MIN_AREA_FRACTION = 0.25;
+
 /**
  * Type-guard a JSONB blob read from `intake_files.scanner_meta`. Returns
  * `null` if any field is missing or malformed — caller falls back to the
@@ -383,4 +397,304 @@ function applyEnhance(buf: Buffer, w: number, h: number, mode: EnhanceMode): voi
       buf[i + 2] = v;
     }
   }
+}
+
+// ---------- Server-side document detection ----------
+//
+// v0.4.29 — client-side OpenCV/jscanify was removed (iOS Safari hang at
+// the "Loading…" screen, see commit 3ac6e94). Captures now upload raw
+// and the server decides whether a quadrilateral document is in the
+// frame; if so, the existing `warpAndEnhance` rectifies it. If not,
+// `intakePdfBuilder.ts` falls back to embedding the EXIF-rotated photo
+// as-is so the user still gets their content into the PDF.
+//
+// Algorithm trade-offs (no native OpenCV, just sharp + pure JS):
+//   - Otsu thresholding handles bimodal "document vs background" well
+//     when the document is meaningfully brighter than the surface it
+//     sits on. White paper on a dark/wooden desk: works. White paper
+//     on a beige conference-room desk with similar luminance: fails
+//     to find a usable component, returns null, caller falls back.
+//   - BFS connected-component finds the largest bright region; this
+//     is the document for any normal phone framing.
+//   - Extreme-point heuristic for corners (argmin/max of x±y) is
+//     accurate enough at this working resolution that the warp's
+//     bilinear sampler covers any sub-pixel error. True convex-hull
+//     extraction would be more code without visible benefit.
+//
+// Performance: ~150-300 ms on a 12 MP iPhone JPEG on an appliance-
+// class Xeon Bronze. Runs inside the PDF conversion ticker, off the
+// HTTP path.
+
+/**
+ * Run Otsu's method on a greyscale histogram. Returns the threshold
+ * (0-255) that maximises between-class variance — the standard
+ * bimodal-segmentation cut. Exported for unit-testability; production
+ * callers go through `detectDocumentQuad`.
+ */
+export function otsuThreshold(histogram: Uint32Array | number[]): number {
+  let total = 0;
+  let sumAll = 0;
+  for (let t = 0; t < 256; t++) {
+    total += histogram[t]!;
+    sumAll += t * histogram[t]!;
+  }
+  if (total === 0) return 128;
+  let sumB = 0;
+  let wB = 0;
+  let maxVar = -1;
+  let threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += histogram[t]!;
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * histogram[t]!;
+    const mB = sumB / wB;
+    const mF = (sumAll - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxVar) {
+      maxVar = v;
+      threshold = t;
+    }
+  }
+  return threshold;
+}
+
+/**
+ * Find the largest connected component in a binary mask using 4-way
+ * connectivity (up/down/left/right; diagonals can chain across narrow
+ * gaps and merge separate objects). Returns the label assigned to that
+ * component, the labels array, and its size in pixels. Exported for
+ * test-only assertion of correctness on synthetic masks.
+ */
+export function largestConnectedComponent(
+  mask: Uint8Array,
+  w: number,
+  h: number,
+): { labels: Int32Array; bestLabel: number; bestSize: number } {
+  const labels = new Int32Array(w * h);
+  let bestLabel = 0;
+  let bestSize = 0;
+  let nextLabel = 1;
+  // Queue is reused across components — clearing length is cheaper than
+  // re-allocating, and the worst-case queue depth is the component size.
+  const queue: number[] = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || labels[start]) continue;
+    const myLabel = nextLabel++;
+    labels[start] = myLabel;
+    let size = 1;
+    queue.length = 0;
+    queue.push(start);
+    // Head pointer instead of Array.shift() — shift is O(n) which would
+    // make BFS O(component^2) on Chrome/V8 (less of an issue on Node,
+    // but the cost is real for a 100k-pixel component).
+    let head = 0;
+    while (head < queue.length) {
+      const p = queue[head++]!;
+      const px = p % w;
+      const py = (p - px) / w;
+      if (px > 0) {
+        const n = p - 1;
+        if (mask[n] && !labels[n]) {
+          labels[n] = myLabel;
+          size++;
+          queue.push(n);
+        }
+      }
+      if (px < w - 1) {
+        const n = p + 1;
+        if (mask[n] && !labels[n]) {
+          labels[n] = myLabel;
+          size++;
+          queue.push(n);
+        }
+      }
+      if (py > 0) {
+        const n = p - w;
+        if (mask[n] && !labels[n]) {
+          labels[n] = myLabel;
+          size++;
+          queue.push(n);
+        }
+      }
+      if (py < h - 1) {
+        const n = p + w;
+        if (mask[n] && !labels[n]) {
+          labels[n] = myLabel;
+          size++;
+          queue.push(n);
+        }
+      }
+    }
+    if (size > bestSize) {
+      bestSize = size;
+      bestLabel = myLabel;
+    }
+  }
+  return { labels, bestLabel, bestSize };
+}
+
+/**
+ * Extreme-point corner heuristic. For each pixel belonging to the
+ * target component, pick the indices minimising / maximising the four
+ * rotated coordinates:
+ *
+ *   topLeft     = argmin(x + y)
+ *   topRight    = argmax(x - y)
+ *   bottomRight = argmax(x + y)
+ *   bottomLeft  = argmax(y - x)
+ *
+ * These four extremes coincide with the actual quadrilateral corners
+ * for any convex shape rotated < 45° from axis-aligned, which covers
+ * any reasonable phone-held document frame. Exported for testability.
+ */
+export function extremeCorners(labels: Int32Array, target: number, w: number): Quad | null {
+  let tlIdx = -1;
+  let tlScore = Infinity;
+  let trIdx = -1;
+  let trScore = -Infinity;
+  let brIdx = -1;
+  let brScore = -Infinity;
+  let blIdx = -1;
+  let blScore = -Infinity;
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] !== target) continue;
+    const x = i % w;
+    const y = (i - x) / w;
+    const xPlusY = x + y;
+    const xMinusY = x - y;
+    const yMinusX = y - x;
+    if (xPlusY < tlScore) {
+      tlScore = xPlusY;
+      tlIdx = i;
+    }
+    if (xPlusY > brScore) {
+      brScore = xPlusY;
+      brIdx = i;
+    }
+    if (xMinusY > trScore) {
+      trScore = xMinusY;
+      trIdx = i;
+    }
+    if (yMinusX > blScore) {
+      blScore = yMinusX;
+      blIdx = i;
+    }
+  }
+  if (tlIdx < 0 || trIdx < 0 || brIdx < 0 || blIdx < 0) return null;
+  const toPoint = (idx: number): Point => {
+    const x = idx % w;
+    const y = (idx - x) / w;
+    return { x, y };
+  };
+  return {
+    topLeft: toPoint(tlIdx),
+    topRight: toPoint(trIdx),
+    bottomRight: toPoint(brIdx),
+    bottomLeft: toPoint(blIdx),
+  };
+}
+
+/**
+ * Best-effort server-side document detection. Pipeline:
+ *
+ *   1. EXIF-rotate the source so corner coordinates match what the
+ *      warp's `sourceSize` check expects.
+ *   2. Downscale to DETECT_WORK_EDGE on the long edge + greyscale +
+ *      Gaussian blur. Smaller working size is fast AND denoises JPEG
+ *      block edges that would otherwise create spurious bright/dark
+ *      transitions inside the document.
+ *   3. Otsu threshold to split bright (document) from dark (surface).
+ *   4. BFS for the largest bright component.
+ *   5. Confidence floor at DETECT_MIN_AREA_FRACTION — small components
+ *      mean the photo doesn't have a high-contrast document, or the
+ *      threshold caught a glare patch. Bail to null; caller falls back
+ *      to no-crop.
+ *   6. Extreme-point corner extraction, scaled back to natural pixels.
+ *
+ * Returns null when detection is low-confidence; the caller is
+ * expected to fall back to embedding the photo as-is.
+ */
+export async function detectDocumentQuad(
+  srcBuffer: Buffer,
+): Promise<{ quad: Quad; sourceSize: { w: number; h: number } } | null> {
+  const upright = sharp(srcBuffer).rotate();
+  const uprightMeta = await upright.metadata();
+  const fullW = uprightMeta.width;
+  const fullH = uprightMeta.height;
+  if (!fullW || !fullH) return null;
+
+  const longEdge = Math.max(fullW, fullH);
+  const scale = longEdge > DETECT_WORK_EDGE ? DETECT_WORK_EDGE / longEdge : 1;
+  const workW = Math.max(1, Math.round(fullW * scale));
+  const workH = Math.max(1, Math.round(fullH * scale));
+
+  const { data: grey, info } = await upright
+    .clone()
+    .resize(workW, workH, { fit: 'fill' })
+    .greyscale()
+    .blur(1.2)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const w = info.width;
+  const h = info.height;
+  // sharp's .greyscale().raw() emits 1 byte per pixel; sanity check
+  // before indexing as such (a future sharp behaviour change here
+  // would silently produce nonsense).
+  if (grey.length !== w * h) return null;
+
+  const histogram = new Uint32Array(256);
+  for (let i = 0; i < grey.length; i++) {
+    const bucket = grey[i]!;
+    histogram[bucket] = (histogram[bucket] ?? 0) + 1;
+  }
+  const threshold = otsuThreshold(histogram);
+
+  const mask = new Uint8Array(w * h);
+  for (let i = 0; i < grey.length; i++) mask[i] = grey[i]! > threshold ? 1 : 0;
+
+  const { labels, bestLabel, bestSize } = largestConnectedComponent(mask, w, h);
+  if (bestLabel === 0 || bestSize / (w * h) < DETECT_MIN_AREA_FRACTION) return null;
+
+  const workQuad = extremeCorners(labels, bestLabel, w);
+  if (!workQuad) return null;
+
+  // Scale corners from working frame back to natural-image frame.
+  const inv = 1 / scale;
+  const lift = (p: Point): Point => ({ x: p.x * inv, y: p.y * inv });
+  return {
+    quad: {
+      topLeft: lift(workQuad.topLeft),
+      topRight: lift(workQuad.topRight),
+      bottomRight: lift(workQuad.bottomRight),
+      bottomLeft: lift(workQuad.bottomLeft),
+    },
+    sourceSize: { w: fullW, h: fullH },
+  };
+}
+
+/**
+ * Convenience composition: detect a document quad, then warp +
+ * enhance. Used by the PDF builder for uploads without client-
+ * supplied scanner metadata (i.e. every upload as of v0.4.29 —
+ * the client review/crop step was removed). Returns null when
+ * detection is low-confidence so the caller can fall back to the
+ * EXIF-rotate-only path.
+ *
+ * Default enhanceMode = 'grayscale' matches the prior client-side
+ * default, keeps text crisp, and produces smaller PDFs than color
+ * for the typical CPA-document-on-white-paper case.
+ */
+export async function autoDetectAndWarp(
+  srcBuffer: Buffer,
+  enhanceMode: EnhanceMode = 'grayscale',
+): Promise<{ jpeg: Buffer; width: number; height: number } | null> {
+  const detected = await detectDocumentQuad(srcBuffer);
+  if (!detected) return null;
+  return warpAndEnhance(srcBuffer, {
+    quad: detected.quad,
+    sourceSize: detected.sourceSize,
+    enhanceMode,
+  });
 }
