@@ -386,6 +386,16 @@ function ActiveConversation({
   const [messages, setMessages] = useState<Msg[]>([]);
   const [convKey, setConvKey] = useState<Uint8Array | null>(null);
   const [decryptedBodies, setDecryptedBodies] = useState<Record<string, string>>({});
+  // Stale-closure-safe view of which message ids already have a real
+  // decrypted body (not the `__decrypting__` placeholder). Updated
+  // immediately whenever setDecryptedBodies runs in the decrypt effect
+  // so the in-loop "skip already done" check sees fresh state without
+  // depending on React's closure capture. Without this, the loop body
+  // (which runs once per setMessages call thanks to the [messages]
+  // dependency) re-decrypts every message on every 15s poll tick — on
+  // slower devices the next poll cancels the loop before it catches
+  // up, and visible state never resolves past "decrypting…".
+  const decryptedRef = useRef<Record<string, string>>({});
   const [body, setBody] = useState('');
   // Track the files the user has staged but hasn't sent yet — see sendMessage
   // for the "send message then attach" ordering that relies on this. Phase
@@ -460,6 +470,10 @@ function ActiveConversation({
     setMessages([]);
     setConvKey(null);
     setDecryptedBodies({});
+    // Reset the ref alongside state — otherwise switching conversations
+    // would carry the prior thread's decrypted-id set forward and the
+    // skip-already-decrypted check would skip work it should do.
+    decryptedRef.current = {};
     json<ConvDetail>(`/portal/conversations/${id}`).then(setDetail);
     json<{ messages: Msg[] }>(`/portal/conversations/${id}/messages`).then((r) =>
       setMessages(r.messages),
@@ -480,7 +494,38 @@ function ActiveConversation({
       try {
         const r = await json<{ messages: Msg[] }>(`/portal/conversations/${id}/messages`);
         if (stopped) return;
-        setMessages(r.messages);
+        setMessages((prev) => {
+          // Skip the state update (and the React re-render it triggers)
+          // when the polled list is structurally equivalent to what we
+          // already have. The decrypt effect's deps are
+          // [convKey, messages] — a new array reference cancels the
+          // in-flight per-message decrypt loop and restarts it from
+          // message 0, which on slower devices (long thread × iOS
+          // Safari XChaCha cost) doesn't finish before the next 15s
+          // tick. User-reported symptom: messages stay on "decrypting…"
+          // until they send something (which happens to take long
+          // enough that the next poll lands after decrypt completes).
+          //
+          // Equality check covers the fields that can change between
+          // polls without an id-level add/remove: ciphertext (rare
+          // rewrap), deletedAt (tombstoning), editedAt (Phase 24/27).
+          // Anything else (read receipts, ciphertextMeta tweaks, etc.)
+          // doesn't affect what we render so it's safe to ignore.
+          if (prev.length !== r.messages.length) return r.messages;
+          for (let i = 0; i < prev.length; i++) {
+            const a = prev[i]!;
+            const b = r.messages[i]!;
+            if (
+              a.id !== b.id ||
+              a.ciphertext !== b.ciphertext ||
+              a.deletedAt !== b.deletedAt ||
+              a.editedAt !== b.editedAt
+            ) {
+              return r.messages;
+            }
+          }
+          return prev;
+        });
       } catch {
         /* transient 401/network; next tick retries */
       }
@@ -581,16 +626,25 @@ function ActiveConversation({
       });
       for (const m of messages) {
         if (cancelled) return;
-        // Skip messages already decrypted or marked bridge-pending.
-        // decryptedBodies state isn't read here directly (stale closure), so
-        // we re-check by attempting parse/decrypt and catching.
+        // Skip messages already decrypted (real body in ref) — without
+        // this, every setMessages caller (15s poll, send, edit, etc.)
+        // re-iterates the full list and re-decrypts everything from
+        // m[0]. Reading via ref instead of `decryptedBodies` avoids a
+        // stale-closure miss when the effect was scheduled mid-decrypt
+        // of a prior pass. `__decrypting__` placeholders aren't skipped
+        // — they mean "not yet decrypted in this session" and we need
+        // to fill them in.
+        const have = decryptedRef.current[m.id];
+        if (have && have !== '__decrypting__') continue;
         if (m.deletedAt) continue;
         if (m.contentKeyVersion === 0 && (m.source === 'email-in' || m.source === 'sms-in')) {
           continue;
         }
         // Phase 24: system messages have empty ciphertext; render from meta.
         if (m.source === 'system') {
-          setDecryptedBodies((prev) => ({ ...prev, [m.id]: renderSystemMessageBody(m) }));
+          const sys = renderSystemMessageBody(m);
+          decryptedRef.current[m.id] = sys;
+          setDecryptedBodies((prev) => ({ ...prev, [m.id]: sys }));
           continue;
         }
         try {
@@ -598,9 +652,11 @@ function ActiveConversation({
           const plain = await crypto.decryptMessage(env, convKey);
           if (cancelled) return;
           const body = crypto.utf8Decode(plain);
+          decryptedRef.current[m.id] = body;
           setDecryptedBodies((prev) => ({ ...prev, [m.id]: body }));
         } catch {
           if (cancelled) return;
+          decryptedRef.current[m.id] = '(unable to decrypt)';
           setDecryptedBodies((prev) => ({ ...prev, [m.id]: '(unable to decrypt)' }));
         }
       }
