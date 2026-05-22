@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App.js';
+import { registerServiceWorker } from './lib/pwa.js';
 import './styles.css';
 
 const queryClient = new QueryClient({
@@ -27,3 +28,8 @@ ReactDOM.createRoot(rootEl).render(
     </QueryClientProvider>
   </React.StrictMode>,
 );
+// PWA: register after render so the SW install doesn't race with
+// initial bundle parse. iOS Safari requires manifest + SW + at least
+// one prior visit before "Add to Home Screen" treats the intake as
+// an installable PWA rather than a generic Safari bookmark.
+registerServiceWorker();

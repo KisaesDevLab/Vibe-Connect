@@ -43,6 +43,16 @@
       placeholder is substituted at request time.
     -->
     <link rel="manifest" href="manifest.webmanifest" />
+    <!-- iOS-specific PWA install hints. Safari ignores the standard
+         manifest's display + scope for the Add-to-Home-Screen pinned-
+         app behavior — it needs the apple-mobile-web-app-* tags + a
+         registered service worker (apps/intake/src/lib/pwa.ts) for
+         install to surface as "Add to Home Screen → app icon" rather
+         than the generic bookmark. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Intake" />
+    <link rel="apple-touch-icon" href="favicon.svg" />
     <title>Send files</title>
     <script src="__BASE_HREF__/__vibe-boot.js"></script>
   </head>
