@@ -77,6 +77,25 @@ export function DeviceSyncRunner(): null {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, device, isLocked, getSecretKey, recipientId]);
 
+  // v0.4.35 — react to client portal logins so the conversation key gets
+  // wrapped for the new session's public key immediately (instead of on
+  // the next 60s periodic sweep tick). The portal side renders
+  // "Waiting for your firm…" while this is pending; getting the sweep
+  // to run fast keeps that wait sub-second when any staff is online.
+  useEffect(() => {
+    if (!socket) return;
+    const handler = (evt: { externalIdentityId?: string; sessionId?: string }): void => {
+      // eslint-disable-next-line no-console
+      console.info('device-sync: received client:session_created', evt);
+      void sweep('client:session_created');
+    };
+    socket.on('client:session_created', handler);
+    return () => {
+      socket.off('client:session_created', handler);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket, device, isLocked, getSecretKey, recipientId]);
+
   // Belt-and-braces: periodic sweep so a missed realtime push still converges.
   // Piggy-backs on runDeviceRewrapSweep's rate-limit for coalescing.
   useEffect(() => {

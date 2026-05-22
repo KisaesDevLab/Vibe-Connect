@@ -211,6 +211,18 @@ export function ConversationsPage(): JSX.Element {
     );
   }, []);
 
+  // Auto-select the sole conversation if the client has exactly one.
+  // The list/picker step is redundant for a single-firm relationship
+  // (the common case) — the user reported "why does the client have to
+  // click on a box with their name to view the messages? Seems
+  // redundant". When N > 1, leave the picker behavior intact so the
+  // user can choose which firm thread to open. When N = 0, the empty
+  // state inside the list renders ("No conversations yet.").
+  useEffect(() => {
+    if (activeId) return;
+    if (convs.length === 1) setActiveId(convs[0]!.id);
+  }, [convs, activeId]);
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-3">
@@ -385,6 +397,22 @@ function ActiveConversation({
   const [detail, setDetail] = useState<ConvDetail | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [convKey, setConvKey] = useState<Uint8Array | null>(null);
+  // True after the unwrap-attempt effect ran and failed to find a
+  // wrapped-key entry sealed to this session's public key. Distinct
+  // from `!convKey` (which is also true during initial load before
+  // detail arrives) — `keyMissing` only flips on once we've actually
+  // tried every entry and none unwrapped. Drives the "Waiting for your
+  // firm to grant access" UI so the user understands why nothing
+  // decrypts, instead of staring at "decrypting…" forever.
+  //
+  // Root cause this surfaces: each portal login generates a fresh
+  // ephemeral session keypair. Staff must re-wrap the conversation
+  // key for that new public key (E2EE — server can't do it). The
+  // wrap happens via the staff client's rewrap sweep — periodic 60s
+  // poll + on-mount + on the new `client:session_created` push from
+  // v0.4.35+. If no staff has been online since this client logged
+  // in, no wrap exists.
+  const [keyMissing, setKeyMissing] = useState(false);
   const [decryptedBodies, setDecryptedBodies] = useState<Record<string, string>>({});
   // Stale-closure-safe view of which message ids already have a real
   // decrypted body (not the `__decrypting__` placeholder). Updated
@@ -469,6 +497,7 @@ function ActiveConversation({
     setDetail(null);
     setMessages([]);
     setConvKey(null);
+    setKeyMissing(false);
     setDecryptedBodies({});
     // Reset the ref alongside state — otherwise switching conversations
     // would carry the prior thread's decrypted-id set forward and the
@@ -479,6 +508,40 @@ function ActiveConversation({
       setMessages(r.messages),
     );
   }, [id]);
+
+  // v0.4.35: while keyMissing is true, poll the conversation detail
+  // every 10 seconds so the user's "Waiting for your firm…" state
+  // resolves on its own as soon as staff's rewrap sweep lands. Without
+  // this, the portal would still need a manual page refresh because
+  // portal clients don't hold a socket connection. The server-side
+  // `client:session_created` push triggers an immediate staff rewrap;
+  // this poll is what lets the portal observe the result.
+  //
+  // Stops as soon as convKey unwraps successfully — the unwrap effect
+  // flips keyMissing back to false, and this effect's cleanup runs.
+  // Same visibility gate as the message poll so backgrounded tabs
+  // don't thrash the server.
+  useEffect(() => {
+    if (!keyMissing) return;
+    let stopped = false;
+    const POLL_MS = 10_000;
+    async function poll(): Promise<void> {
+      if (stopped) return;
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const r = await json<ConvDetail>(`/portal/conversations/${id}`);
+        if (stopped) return;
+        setDetail(r);
+      } catch {
+        /* transient; next tick retries */
+      }
+    }
+    const handle = window.setInterval(() => void poll(), POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(handle);
+    };
+  }, [id, keyMissing]);
 
   // Poll for new messages every 15s while this conversation is active.
   // Portal clients don't have a Socket.io channel (server side doesn't yet
@@ -544,22 +607,37 @@ function ActiveConversation({
 
   useEffect(() => {
     if (!detail || !session || !detail.wrappedKeys) return;
+    let cancelled = false;
     (async () => {
       const crypto = await loadCrypto();
       // Find our session's wrapped slot. We don't yet know this session's
       // id without an extra round-trip, so we try every entry until the
       // unwrap succeeds. Production note: /portal/me should return the
       // session id so we can key in directly; tracked separately.
+      let matched = false;
       for (const [, wrapped] of Object.entries(detail.wrappedKeys!)) {
+        if (cancelled) return;
         try {
           const k = await crypto.unwrapKey(wrapped, session.publicKey, session.secretKey);
+          if (cancelled) return;
           setConvKey(k);
+          setKeyMissing(false);
+          matched = true;
           break;
         } catch {
           /* try next */
         }
       }
+      if (!cancelled && !matched) {
+        // None of the wrapped entries belong to this session. Surface
+        // the "waiting for firm to grant access" state instead of
+        // leaving the user staring at "decrypting…" forever.
+        setKeyMissing(true);
+      }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [detail, session]);
 
   // Phase 27: mark every staff-sent message read once it surfaces in the
@@ -914,6 +992,28 @@ function ActiveConversation({
         <a href="/stepup" className="text-brand-700 underline text-sm">
           Continue to verification →
         </a>
+      </div>
+    );
+  }
+  if (keyMissing) {
+    // E2EE means the server can't issue the conversation key on its
+    // own — it has to come from a staff member who already holds it.
+    // Each portal login generates a fresh ephemeral keypair, so the
+    // first login (or any login after the prior session expired)
+    // shows this state until staff's rewrap sweep fires for this
+    // conversation. From v0.4.35 the server pushes a
+    // `client:session_created` realtime event so an online staff
+    // device rewraps within milliseconds; if no staff is online,
+    // they'll rewrap on their next sign-in (their app runs a sweep
+    // on mount).
+    return (
+      <div className="bg-amber-50 border border-amber-200 rounded shadow p-5">
+        <h2 className="font-semibold mb-1">Waiting for your firm</h2>
+        <p className="text-sm text-amber-900">
+          Your firm needs to grant this device access to read messages. They&apos;ll be notified the
+          next time someone signs in to the staff app, and access will appear here automatically —
+          usually within a minute. You can leave this page open.
+        </p>
       </div>
     );
   }

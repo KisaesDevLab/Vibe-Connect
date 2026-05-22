@@ -75,6 +75,22 @@ export type RealtimeEvent =
       addedRecipientIds: string[];
     }
   | {
+      // v0.4.35 — a new client_sessions row was just inserted (client
+      // logged in via /portal/verify). Each portal login mints a fresh
+      // ephemeral keypair; the conversation key has to be wrapped to
+      // its public key by an already-enrolled staff member (E2EE means
+      // server can't). Without this push, staff's rewrap sweep only
+      // fires on mount / socket reconnect / every 60s — clients could
+      // wait up to a minute for their messages to decrypt after login,
+      // or indefinitely if no staff is online. With this push, every
+      // online staff device that's a member of any conversation with
+      // this client wakes up and runs the sweep immediately.
+      type: 'client:session_created';
+      externalIdentityId: string;
+      sessionId: string;
+      memberUserIds: string[];
+    }
+  | {
       // Phase 24: a request_list or request_item changed in a way that needs
       // every conversation member to refetch the panel. Carries enough IDs
       // for the client to invalidate the right query without hitting the

@@ -169,6 +169,23 @@ export function attachRealtime(httpServer: HttpServer): IOServer {
           });
         }
         break;
+      case 'client:session_created':
+        // v0.4.35 — fanned out to every staff user in any conversation
+        // this client is a member of, so their already-unlocked staff
+        // device(s) run the rewrap sweep immediately and wrap the
+        // conversation key for the new session's public key. Without
+        // this push, the portal client's "decrypting…" state could
+        // hang for up to 60s (next sweep tick) or indefinitely if no
+        // staff is online. The client-side sweep itself is unchanged
+        // — it's the same code path that handles every other
+        // missing-recipient case.
+        for (const uid of event.memberUserIds) {
+          io.to(`user:${uid}`).emit('client:session_created', {
+            externalIdentityId: event.externalIdentityId,
+            sessionId: event.sessionId,
+          });
+        }
+        break;
       case 'request:changed':
         // Phase 24: send to every member already in the conversation room.
         // Both staff (in conv:<id>) and portal clients (joined via the same

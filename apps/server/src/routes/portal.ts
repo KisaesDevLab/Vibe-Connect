@@ -267,6 +267,54 @@ portalRouter.post(
         sameSite: env.sessionSameSite,
         maxAge: 8 * 60 * 60 * 1000,
       });
+
+      // v0.4.35 — push every staff member who shares a conversation
+      // with this client so their already-unlocked staff device runs
+      // the rewrap sweep IMMEDIATELY for the new session's public key.
+      // Without this push, the client portal's "decrypting…" state
+      // hangs until either the next 60s periodic sweep tick on staff
+      // side, or until staff next signs in. With it, decrypts work
+      // within milliseconds when any staff is online.
+      //
+      // CRYPTO: payload carries no key material — just identifiers
+      // staff already knows. Staff side runs its existing rewrap
+      // logic which uses its own unlocked device key to seal the
+      // conversation key.
+      //
+      // Fire-and-forget — a failure here must not prevent the user
+      // from logging in. The 60s periodic sweep on staff side picks
+      // up the new session on its next tick anyway.
+      void (async () => {
+        try {
+          const memberRows = await db('conversation_members as cm')
+            .innerJoin(
+              'conversation_members as their',
+              'their.conversation_id',
+              'cm.conversation_id',
+            )
+            .where('cm.external_identity_id', identity.id)
+            .whereNull('cm.removed_at')
+            .whereNull('their.removed_at')
+            .whereNotNull('their.user_id')
+            .distinct('their.user_id as user_id');
+          const memberUserIds = memberRows
+            .map((r) => String(r.user_id))
+            .filter((v) => v.length > 0);
+          if (memberUserIds.length === 0) return;
+          const { publish } = await import('../realtime/pgFanout.js');
+          await publish({
+            type: 'client:session_created',
+            externalIdentityId: identity.id,
+            sessionId: sessionRowId,
+            memberUserIds,
+          });
+        } catch (err) {
+          logger.warn('portal.session_created_push_failed', {
+            sessionId: sessionRowId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      })();
     } catch (err) {
       // Specific log line — operator greps for this to find post-verify
       // failures vs. earlier-stage ones. Audit row too so the trail
