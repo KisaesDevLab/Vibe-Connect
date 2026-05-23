@@ -138,15 +138,18 @@ export function IntakeForm(): JSX.Element {
         `vibe-intake-token:${res.sessionId}`,
         JSON.stringify({ uploadToken: res.uploadToken, expiresAt: res.expiresAt }),
       );
-      // Drop the persisted form draft — the session is created, the
-      // user is moving on to uploads. Without this clear, a back-nav
-      // from the upload page would re-show their old contact info as
-      // if it were a fresh draft.
-      try {
-        sessionStorage.removeItem(FORM_STORAGE_KEY);
-      } catch {
-        /* swallow */
-      }
+      // v0.4.38: do NOT clear FORM_STORAGE_KEY here. v0.4.37 cleared
+      // it on submit success, which broke the back-button case the
+      // fix was trying to solve — the user navigates to /upload,
+      // hits Back, the form remounts, readPersisted() returns null
+      // (because we just cleared), and the form is empty. The whole
+      // point of the persistence is to survive back-navigation.
+      //
+      // Trade-off accepted: a same-tab return visit to /intake/:staffId
+      // after a successful submit will pre-fill with the prior contact
+      // info. That's fine — same browser, same person, almost certainly
+      // re-submitting on the same intake. They can edit fields freely.
+      // The data clears on tab close (sessionStorage scope).
       navigate(`/intake/${staffId}/upload?s=${res.sessionId}`);
     } catch (err) {
       const code = (err as { code?: string } | null)?.code ?? 'unknown';
