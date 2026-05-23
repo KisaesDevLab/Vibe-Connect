@@ -35,14 +35,58 @@ export function IntakeForm(): JSX.Element {
     return staffQuery.data?.staff.find((s) => s.id === staffId) ?? null;
   }, [staffQuery.data, staffId]);
 
-  // Form state.
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
-  const [message, setMessage] = useState('');
+  // v0.4.37: persist form fields per staffId so a user who clicks
+  // Continue, then taps the browser Back button, lands back here with
+  // their inputs still filled in. User report: "when i clicked back
+  // the inputs were gone and i had to start over." sessionStorage
+  // (not localStorage) so a closed tab clears it; keyed per staffId so
+  // switching to a different team member doesn't carry data over.
+  // turnstileToken is intentionally NOT persisted — Cloudflare tokens
+  // are single-use server-side, so a stale persisted token would just
+  // fail the next submit. The widget re-renders on rehydrate and the
+  // user solves a fresh challenge.
+  const FORM_STORAGE_KEY = `vibe-intake-form:${staffId}`;
+  type PersistedForm = { name: string; email: string; phone: string; message: string };
+  function readPersisted(): PersistedForm | null {
+    try {
+      const raw = sessionStorage.getItem(FORM_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as Partial<PersistedForm>;
+      // Defensive: ignore anything that doesn't structurally match —
+      // a future schema change shouldn't silently inject the wrong
+      // type into useState.
+      return {
+        name: typeof parsed.name === 'string' ? parsed.name : '',
+        email: typeof parsed.email === 'string' ? parsed.email : '',
+        phone: typeof parsed.phone === 'string' ? parsed.phone : '',
+        message: typeof parsed.message === 'string' ? parsed.message : '',
+      };
+    } catch {
+      return null;
+    }
+  }
+  const initial = readPersisted();
+  // Form state. Initialized lazily from sessionStorage so an in-progress
+  // form survives a back-navigation from the upload page.
+  const [name, setName] = useState(initial?.name ?? '');
+  const [email, setEmail] = useState(initial?.email ?? '');
+  const [phone, setPhone] = useState(initial?.phone ?? '');
+  const [message, setMessage] = useState(initial?.message ?? '');
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Persist on every change. JSON.stringify of four short strings is
+  // sub-ms; debouncing would add complexity without a measurable win.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({ name, email, phone, message }));
+    } catch {
+      // sessionStorage quota or private-mode block — fall through;
+      // the in-memory state still drives the UI, we just lose the
+      // back-button persistence.
+    }
+  }, [FORM_STORAGE_KEY, name, email, phone, message]);
 
   // Inline-validation flags. Email/phone are RFC-5322 / E.164-ish — server
   // is the authoritative validator; this is just so the Submit button
@@ -94,6 +138,15 @@ export function IntakeForm(): JSX.Element {
         `vibe-intake-token:${res.sessionId}`,
         JSON.stringify({ uploadToken: res.uploadToken, expiresAt: res.expiresAt }),
       );
+      // Drop the persisted form draft — the session is created, the
+      // user is moving on to uploads. Without this clear, a back-nav
+      // from the upload page would re-show their old contact info as
+      // if it were a fresh draft.
+      try {
+        sessionStorage.removeItem(FORM_STORAGE_KEY);
+      } catch {
+        /* swallow */
+      }
       navigate(`/intake/${staffId}/upload?s=${res.sessionId}`);
     } catch (err) {
       const code = (err as { code?: string } | null)?.code ?? 'unknown';
