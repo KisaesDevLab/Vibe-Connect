@@ -35,23 +35,46 @@ export function IntakeForm(): JSX.Element {
     return staffQuery.data?.staff.find((s) => s.id === staffId) ?? null;
   }, [staffQuery.data, staffId]);
 
-  // v0.4.37: persist form fields per staffId so a user who clicks
-  // Continue, then taps the browser Back button, lands back here with
-  // their inputs still filled in. User report: "when i clicked back
-  // the inputs were gone and i had to start over." sessionStorage
-  // (not localStorage) so a closed tab clears it; keyed per staffId so
-  // switching to a different team member doesn't carry data over.
-  // turnstileToken is intentionally NOT persisted — Cloudflare tokens
-  // are single-use server-side, so a stale persisted token would just
-  // fail the next submit. The widget re-renders on rehydrate and the
-  // user solves a fresh challenge.
+  // v0.4.39: switched from sessionStorage to localStorage with a
+  // 4-hour TTL stamp. iOS Safari handles sessionStorage less
+  // predictably than other browsers — in particular, the in-UI Back
+  // button path (navigate('/intake/:staffId') push from /upload)
+  // could land on a remounted form whose sessionStorage was
+  // inexplicably empty even though we'd written to it on every
+  // keystroke. User report: "the back browser button retains the
+  // information. However if you click the back button on the web ui
+  // it resets the form."
+  //
+  // localStorage is reliably preserved across in-tab navigation on
+  // every browser including iOS. The TTL stamp (4h, matching the
+  // upload-token expiry) gives back the ephemerality sessionStorage
+  // would have given us — a stale draft from a week ago doesn't
+  // pre-fill the form on a fresh visit.
+  //
+  // Keyed per staffId so switching to a different team member starts
+  // clean. turnstileToken is intentionally NOT persisted — Cloudflare
+  // tokens are single-use server-side, so a stale persisted token
+  // would just fail the next submit.
   const FORM_STORAGE_KEY = `vibe-intake-form:${staffId}`;
-  type PersistedForm = { name: string; email: string; phone: string; message: string };
+  const FORM_STORAGE_TTL_MS = 4 * 60 * 60 * 1000;
+  type PersistedForm = {
+    name: string;
+    email: string;
+    phone: string;
+    message: string;
+    savedAt: number;
+  };
   function readPersisted(): PersistedForm | null {
     try {
-      const raw = sessionStorage.getItem(FORM_STORAGE_KEY);
+      const raw = localStorage.getItem(FORM_STORAGE_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as Partial<PersistedForm>;
+      // Drop anything past the TTL — fresh visit weeks later
+      // shouldn't pre-fill.
+      if (typeof parsed.savedAt !== 'number' || Date.now() - parsed.savedAt > FORM_STORAGE_TTL_MS) {
+        localStorage.removeItem(FORM_STORAGE_KEY);
+        return null;
+      }
       // Defensive: ignore anything that doesn't structurally match —
       // a future schema change shouldn't silently inject the wrong
       // type into useState.
@@ -60,6 +83,7 @@ export function IntakeForm(): JSX.Element {
         email: typeof parsed.email === 'string' ? parsed.email : '',
         phone: typeof parsed.phone === 'string' ? parsed.phone : '',
         message: typeof parsed.message === 'string' ? parsed.message : '',
+        savedAt: parsed.savedAt,
       };
     } catch {
       return null;
@@ -78,12 +102,17 @@ export function IntakeForm(): JSX.Element {
 
   // Persist on every change. JSON.stringify of four short strings is
   // sub-ms; debouncing would add complexity without a measurable win.
+  // localStorage with a TTL stamp — see readPersisted comment for the
+  // iOS Safari sessionStorage reliability backstory.
   useEffect(() => {
     try {
-      sessionStorage.setItem(FORM_STORAGE_KEY, JSON.stringify({ name, email, phone, message }));
+      localStorage.setItem(
+        FORM_STORAGE_KEY,
+        JSON.stringify({ name, email, phone, message, savedAt: Date.now() }),
+      );
     } catch {
-      // sessionStorage quota or private-mode block — fall through;
-      // the in-memory state still drives the UI, we just lose the
+      // Storage quota or private-mode block — fall through; the
+      // in-memory state still drives the UI, we just lose the
       // back-button persistence.
     }
   }, [FORM_STORAGE_KEY, name, email, phone, message]);
