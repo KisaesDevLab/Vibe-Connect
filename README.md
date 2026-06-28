@@ -1,3 +1,5 @@
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/I3D3227TTP)
+
 # Vibe Connect
 
 Secure, end-to-end-encrypted staff and client messaging for professional services firms.
